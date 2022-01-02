@@ -179,6 +179,9 @@ endif()
 if(WITH_RADOSGW_MOTR)
   list(APPEND librgw_common_srcs rgw_sal_motr.cc)
 endif()
+if(WITH_RADOSGW_DAOS)
+  list(APPEND librgw_common_srcs rgw_sal_daos.cc)
+endif()
 if(WITH_JAEGER)
   list(APPEND librgw_common_srcs rgw_tracer.cc)
 endif()
@@ -267,6 +270,18 @@ if(WITH_RADOSGW_MOTR)
   target_compile_definitions(rgw_common
     PRIVATE "M0_EXTERN=extern" "M0_INTERNAL=")
   target_link_libraries(rgw_common PRIVATE motr motr-helpers)
+endif()
+
+if(WITH_RADOSGW_DAOS)
+  target_include_directories(rgw_common PRIVATE "/usr/include/motr")
+  target_compile_options(rgw_common
+    PRIVATE "-Wno-attributes")
+  target_compile_definitions(rgw_common
+    PRIVATE "M0_EXTERN=extern" "M0_INTERNAL=")
+  target_link_libraries(rgw_common PRIVATE "motr")
+  # TODO change to findDAOS.cmake
+  target_include_directories(rgw_common PRIVATE )
+  target_link_libraries(rgw_common PRIVATE "/usr/lib64/libdaos.so.2")
 endif()
 
 set(rgw_a_srcs

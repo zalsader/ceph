@@ -3241,7 +3241,7 @@ options:
   type: str
   level: advanced
   desc: experimental Option to set backend store type
-  long_desc: defaults to rados. Other valid values are dbstore and motr (both experimental).
+  long_desc: defaults to rados. Other valid values are dbstore, motr, and daos (All experimental).
   default: rados
   services:
   - rgw
@@ -3249,6 +3249,7 @@ options:
   - rados
   - dbstore
   - motr
+  - daos
 - name: motr_profile_fid
   type: str
   level: advanced
