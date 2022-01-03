@@ -279,9 +279,7 @@ if(WITH_RADOSGW_DAOS)
   target_compile_definitions(rgw_common
     PRIVATE "M0_EXTERN=extern" "M0_INTERNAL=")
   target_link_libraries(rgw_common PRIVATE "motr")
-  # TODO change to findDAOS.cmake
-  target_include_directories(rgw_common PRIVATE )
-  target_link_libraries(rgw_common PRIVATE "/usr/lib64/libdaos.so.2")
+  find_package(DAOS REQUIRED)
 endif()
 
 set(rgw_a_srcs
