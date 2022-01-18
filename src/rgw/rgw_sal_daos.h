@@ -282,6 +282,7 @@ class DaosZone : public Zone {
     info.storage_classes = sc;
     zone_params->placement_pools["default"] = info;
   }
+  // XXX: clean up memory leaks
   ~DaosZone() = default;
 
   virtual const RGWZoneGroup& get_zonegroup() override;
@@ -627,6 +628,13 @@ class DaosMultipartUpload : public MultipartUpload {
   int delete_parts(const DoutPrefixProvider* dpp);
 };
 
+struct daos_conf {
+  /** UUID of the pool */
+  uuid_t pool;
+  /** Pool handle */
+	daos_handle_t		poh;
+};
+
 class DaosStore : public Store {
  private:
   std::string luarocks_path;
@@ -634,6 +642,7 @@ class DaosStore : public Store {
   RGWSyncModuleInstanceRef sync_module;
 
  public:
+  struct daos_conf conf;
   CephContext* cctx;
 
   DaosStore(CephContext* c) : zone(this), cctx(c) {}

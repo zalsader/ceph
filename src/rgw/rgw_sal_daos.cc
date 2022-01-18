@@ -386,7 +386,20 @@ int DaosBucket::abort_multiparts(const DoutPrefixProvider* dpp,
   return 0;
 }
 
-void DaosStore::finalize(void) {}
+void DaosStore::finalize(void) {
+  int rc;
+  if (daos_handle_is_valid(conf.poh)) {
+    rc = daos_pool_disconnect(conf.poh, NULL);
+    if (rc != 0) {
+      ldout(cctx, 0) << "ERROR: daos_pool_disconnect() failed: " << rc << dendl;
+    }
+  }
+
+  rc = daos_fini();
+  if (rc != 0) {
+    ldout(cctx, 0) << "ERROR: daos_fini() failed: " << rc << dendl;
+  }
+}
 
 const RGWZoneGroup& DaosZone::get_zonegroup() { return *zonegroup; }
 
@@ -1011,7 +1024,39 @@ std::string DaosStore::get_cluster_id(const DoutPrefixProvider* dpp,
 extern "C" {
 
 void* newDaosStore(CephContext* cct) {
+  int rc = -1;
   rgw::sal::DaosStore* store = new rgw::sal::DaosStore(cct);
+
+  if (store) {
+    rc = daos_init();
+
+    // DAOS init failed, allow the case where init is already done
+    if (rc != 0 && rc != DER_ALREADY) {
+      ldout(cct, 0) << "ERROR: daos_init() failed: " << rc << dendl;
+      goto err;
+    }
+
+    // XXX: these params should be taken from config settings and
+    // cct somehow?
+    const auto& daos_pool = g_conf().get_val<std::string>("daos_pool");
+    ldout(cct, 0) << "INFO: daos pool:  " << daos_pool << dendl;
+    daos_pool_info_t pool_info = {};
+    rc = daos_pool_connect(daos_pool.c_str(), nullptr, DAOS_PC_RO,
+                           &store->conf.poh, &pool_info, nullptr);
+
+    if (rc != 0) {
+      ldout(cct, 0) << "ERROR: daos_pool_connect() failed: " << rc << dendl;
+      goto err_fini;
+    }
+
+    uuid_copy(store->conf.pool, pool_info.pi_uuid);
+  }
+
   return store;
+err_fini:
+  daos_fini();
+err:
+  delete store;
+  return nullptr;
 }
 }

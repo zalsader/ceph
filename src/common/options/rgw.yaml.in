@@ -3289,6 +3289,13 @@ options:
   default: false
   services:
   - rgw
+- name: daos_pool
+  type: str
+  level: advanced
+  desc: DAOS Pool to use
+  default: tank
+  services:
+  - rgw
 - name: rgw_luarocks_location
   type: str
   level: advanced
