@@ -49,13 +49,45 @@ static std::string motr_global_indices[] = {RGW_DAOS_USERS_IDX_NAME,
                                             RGW_DAOS_BUCKET_INST_IDX_NAME,
                                             RGW_DAOS_BUCKET_HD_IDX_NAME};
 
-// TODO: properly handle the number of key/value pairs to get in
-// one query. Now the POC simply tries to retrieve all `max` number of pairs
-// with starting key `marker`.
 int DaosUser::list_buckets(const DoutPrefixProvider* dpp, const string& marker,
                            const string& end_marker, uint64_t max,
                            bool need_stats, BucketList& buckets,
                            optional_yield y) {
+  // int rc;
+  // bool is_truncated = false;
+
+  // ldpp_dout(dpp, 20) << "DEBUG: list_user_buckets: marker=" << marker
+  //                   << " end_marker=" << end_marker
+  //                   << " max=" << max << dendl;
+
+  // // Retrieve all `max` number of pairs.
+  // buckets.clear();
+  
+
+  // // Process the returned pairs to add into BucketList.
+  // uint64_t bcount = 0;
+  // for (const auto& bl: vals) {
+  //   if (bl.length() == 0)
+  //     break;
+
+  //   RGWBucketEnt ent;
+  //   auto iter = bl.cbegin();
+  //   ent.decode(iter);
+
+  //   std::time_t ctime = ceph::real_clock::to_time_t(ent.creation_time);
+  //   ldpp_dout(dpp, 20) << "got creation time: << " << std::put_time(std::localtime(&ctime), "%F %T") << dendl;
+
+  //   if (!end_marker.empty() &&
+  //        end_marker.compare(ent.bucket.marker) <= 0)
+  //     break;
+
+  //   buckets.add(std::make_unique<DaosBucket>(this->store, ent, this));
+  //   bcount++;
+  // }
+  // if (bcount == max)
+  //   is_truncated = true;
+  // buckets.set_truncated(is_truncated);
+
   return 0;
 }
 
@@ -139,12 +171,21 @@ int DaosUser::trim_usage(const DoutPrefixProvider* dpp, uint64_t start_epoch,
 int DaosUser::load_user(const DoutPrefixProvider* dpp, optional_yield y) {
   ldpp_dout(dpp, 20) << "load user: user id =   " << info.user_id.to_str()
                      << dendl;
+  // XXX: implement actual code here
+  rgw_user testid_user("tenant", "tester", "ns");
+  info.user_id = testid_user;
+  info.display_name = "Daos Explorer";
+  info.user_email = "tester@seagate.com";
+  RGWAccessKey k1("0555b35654ad1656d804", "h7GhxuBLTrlhVUyxSPUKUV8r/2EI4ngqJxD7iBdBYLhwluN30JaT3Q==");
+  info.access_keys["0555b35654ad1656d804"] = k1;
   return 0;
 }
 
 int DaosUser::store_user(const DoutPrefixProvider* dpp, optional_yield y,
                          bool exclusive, RGWUserInfo* old_info) {
   ldpp_dout(dpp, 10) << "Store_user(): User = " << info.user_id.id << dendl;
+  if (old_info)
+      *old_info = info;
   return 0;
 }
 
@@ -183,16 +224,6 @@ int DaosBucket::load_bucket(const DoutPrefixProvider* dpp, optional_yield y) {
   return 0;
 }
 
-int DaosBucket::link_user(const DoutPrefixProvider* dpp, User* new_user,
-                          optional_yield y) {
-  return 0;
-}
-
-int DaosBucket::unlink_user(const DoutPrefixProvider* dpp, User* new_user,
-                            optional_yield y) {
-  return 0;
-}
-
 /* stats - Not for first pass */
 int DaosBucket::read_stats(const DoutPrefixProvider* dpp, int shard_id,
                            std::string* bucket_ver, std::string* master_ver,
@@ -200,10 +231,6 @@ int DaosBucket::read_stats(const DoutPrefixProvider* dpp, int shard_id,
                            std::string* max_marker, bool* syncstopped) {
   return 0;
 }
-
-int DaosBucket::create_bucket_index() { return 0; }
-
-int DaosBucket::create_multipart_indices() { return 0; }
 
 int DaosBucket::read_stats_async(const DoutPrefixProvider* dpp, int shard_id,
                                  RGWGetBucketStats_CB* ctx) {
@@ -329,7 +356,6 @@ std::unique_ptr<Object> DaosBucket::get_object(const rgw_obj_key& k) {
 
 int DaosBucket::list(const DoutPrefixProvider* dpp, ListParams& params, int max,
                      ListResults& results, optional_yield y) {
-  int rc;
   vector<string> keys(max);
   vector<bufferlist> vals(max);
 
@@ -538,7 +564,6 @@ DaosObject::DaosReadOp::DaosReadOp(DaosObject* _source, RGWObjectCtx* _rctx)
 
 int DaosObject::DaosReadOp::prepare(optional_yield y,
                                     const DoutPrefixProvider* dpp) {
-  int rc;
   ldpp_dout(dpp, 20) << __func__
                      << ": bucket=" << source->get_bucket()->get_name()
                      << dendl;
@@ -826,6 +851,24 @@ int DaosStore::get_user_by_access_key(const DoutPrefixProvider* dpp,
 int DaosStore::get_user_by_email(const DoutPrefixProvider* dpp,
                                  const std::string& email, optional_yield y,
                                  std::unique_ptr<User>* user) {
+  RGWUserInfo uinfo;
+  User* u;
+  RGWObjVersionTracker objv_tracker;
+
+  /* Hard code user info for test. */
+  rgw_user testid_user("tenant", "tester", "ns");
+  uinfo.user_id = testid_user;
+  uinfo.display_name = "Daos Explorer";
+  uinfo.user_email = "tester@seagate.com";
+  RGWAccessKey k1("0555b35654ad1656d804",
+                  "h7GhxuBLTrlhVUyxSPUKUV8r/2EI4ngqJxD7iBdBYLhwluN30JaT3Q==");
+  uinfo.access_keys["0555b35654ad1656d804"] = k1;
+
+  u = new DaosUser(this, uinfo);
+  if (!u) return -ENOMEM;
+
+  u->get_version_tracker() = objv_tracker;
+  user->reset(u);
   return 0;
 }
 
@@ -1006,7 +1049,7 @@ void* newDaosStore(CephContext* cct) {
     // XXX: these params should be taken from config settings and
     // cct somehow?
     const auto& daos_pool = g_conf().get_val<std::string>("daos_pool");
-    ldout(cct, 0) << "INFO: daos pool:  " << daos_pool << dendl;
+    ldout(cct, 0) << "INFO: daos pool: " << daos_pool << dendl;
     daos_pool_info_t pool_info = {};
     rc = daos_pool_connect(daos_pool.c_str(), nullptr, DAOS_PC_RO,
                            &store->conf.poh, &pool_info, nullptr);

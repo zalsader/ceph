@@ -191,12 +191,6 @@ class DaosBucket : public Bucket {
                       RGWAccessControlPolicy& acl, optional_yield y) override;
   virtual int load_bucket(const DoutPrefixProvider* dpp,
                           optional_yield y) override;
-  int link_user(const DoutPrefixProvider* dpp, User* new_user,
-                optional_yield y);
-  int unlink_user(const DoutPrefixProvider* dpp, User* new_user,
-                  optional_yield y);
-  int create_bucket_index();
-  int create_multipart_indices();
   virtual int read_stats(const DoutPrefixProvider* dpp, int shard_id,
                          std::string* bucket_ver, std::string* master_ver,
                          std::map<RGWObjCategory, RGWStorageStats>& stats,

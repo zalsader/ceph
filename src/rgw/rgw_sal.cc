@@ -182,7 +182,7 @@ rgw::sal::Store* StoreManager::init_storage_provider(const DoutPrefixProvider* d
     }
 
     // Read user info and compare.
-    rgw_user ruser("", "tester", "");
+    rgw_user ruser("tenant", "tester", "ns");
     std::unique_ptr<rgw::sal::User> suser = store->get_user(ruser);
     suser->get_info().user_id = ruser;
     rc = suser->load_user(dpp, null_yield);
