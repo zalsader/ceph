@@ -274,6 +274,7 @@ endif()
 
 if(WITH_RADOSGW_DAOS)
   find_package(DAOS REQUIRED)
+  target_link_libraries(rgw_common PRIVATE daos dfs uuid duns)
 endif()
 
 set(rgw_a_srcs

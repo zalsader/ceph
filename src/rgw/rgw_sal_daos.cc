@@ -80,55 +80,22 @@ int DaosUser::create_bucket(
     }
     placement_rule.inherit_from(bucket->get_info().placement_rule);
 
-    // TODO: ACL policy
-    // // don't allow changes to the acl policy
-    // RGWAccessControlPolicy old_policy(ctx());
-    // int rc = rgw_op_get_bucket_policy_from_attr(
-    //           dpp, this, u, bucket->get_attrs(), &old_policy, y);
-    // if (rc >= 0 && old_policy != policy) {
-    //    bucket_out->swap(bucket);
-    //    return -EEXIST;
-    //}
   } else {
+    *existed = false;
     placement_rule.name = "default";
     placement_rule.storage_class = "STANDARD";
-    bucket = std::make_unique<DaosBucket>(store, b, this);
+    DaosBucket* daos_bucket = new DaosBucket(store, b, this);
+    bucket = std::unique_ptr<Bucket>(daos_bucket);
     bucket->set_attrs(attrs);
 
-    *existed = false;
+    ret = dfs_cont_create_with_label(store->conf.poh, bucket->get_name().c_str(), NULL, &daos_bucket->cont_uuid, &daos_bucket->cont_h, &daos_bucket->dfs);
+    if (ret < 0) {
+      ldpp_dout(dpp, 0) << "ERROR: dfs_cont_create_with_label failed!" << ret << dendl;
+    }
   }
 
-  // TODO: how to handle zone and multi-site.
-
-  if (!*existed) {
-    info.placement_rule = placement_rule;
-    info.bucket = b;
-    info.owner = this->get_info().user_id;
-    info.zonegroup = zonegroup_id;
-    if (obj_lock_enabled)
-      info.flags = BUCKET_VERSIONED | BUCKET_OBJ_LOCK_ENABLED;
-    bucket->set_version(ep_objv);
-    bucket->get_info() = info;
-
-    // Create a new bucket: (1) Add a key/value pair in the
-    // bucket instance index. (2) Create a new bucket index.
-    DaosBucket* mbucket = static_cast<DaosBucket*>(bucket.get());
-    ret = mbucket->put_info(dpp, y, ceph::real_time())? :
-          mbucket->create_bucket_index() ? :
-          mbucket->create_multipart_indices();
-    if (ret < 0)
-      ldpp_dout(dpp, 0) << "ERROR: failed to create bucket indices! " << ret
-                        << dendl;
-
-    // Insert the bucket entry into the user info index.
-    ret = mbucket->link_user(dpp, this, y);
-    if (ret < 0)
-      ldpp_dout(dpp, 0) << "ERROR: failed to add bucket entry! " << ret
-                        << dendl;
-  } else {
-    bucket->set_version(ep_objv);
-    bucket->get_info() = info;
-  }
+  bucket->set_version(ep_objv);
+  bucket->get_info() = info;
 
   bucket_out->swap(bucket);
 

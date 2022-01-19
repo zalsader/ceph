@@ -18,6 +18,8 @@
 #pragma once
 
 #include <daos.h>
+#include <daos_fs.h>
+#include <uuid/uuid.h>
 
 #include <map>
 #include <set>
@@ -146,6 +148,10 @@ class DaosBucket : public Bucket {
   RGWAccessControlPolicy acls;
 
  public:
+  daos_handle_t cont_h;
+  uuid_t cont_uuid;
+  dfs_t* dfs;
+
   DaosBucket(DaosStore* _st) : store(_st), acls() {}
 
   DaosBucket(DaosStore* _st, User* _u) : Bucket(_u), store(_st), acls() {}
