@@ -147,8 +147,43 @@ class DaosBucket : public Bucket {
   DaosStore* store;
   RGWAccessControlPolicy acls;
 
+  // RGWBucketInfo and other information that are shown when listing a bucket is
+  // represented in struct DaosBucketInfo. The structure is encoded and stored
+  // as the value of the global bucket instance index.
+  // TODO: compare pros and cons of separating the bucket_attrs (ACLs, tag etc.)
+  // into a different index.
+  struct DaosBucketInfo {
+    RGWBucketInfo info;
+
+    obj_version bucket_version;
+    ceph::real_time mtime;
+
+    rgw::sal::Attrs bucket_attrs;
+
+    void encode(bufferlist& bl)  const
+    {
+      ENCODE_START(4, 4, bl);
+      encode(info, bl);
+      encode(bucket_version, bl);
+      encode(mtime, bl);
+      encode(bucket_attrs, bl); //rgw_cache.h example for a map
+      ENCODE_FINISH(bl);
+    }
+
+    void decode(bufferlist::const_iterator& bl)
+    {
+      DECODE_START(4, bl);
+      decode(info, bl);
+      decode(bucket_version, bl);
+      decode(mtime, bl);
+      decode(bucket_attrs, bl);
+      DECODE_FINISH(bl);
+    }
+  };
+  WRITE_CLASS_ENCODER(DaosBucketInfo);
+
  public:
-  daos_handle_t cont_h;
+  daos_handle_t coh;
   uuid_t cont_uuid;
   dfs_t* dfs;
 
@@ -250,6 +285,8 @@ class DaosBucket : public Bucket {
       bool* is_truncated) override;
   virtual int abort_multiparts(const DoutPrefixProvider* dpp,
                                CephContext* cct) override;
+  
+  int refresh_handle();
 
   friend class DaosStore;
 };
@@ -628,13 +665,6 @@ class DaosMultipartUpload : public MultipartUpload {
   int delete_parts(const DoutPrefixProvider* dpp);
 };
 
-struct daos_conf {
-  /** UUID of the pool */
-  uuid_t pool;
-  /** Pool handle */
-	daos_handle_t		poh;
-};
-
 class DaosStore : public Store {
  private:
   std::string luarocks_path;
@@ -642,7 +672,11 @@ class DaosStore : public Store {
   RGWSyncModuleInstanceRef sync_module;
 
  public:
-  struct daos_conf conf;
+    /** UUID of the pool */
+  uuid_t pool;
+  /** Pool handle */
+	daos_handle_t		poh;
+
   CephContext* cctx;
 
   DaosStore(CephContext* c) : zone(this), cctx(c) {}

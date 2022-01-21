@@ -45,49 +45,35 @@ namespace rgw::sal {
 using ::ceph::decode;
 using ::ceph::encode;
 
-static std::string motr_global_indices[] = {RGW_DAOS_USERS_IDX_NAME,
-                                            RGW_DAOS_BUCKET_INST_IDX_NAME,
-                                            RGW_DAOS_BUCKET_HD_IDX_NAME};
-
 int DaosUser::list_buckets(const DoutPrefixProvider* dpp, const string& marker,
                            const string& end_marker, uint64_t max,
                            bool need_stats, BucketList& buckets,
                            optional_yield y) {
-  // int rc;
-  // bool is_truncated = false;
-
-  // ldpp_dout(dpp, 20) << "DEBUG: list_user_buckets: marker=" << marker
-  //                   << " end_marker=" << end_marker
-  //                   << " max=" << max << dendl;
-
-  // // Retrieve all `max` number of pairs.
-  // buckets.clear();
+  ldpp_dout(dpp, 20) << "DEBUG: list_user_buckets: marker=" << marker
+                    << " end_marker=" << end_marker
+                    << " max=" << max << dendl;
+  int ret = 0;
+  bool is_truncated = false;
+  buckets.clear();
+  daos_size_t bcount = max;
+  vector<struct daos_pool_cont_info> daos_buckets(max);
   
+  // XXX: Somehow handle markers and other bucket info
+  ret = daos_pool_list_cont(store->poh, &bcount, daos_buckets.data(), nullptr);
+  if (ret == -DER_TRUNC) {
+    is_truncated = true;
+  } else if (ret < 0) {
+    ldpp_dout(dpp, 0) << "ERROR: daos_pool_list_cont failed!" << ret << dendl;
+    return ret;
+  }
 
-  // // Process the returned pairs to add into BucketList.
-  // uint64_t bcount = 0;
-  // for (const auto& bl: vals) {
-  //   if (bl.length() == 0)
-  //     break;
+  for (const auto& db: daos_buckets) {
+    RGWBucketEnt ent = {};
+    ent.bucket.name = db.pci_label;
+    buckets.add(std::make_unique<DaosBucket>(this->store, ent, this));
+  }
 
-  //   RGWBucketEnt ent;
-  //   auto iter = bl.cbegin();
-  //   ent.decode(iter);
-
-  //   std::time_t ctime = ceph::real_clock::to_time_t(ent.creation_time);
-  //   ldpp_dout(dpp, 20) << "got creation time: << " << std::put_time(std::localtime(&ctime), "%F %T") << dendl;
-
-  //   if (!end_marker.empty() &&
-  //        end_marker.compare(ent.bucket.marker) <= 0)
-  //     break;
-
-  //   buckets.add(std::make_unique<DaosBucket>(this->store, ent, this));
-  //   bcount++;
-  // }
-  // if (bcount == max)
-  //   is_truncated = true;
-  // buckets.set_truncated(is_truncated);
-
+  buckets.set_truncated(is_truncated);
   return 0;
 }
 
@@ -120,7 +106,7 @@ int DaosUser::create_bucket(
     bucket = std::unique_ptr<Bucket>(daos_bucket);
     bucket->set_attrs(attrs);
 
-    ret = dfs_cont_create_with_label(store->conf.poh, bucket->get_name().c_str(), NULL, &daos_bucket->cont_uuid, &daos_bucket->cont_h, &daos_bucket->dfs);
+    ret = dfs_cont_create_with_label(store->poh, bucket->get_name().c_str(), NULL, &daos_bucket->cont_uuid, &daos_bucket->coh, &daos_bucket->dfs);
     if (ret < 0) {
       ldpp_dout(dpp, 0) << "ERROR: dfs_cont_create_with_label failed!" << ret << dendl;
     }
@@ -193,6 +179,18 @@ int DaosUser::remove_user(const DoutPrefixProvider* dpp, optional_yield y) {
   return 0;
 }
 
+int DaosBucket::refresh_handle() {
+  int ret = 0;
+  if (!daos_handle_is_valid(coh)) {
+    daos_cont_info_t cont_info;
+    ret = daos_cont_open(store->poh, info.bucket.name.c_str(), DAOS_COO_RW, &coh, &cont_info, nullptr);
+    if (ret == 0) {
+      uuid_copy(cont_uuid, cont_info.ci_uuid);
+    }
+  }
+  return ret;
+}
+
 int DaosBucket::remove_bucket(const DoutPrefixProvider* dpp,
                               bool delete_children, bool forward_to_master,
                               req_info* req_info, optional_yield y) {
@@ -212,15 +210,25 @@ int DaosBucket::remove_bucket_bypass_gc(int concurrent_max,
 
 int DaosBucket::put_info(const DoutPrefixProvider* dpp, bool exclusive,
                          ceph::real_time _mtime) {
-  bufferlist bl;
-
   ldpp_dout(dpp, 20) << "put_info(): bucket_id=" << info.bucket.bucket_id
                      << dendl;
+  
+  bufferlist bl;
+  struct DaosBucketInfo mbinfo;
+  mbinfo.info = info;
+  mbinfo.bucket_attrs = attrs;
+  mbinfo.mtime = _mtime;
+  mbinfo.bucket_version = bucket_version;
+  mbinfo.encode(bl);
 
   return 0;
 }
 
 int DaosBucket::load_bucket(const DoutPrefixProvider* dpp, optional_yield y) {
+  int ret = refresh_handle();
+  if (ret < 0) {
+    return -ENONET;
+  }
   return 0;
 }
 
@@ -381,8 +389,8 @@ int DaosBucket::abort_multiparts(const DoutPrefixProvider* dpp,
 
 void DaosStore::finalize(void) {
   int rc;
-  if (daos_handle_is_valid(conf.poh)) {
-    rc = daos_pool_disconnect(conf.poh, NULL);
+  if (daos_handle_is_valid(poh)) {
+    rc = daos_pool_disconnect(poh, NULL);
     if (rc != 0) {
       ldout(cctx, 0) << "ERROR: daos_pool_disconnect() failed: " << rc << dendl;
     }
@@ -1052,14 +1060,14 @@ void* newDaosStore(CephContext* cct) {
     ldout(cct, 0) << "INFO: daos pool: " << daos_pool << dendl;
     daos_pool_info_t pool_info = {};
     rc = daos_pool_connect(daos_pool.c_str(), nullptr, DAOS_PC_RO,
-                           &store->conf.poh, &pool_info, nullptr);
+                           &store->poh, &pool_info, nullptr);
 
     if (rc != 0) {
       ldout(cct, 0) << "ERROR: daos_pool_connect() failed: " << rc << dendl;
       goto err_fini;
     }
 
-    uuid_copy(store->conf.pool, pool_info.pi_uuid);
+    uuid_copy(store->pool, pool_info.pi_uuid);
   }
 
   return store;
