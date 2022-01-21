@@ -110,6 +110,7 @@ int DaosUser::create_bucket(
     if (ret < 0) {
       ldpp_dout(dpp, 0) << "ERROR: dfs_cont_create_with_label failed!" << ret << dendl;
     }
+    daos_bucket->put_info(dpp, y, ceph::real_time())
   }
 
   bucket->set_version(ep_objv);
@@ -213,15 +214,29 @@ int DaosBucket::put_info(const DoutPrefixProvider* dpp, bool exclusive,
   ldpp_dout(dpp, 20) << "put_info(): bucket_id=" << info.bucket.bucket_id
                      << dendl;
   
+  int ret = refresh_handle();
+  if (ret < 0) {
+    ldpp_dout(dpp, 0) << "ERROR: daos_cont_open failed: " << ret << dendl;
+    return -ENONET;
+  }
+  
   bufferlist bl;
-  struct DaosBucketInfo mbinfo;
-  mbinfo.info = info;
-  mbinfo.bucket_attrs = attrs;
-  mbinfo.mtime = _mtime;
-  mbinfo.bucket_version = bucket_version;
-  mbinfo.encode(bl);
+  struct DaosBucketInfo dbinfo;
+  dbinfo.info = info;
+  dbinfo.bucket_attrs = attrs;
+  dbinfo.mtime = _mtime;
+  dbinfo.bucket_version = bucket_version;
+  dbinfo.encode(bl);
 
-  return 0;
+  char const *const names[] = {"rgw_info"};
+  void const *const values[] = {bl.c_str()}
+  size_t const sizes[] = {bl.length()}
+  ret = daos_cont_set_attr(coh, 1, names, values, sizes, nullptr);
+  if (ret < 0) {
+    ldpp_dout(dpp, 0) << "ERROR: daos_cont_set_attr failed: " << ret << dendl;
+  }
+
+  return ret;
 }
 
 int DaosBucket::load_bucket(const DoutPrefixProvider* dpp, optional_yield y) {
