@@ -286,7 +286,7 @@ class DaosBucket : public Bucket {
   virtual int abort_multiparts(const DoutPrefixProvider* dpp,
                                CephContext* cct) override;
   
-  int refresh_handle();
+  int refresh_handle(const DoutPrefixProvider* dpp);
 
   friend class DaosStore;
 };
