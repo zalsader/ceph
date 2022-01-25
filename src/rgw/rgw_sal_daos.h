@@ -146,6 +146,7 @@ class DaosBucket : public Bucket {
  private:
   DaosStore* store;
   RGWAccessControlPolicy acls;
+  bool handles_open;
 
   // RGWBucketInfo and other information that are shown when listing a bucket is
   // represented in struct DaosBucketInfo. The structure is encoded and stored
@@ -160,18 +161,16 @@ class DaosBucket : public Bucket {
 
     rgw::sal::Attrs bucket_attrs;
 
-    void encode(bufferlist& bl)  const
-    {
+    void encode(bufferlist& bl) const {
       ENCODE_START(4, 4, bl);
       encode(info, bl);
       encode(bucket_version, bl);
       encode(mtime, bl);
-      encode(bucket_attrs, bl); //rgw_cache.h example for a map
+      encode(bucket_attrs, bl);  // rgw_cache.h example for a map
       ENCODE_FINISH(bl);
     }
 
-    void decode(bufferlist::const_iterator& bl)
-    {
+    void decode(bufferlist::const_iterator& bl) {
       DECODE_START(4, bl);
       decode(info, bl);
       decode(bucket_version, bl);
@@ -285,8 +284,9 @@ class DaosBucket : public Bucket {
       bool* is_truncated) override;
   virtual int abort_multiparts(const DoutPrefixProvider* dpp,
                                CephContext* cct) override;
-  
-  int refresh_handle(const DoutPrefixProvider* dpp);
+
+  int open_handles(const DoutPrefixProvider* dpp);
+  int close_handles(const DoutPrefixProvider* dpp);
 
   friend class DaosStore;
 };
@@ -672,10 +672,10 @@ class DaosStore : public Store {
   RGWSyncModuleInstanceRef sync_module;
 
  public:
-    /** UUID of the pool */
+  /** UUID of the pool */
   uuid_t pool;
   /** Pool handle */
-	daos_handle_t		poh;
+  daos_handle_t poh;
 
   CephContext* cctx;
 

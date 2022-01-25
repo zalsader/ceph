@@ -59,11 +59,17 @@ int DaosUser::list_buckets(const DoutPrefixProvider* dpp, const string& marker,
 
   // XXX: Somehow handle markers and other bucket info
   ret = daos_pool_list_cont(store->poh, &bcount, daos_buckets.data(), nullptr);
+  ldpp_dout(dpp, 20) << "DEBUG: daos_pool_list_cont: bcount=" << bcount
+                     << " ret=" << ret << dendl;
   if (ret == -DER_TRUNC) {
     is_truncated = true;
   } else if (ret < 0) {
     ldpp_dout(dpp, 0) << "ERROR: daos_pool_list_cont failed!" << ret << dendl;
     return ret;
+  }
+
+  if (!is_truncated) {
+    daos_buckets.resize(bcount);
   }
 
   for (const auto& db : daos_buckets) {
@@ -102,10 +108,10 @@ int DaosUser::create_bucket(
 
     // TODO: ACL policy
     // // don't allow changes to the acl policy
-    //RGWAccessControlPolicy old_policy(ctx());
-    //int rc = rgw_op_get_bucket_policy_from_attr(
+    // RGWAccessControlPolicy old_policy(ctx());
+    // int rc = rgw_op_get_bucket_policy_from_attr(
     //           dpp, this, u, bucket->get_attrs(), &old_policy, y);
-    //if (rc >= 0 && old_policy != policy) {
+    // if (rc >= 0 && old_policy != policy) {
     //    bucket_out->swap(bucket);
     //    return -EEXIST;
     //}
@@ -133,14 +139,20 @@ int DaosUser::create_bucket(
     // Create a new bucket:
     DaosBucket* daos_bucket = static_cast<DaosBucket*>(bucket.get());
     ret = dfs_cont_create_with_label(store->poh, bucket->get_name().c_str(),
-                                     NULL, &daos_bucket->cont_uuid,
-                                     &daos_bucket->coh, &daos_bucket->dfs);
-    if (ret < 0)
-      ldpp_dout(dpp, 0) << "ERROR: dfs_cont_create_with_label failed! ret=" << ret
-                        << dendl;
+                                     nullptr, nullptr, nullptr, nullptr);
+    ldpp_dout(dpp, 20) << "DEBUG: dfs_cont_create_with_label ret=" << ret
+                       << " name=" << bucket->get_name().c_str() << dendl;
+    if (ret != 0) {
+      ldpp_dout(dpp, 0) << "ERROR: dfs_cont_create_with_label failed! ret="
+                        << ret << dendl;
+      return ret;
+    }
     ret = daos_bucket->put_info(dpp, y, ceph::real_time());
-    if (ret < 0)
-      ldpp_dout(dpp, 0) << "ERROR: failed to put bucket info! ret=" << ret << dendl;
+    if (ret != 0) {
+      ldpp_dout(dpp, 0) << "ERROR: failed to put bucket info! ret=" << ret
+                        << dendl;
+      return ret;
+    }
   } else {
     bucket->set_version(ep_objv);
     bucket->get_info() = info;
@@ -186,8 +198,8 @@ int DaosUser::trim_usage(const DoutPrefixProvider* dpp, uint64_t start_epoch,
 }
 
 int DaosUser::load_user(const DoutPrefixProvider* dpp, optional_yield y) {
-  ldpp_dout(dpp, 20) << "DEBUG: load user: user id =   " << info.user_id.to_str()
-                     << dendl;
+  ldpp_dout(dpp, 20) << "DEBUG: load user: user id =   "
+                     << info.user_id.to_str() << dendl;
   // XXX: implement actual code here
   rgw_user testid_user("", "tester", "");
   info.user_id = testid_user;
@@ -201,7 +213,8 @@ int DaosUser::load_user(const DoutPrefixProvider* dpp, optional_yield y) {
 
 int DaosUser::store_user(const DoutPrefixProvider* dpp, optional_yield y,
                          bool exclusive, RGWUserInfo* old_info) {
-  ldpp_dout(dpp, 10) << "DEBUG: Store_user(): User = " << info.user_id.id << dendl;
+  ldpp_dout(dpp, 10) << "DEBUG: Store_user(): User = " << info.user_id.id
+                     << dendl;
   if (old_info) {
     *old_info = info;
   }
@@ -212,19 +225,57 @@ int DaosUser::remove_user(const DoutPrefixProvider* dpp, optional_yield y) {
   return 0;
 }
 
-int DaosBucket::refresh_handle(const DoutPrefixProvider* dpp) {
+int DaosBucket::open_handles(const DoutPrefixProvider* dpp) {
+  // Idempotent
+  if (handles_open) {
+    return 0;
+  }
+
   int ret;
   daos_cont_info_t cont_info;
-  ret = daos_cont_open(store->poh, info.bucket.name.c_str(), DAOS_COO_RW,
-                        &coh, &cont_info, nullptr);
-  ldpp_dout(dpp, 20) << "DEBUG: DaosBucket::refresh_handle(), name=" << info.bucket.name << ", ret=" << ret << dendl;
-  
-  if (ret < 0) {
+  ret = daos_cont_open(store->poh, info.bucket.name.c_str(), DAOS_COO_RW, &coh,
+                       &cont_info, nullptr);
+  ldpp_dout(dpp, 20) << "DEBUG: daos_cont_open, name=" << info.bucket.name
+                     << ", ret=" << ret << dendl;
+
+  if (ret != 0) {
     return -ENOENT;
   }
 
   uuid_copy(cont_uuid, cont_info.ci_uuid);
-  return ret;
+
+  ret = dfs_mount(store->poh, coh, O_RDWR, &dfs);
+  ldpp_dout(dpp, 20) << "DEBUG: dfs_mount ret=" << ret << dendl;
+
+  if (ret != 0) {
+    daos_cont_close(coh, nullptr);
+    return -ENOENT;
+  }
+  handles_open = true;
+  return 0;
+}
+
+int DaosBucket::close_handles(const DoutPrefixProvider* dpp) {
+  // Idempotent
+  if (!handles_open) {
+    return 0;
+  }
+
+  int ret = 0;
+  ret = dfs_umount(dfs);
+  ldpp_dout(dpp, 20) << "DEBUG: dfs_umount ret=" << ret << dendl;
+
+  if (ret < 0) {
+    return ret;
+  }
+
+  ret = daos_cont_close(coh, nullptr);
+  ldpp_dout(dpp, 20) << "DEBUG: daos_cont_close ret=" << ret << dendl;
+  if (ret < 0) {
+    return ret;
+  }
+  handles_open = false;
+  return 0;
 }
 
 int DaosBucket::remove_bucket(const DoutPrefixProvider* dpp,
@@ -249,9 +300,8 @@ int DaosBucket::put_info(const DoutPrefixProvider* dpp, bool exclusive,
   ldpp_dout(dpp, 20) << "DEBUG: put_info(): bucket name=" << info.bucket.name
                      << dendl;
 
-  int ret = refresh_handle(dpp);
+  int ret = open_handles(dpp);
   if (ret < 0) {
-    ldpp_dout(dpp, 0) << "ERROR: daos_cont_open failed: " << ret << dendl;
     return ret;
   }
 
@@ -270,14 +320,14 @@ int DaosBucket::put_info(const DoutPrefixProvider* dpp, bool exclusive,
   if (ret < 0) {
     ldpp_dout(dpp, 0) << "ERROR: daos_cont_set_attr failed: " << ret << dendl;
   }
-
+  ret = close_handles(dpp);
   return ret;
 }
 
 int DaosBucket::load_bucket(const DoutPrefixProvider* dpp, optional_yield y) {
   ldpp_dout(dpp, 20) << "DEBUG: load_bucket(): bucket name=" << info.bucket.name
                      << dendl;
-  int ret = refresh_handle(dpp);
+  int ret = open_handles(dpp);
   if (ret < 0) {
     return ret;
   }
@@ -308,7 +358,8 @@ int DaosBucket::load_bucket(const DoutPrefixProvider* dpp, optional_yield y) {
   mtime = dbinfo.mtime;
   bucket_version = dbinfo.bucket_version;
 
-  return 0;
+  ret = close_handles(dpp);
+  return ret;
 }
 
 /* stats - Not for first pass */
@@ -469,7 +520,7 @@ int DaosBucket::abort_multiparts(const DoutPrefixProvider* dpp,
 void DaosStore::finalize(void) {
   int rc;
   if (daos_handle_is_valid(poh)) {
-    rc = daos_pool_disconnect(poh, NULL);
+    rc = daos_pool_disconnect(poh, nullptr);
     if (rc != 0) {
       ldout(cctx, 0) << "ERROR: daos_pool_disconnect() failed: " << rc << dendl;
     }
@@ -763,13 +814,17 @@ DaosAtomicWriter::DaosAtomicWriter(
 
 static const unsigned MAX_BUFVEC_NR = 256;
 
-int DaosAtomicWriter::prepare(optional_yield y) { return 0; }
+int DaosAtomicWriter::prepare(optional_yield y) { 
+  return 0; 
+}
 
 // Accumulate enough data first to make a reasonable decision about the
 // optimal unit size for a new object, or bs for existing object (32M seems
 // enough for 4M units in 8+2 parity groups, a common config on wide pools),
 // and then launch the write operations.
-int DaosAtomicWriter::process(bufferlist&& data, uint64_t offset) { return 0; }
+int DaosAtomicWriter::process(bufferlist&& data, uint64_t offset) { 
+  return 0; 
+}
 
 int DaosAtomicWriter::complete(
     size_t accounted_size, const std::string& etag, ceph::real_time* mtime,
@@ -1139,7 +1194,7 @@ void* newDaosStore(CephContext* cct) {
     const auto& daos_pool = g_conf().get_val<std::string>("daos_pool");
     ldout(cct, 0) << "INFO: daos pool: " << daos_pool << dendl;
     daos_pool_info_t pool_info = {};
-    rc = daos_pool_connect(daos_pool.c_str(), nullptr, DAOS_PC_RO, &store->poh,
+    rc = daos_pool_connect(daos_pool.c_str(), nullptr, DAOS_PC_RW, &store->poh,
                            &pool_info, nullptr);
 
     if (rc != 0) {
