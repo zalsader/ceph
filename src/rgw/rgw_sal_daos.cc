@@ -225,7 +225,7 @@ int DaosUser::remove_user(const DoutPrefixProvider* dpp, optional_yield y) {
   return 0;
 }
 
-int DaosBucket::open_handles(const DoutPrefixProvider* dpp) {
+int DaosBucket::open(const DoutPrefixProvider* dpp) {
   // Idempotent
   if (handles_open) {
     return 0;
@@ -255,7 +255,7 @@ int DaosBucket::open_handles(const DoutPrefixProvider* dpp) {
   return 0;
 }
 
-int DaosBucket::close_handles(const DoutPrefixProvider* dpp) {
+int DaosBucket::close(const DoutPrefixProvider* dpp) {
   // Idempotent
   if (!handles_open) {
     return 0;
@@ -300,7 +300,7 @@ int DaosBucket::put_info(const DoutPrefixProvider* dpp, bool exclusive,
   ldpp_dout(dpp, 20) << "DEBUG: put_info(): bucket name=" << info.bucket.name
                      << dendl;
 
-  int ret = open_handles(dpp);
+  int ret = open(dpp);
   if (ret < 0) {
     return ret;
   }
@@ -320,14 +320,14 @@ int DaosBucket::put_info(const DoutPrefixProvider* dpp, bool exclusive,
   if (ret < 0) {
     ldpp_dout(dpp, 0) << "ERROR: daos_cont_set_attr failed: " << ret << dendl;
   }
-  ret = close_handles(dpp);
+  ret = close(dpp);
   return ret;
 }
 
 int DaosBucket::load_bucket(const DoutPrefixProvider* dpp, optional_yield y) {
   ldpp_dout(dpp, 20) << "DEBUG: load_bucket(): bucket name=" << info.bucket.name
                      << dendl;
-  int ret = open_handles(dpp);
+  int ret = open(dpp);
   if (ret < 0) {
     return ret;
   }
@@ -358,7 +358,7 @@ int DaosBucket::load_bucket(const DoutPrefixProvider* dpp, optional_yield y) {
   mtime = dbinfo.mtime;
   bucket_version = dbinfo.bucket_version;
 
-  ret = close_handles(dpp);
+  ret = close(dpp);
   return ret;
 }
 
@@ -570,18 +570,21 @@ int DaosObject::get_obj_state(const DoutPrefixProvider* dpp, RGWObjectCtx* rctx,
   return 0;
 }
 
-DaosObject::~DaosObject() { delete state; }
+DaosObject::~DaosObject() {
+  close();
+  delete state;
+}
 
-//  int DaosObject::read_attrs(const DoutPrefixProvider* dpp, Daos::Object::Read
-//  &read_op, optional_yield y, rgw_obj* target_obj)
-//  {
-//    read_op.params.attrs = &attrs;
-//    read_op.params.target_obj = target_obj;
-//    read_op.params.obj_size = &obj_size;
-//    read_op.params.lastmod = &mtime;
-//
-//    return read_op.prepare(dpp);
-//  }
+int DaosObject::read_attrs(const DoutPrefixProvider* dpp,
+                           Daos::Object::Read& read_op, optional_yield y,
+                           rgw_obj* target_obj) {
+  read_op.params.attrs = &attrs;
+  read_op.params.target_obj = target_obj;
+  read_op.params.obj_size = &obj_size;
+  read_op.params.lastmod = &mtime;
+
+  return read_op.prepare(dpp);
+}
 
 int DaosObject::set_obj_attrs(const DoutPrefixProvider* dpp, RGWObjectCtx* rctx,
                               Attrs* setattrs, Attrs* delattrs,
@@ -804,26 +807,77 @@ int DaosObject::swift_versioning_copy(RGWObjectCtx* obj_ctx,
   return 0;
 }
 
+int DaosObject::open(bool create) {
+  if (is_opened()) {
+    return 0;
+  }
+
+  int ret = 0;
+  std::string path = get_key().to_str();
+  DaosBucket* daos_bucket = static_cast<DaosBucket*>(get_bucket());
+  ret = daos_bucket->open(dpp);
+  if (ret != 0) {
+    return ret;
+  }
+
+  if (!create) {
+    if (path.front() != '/') path = "/" + path;
+    ret = dfs_lookup(daos_bucket->dfs, path.c_str(), O_RDWR, &dfs_obj, nullptr,
+                     nullptr);
+    ldout(store->cctx, 20) << "dfs_lookup path=" << path << " ret=" << ret
+                           << dendl;
+  } else {
+    // TODO recursively create parent directories
+    mode_t mode = S_IFREG | DEFFILEMODE;
+    ret = dfs_open(daos_bucket->dfs, nullptr, path.c_str(), mode,
+                   O_RDWR | O_CREAT, 0, 0, nullptr, &dfs_obj);
+    ldout(store->cctx, 20) << "dfs_open path=" << path << " ret=" << ret
+                           << dendl;
+  }
+  // XXX: should we close?
+  daos_bucket->close(dpp);
+  return ret;
+}
+
+int DaosObject::close() {
+  if (!is_opened()) {
+    return 0;
+  }
+
+  int ret = dfs_release(dfs_obj);
+  ldout(store->cctx, 20) << "dfs_release ret=" << ret << dendl;
+  return ret;
+}
+
 DaosAtomicWriter::DaosAtomicWriter(
     const DoutPrefixProvider* dpp, optional_yield y,
     std::unique_ptr<rgw::sal::Object> _head_obj, DaosStore* _store,
     const rgw_user& _owner, RGWObjectCtx& obj_ctx,
     const rgw_placement_rule* _ptail_placement_rule, uint64_t _olh_epoch,
     const std::string& _unique_tag)
-    : Writer(dpp, y), store(_store) {}
+    : Writer(dpp, y),
+      store(_store),
+      owner(_owner),
+      ptail_placement_rule(_ptail_placement_rule),
+      olh_epoch(_olh_epoch),
+      unique_tag(_unique_tag),
+      obj(_store, _head_obj->get_key(), _head_obj->get_bucket()) {}
 
-static const unsigned MAX_BUFVEC_NR = 256;
-
-int DaosAtomicWriter::prepare(optional_yield y) { 
-  return 0; 
+int DaosAtomicWriter::prepare(optional_yield y) {
+  if (obj.is_opened()) {
+    return 0;
+  }
+  int ret = obj.open();
+  return ret;
 }
 
 // Accumulate enough data first to make a reasonable decision about the
 // optimal unit size for a new object, or bs for existing object (32M seems
 // enough for 4M units in 8+2 parity groups, a common config on wide pools),
 // and then launch the write operations.
-int DaosAtomicWriter::process(bufferlist&& data, uint64_t offset) { 
-  return 0; 
+int DaosAtomicWriter::process(bufferlist&& data, uint64_t offset) {
+  //
+  return 0;
 }
 
 int DaosAtomicWriter::complete(

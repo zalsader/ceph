@@ -285,8 +285,8 @@ class DaosBucket : public Bucket {
   virtual int abort_multiparts(const DoutPrefixProvider* dpp,
                                CephContext* cct) override;
 
-  int open_handles(const DoutPrefixProvider* dpp);
-  int close_handles(const DoutPrefixProvider* dpp);
+  int open(const DoutPrefixProvider* dpp);
+  int close(const DoutPrefixProvider* dpp);
 
   friend class DaosStore;
 };
@@ -420,6 +420,8 @@ class DaosObject : public Object {
                            optional_yield y) override;
   };
 
+  dfs_obj_t* dfs_obj;
+
   DaosObject() = default;
 
   DaosObject(DaosStore* _st, const rgw_obj_key& _k)
@@ -517,6 +519,12 @@ class DaosObject : public Object {
   virtual int omap_set_val_by_key(const DoutPrefixProvider* dpp,
                                   const std::string& key, bufferlist& val,
                                   bool must_exist, optional_yield y) override;
+
+  bool is_opened() { return dfs_obj == nullptr; };
+
+  int open(bool create);
+
+  int close();
 };
 
 // A placeholder locking class for multipart upload.
@@ -535,6 +543,14 @@ class MPDaosSerializer : public MPSerializer {
 class DaosAtomicWriter : public Writer {
  protected:
   rgw::sal::DaosStore* store;
+  const rgw_user& owner;
+  const rgw_placement_rule* ptail_placement_rule;
+  uint64_t olh_epoch;
+  const std::string& unique_tag;
+  DaosObject obj;
+  uint64_t total_data_size = 0;  // for total data being uploaded
+  bufferlist acc_bl;             // accumulated data
+  uint64_t acc_off;              // accumulated data offset
 
  public:
   DaosAtomicWriter(const DoutPrefixProvider* dpp, optional_yield y,
