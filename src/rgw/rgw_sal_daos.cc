@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 
+#include <boost/algorithm/string.hpp>
 #include <sstream>
 #include <system_error>
 
@@ -814,16 +815,55 @@ int DaosObject::open(const DoutPrefixProvider* dpp, bool create) {
     ret = dfs_lookup(daos_bucket->dfs, path.c_str(), O_RDWR, &dfs_obj, nullptr,
                      nullptr);
     ldpp_dout(dpp, 20) << "DEBUG dfs_lookup path=" << path << " ret=" << ret
-                           << dendl;
+                       << dendl;
   } else {
-    // TODO recursively create parent directories
-    mode_t mode = S_IFREG | DEFFILEMODE;
-    ret = dfs_open(daos_bucket->dfs, nullptr, path.c_str(), mode,
-                   O_RDWR | O_CREAT, 0, 0, nullptr, &dfs_obj);
-    ldpp_dout(dpp, 20) << "DEBUG dfs_open path=" << path << " ret=" << ret
+    dfs_obj_t* parent = nullptr;
+    std::string file_name = path;
+
+    size_t file_start = path.rfind("/");
+    mode_t mode = DEFFILEMODE;
+
+    if (file_start != std::string::npos) {
+      // Recursively create parent directories
+      std::string parent_path = path.substr(0, file_start);
+      file_name = path.substr(file_start + 1);
+      vector<string> dirs;
+      boost::split(dirs, parent_path, boost::is_any_of("/"));
+      dfs_obj_t* dir_obj;
+
+      for (const auto& dir : dirs) {
+        ret = dfs_mkdir(daos_bucket->dfs, parent, dir.c_str(), mode, 0);
+        ldpp_dout(dpp, 20) << "DEBUG dfs_mkdir dir=" << dir << " ret=" << ret
                            << dendl;
+        if (ret != 0 && ret != EEXIST) {
+          return ret;
+        }
+        ret = dfs_lookup_rel(daos_bucket->dfs, parent, dir.c_str(), O_RDWR,
+                             &dir_obj, nullptr, nullptr);
+        ldpp_dout(dpp, 20) << "DEBUG dfs_lookup_rel dir=" << dir
+                           << " ret=" << ret << dendl;
+        if (ret != 0) {
+          return ret;
+        }
+        if (parent) {
+          ret = dfs_release(parent);
+          ldpp_dout(dpp, 20) << "DEBUG dfs_release ret=" << ret << dendl;
+        }
+        parent = dir_obj;
+      }
+    }
+
+    // Finally create the file
+    ret = dfs_open(daos_bucket->dfs, parent, file_name.c_str(), S_IFREG | mode,
+                   O_RDWR | O_CREAT, 0, 0, nullptr, &dfs_obj);
+    ldpp_dout(dpp, 20) << "DEBUG dfs_open file_name=" << file_name
+                       << " ret=" << ret << dendl;
+    if (parent) {
+      ret = dfs_release(parent);
+      ldpp_dout(dpp, 20) << "DEBUG dfs_release ret=" << ret << dendl;
+    }
   }
-  if (ret == 0) {
+  if (ret == 0 || ret == EEXIST) {
     _is_open = true;
   }
   return ret;
@@ -835,7 +875,7 @@ int DaosObject::close(const DoutPrefixProvider* dpp) {
   }
 
   int ret = dfs_release(dfs_obj);
-  ldpp_dout(dpp, 20) << "dfs_release ret=" << ret << dendl;
+  ldpp_dout(dpp, 20) << "DEBUG dfs_release ret=" << ret << dendl;
 
   if (ret == 0) {
     _is_open = false;
@@ -879,6 +919,12 @@ int DaosAtomicWriter::process(bufferlist&& data, uint64_t offset) {
   int ret = 0;
   if (!obj.is_open()) {
     ret = obj.open(dpp, true);
+    if (ret != 0) {
+      ldpp_dout(dpp, 0) << "ERROR: failed to open daos object ("
+                        << obj.get_bucket()->get_name() << "/"
+                        << obj.get_key().to_str() << "): ret=" << ret << dendl;
+    }
+    return ret;
   }
 
   // XXX: Combine multiple streams into one as motr does
@@ -894,7 +940,7 @@ int DaosAtomicWriter::process(bufferlist&& data, uint64_t offset) {
                       << obj.get_bucket()->get_name() << "/"
                       << obj.get_key().to_str() << "): ret=" << ret << dendl;
   }
-  total_data_size+=data.length();
+  total_data_size += data.length();
   return ret;
 }
 
