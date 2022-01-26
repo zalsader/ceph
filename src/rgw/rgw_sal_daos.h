@@ -146,7 +146,7 @@ class DaosBucket : public Bucket {
  private:
   DaosStore* store;
   RGWAccessControlPolicy acls;
-  bool handles_open;
+  bool _is_open = false;
 
   // RGWBucketInfo and other information that are shown when listing a bucket is
   // represented in struct DaosBucketInfo. The structure is encoded and stored
@@ -208,7 +208,7 @@ class DaosBucket : public Bucket {
   DaosBucket(DaosStore* _st, const RGWBucketInfo& _i, User* _u)
       : Bucket(_i, _u), store(_st), acls() {}
 
-  ~DaosBucket() {}
+  ~DaosBucket();
 
   virtual std::unique_ptr<Object> get_object(const rgw_obj_key& k) override;
   virtual int list(const DoutPrefixProvider* dpp, ListParams&, int,
@@ -287,6 +287,7 @@ class DaosBucket : public Bucket {
 
   int open(const DoutPrefixProvider* dpp);
   int close(const DoutPrefixProvider* dpp);
+  bool is_open() { return _is_open; }
 
   friend class DaosStore;
 };
@@ -388,6 +389,7 @@ class DaosObject : public Object {
    * for RGWObjState
    */
   RGWObjState* state;
+  bool _is_open = false;
 
  public:
   struct DaosReadOp : public ReadOp {
@@ -520,11 +522,12 @@ class DaosObject : public Object {
                                   const std::string& key, bufferlist& val,
                                   bool must_exist, optional_yield y) override;
 
-  bool is_opened() { return dfs_obj == nullptr; };
-
-  int open(bool create);
-
-  int close();
+  bool is_open() { return _is_open; };
+  int open(const DoutPrefixProvider* dpp, bool create);
+  int close(const DoutPrefixProvider* dpp);
+  DaosBucket* get_daos_bucket() {
+    return static_cast<DaosBucket*>(get_bucket());
+  }
 };
 
 // A placeholder locking class for multipart upload.
@@ -549,8 +552,6 @@ class DaosAtomicWriter : public Writer {
   const std::string& unique_tag;
   DaosObject obj;
   uint64_t total_data_size = 0;  // for total data being uploaded
-  bufferlist acc_bl;             // accumulated data
-  uint64_t acc_off;              // accumulated data offset
 
  public:
   DaosAtomicWriter(const DoutPrefixProvider* dpp, optional_yield y,

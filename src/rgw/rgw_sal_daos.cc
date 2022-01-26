@@ -38,8 +38,6 @@ using std::set;
 using std::string;
 using std::vector;
 
-static string mp_ns = RGW_OBJ_NS_MULTIPART;
-
 namespace rgw::sal {
 
 using ::ceph::decode;
@@ -225,9 +223,11 @@ int DaosUser::remove_user(const DoutPrefixProvider* dpp, optional_yield y) {
   return 0;
 }
 
+DaosBucket::~DaosBucket() { close(nullptr); }
+
 int DaosBucket::open(const DoutPrefixProvider* dpp) {
   // Idempotent
-  if (handles_open) {
+  if (_is_open) {
     return 0;
   }
 
@@ -251,13 +251,13 @@ int DaosBucket::open(const DoutPrefixProvider* dpp) {
     daos_cont_close(coh, nullptr);
     return -ENOENT;
   }
-  handles_open = true;
+  _is_open = true;
   return 0;
 }
 
 int DaosBucket::close(const DoutPrefixProvider* dpp) {
   // Idempotent
-  if (!handles_open) {
+  if (!_is_open) {
     return 0;
   }
 
@@ -274,7 +274,7 @@ int DaosBucket::close(const DoutPrefixProvider* dpp) {
   if (ret < 0) {
     return ret;
   }
-  handles_open = false;
+  _is_open = false;
   return 0;
 }
 
@@ -571,19 +571,8 @@ int DaosObject::get_obj_state(const DoutPrefixProvider* dpp, RGWObjectCtx* rctx,
 }
 
 DaosObject::~DaosObject() {
-  close();
+  close(nullptr);
   delete state;
-}
-
-int DaosObject::read_attrs(const DoutPrefixProvider* dpp,
-                           Daos::Object::Read& read_op, optional_yield y,
-                           rgw_obj* target_obj) {
-  read_op.params.attrs = &attrs;
-  read_op.params.target_obj = target_obj;
-  read_op.params.obj_size = &obj_size;
-  read_op.params.lastmod = &mtime;
-
-  return read_op.prepare(dpp);
 }
 
 int DaosObject::set_obj_attrs(const DoutPrefixProvider* dpp, RGWObjectCtx* rctx,
@@ -807,14 +796,14 @@ int DaosObject::swift_versioning_copy(RGWObjectCtx* obj_ctx,
   return 0;
 }
 
-int DaosObject::open(bool create) {
-  if (is_opened()) {
+int DaosObject::open(const DoutPrefixProvider* dpp, bool create) {
+  if (is_open()) {
     return 0;
   }
 
   int ret = 0;
   std::string path = get_key().to_str();
-  DaosBucket* daos_bucket = static_cast<DaosBucket*>(get_bucket());
+  DaosBucket* daos_bucket = get_daos_bucket();
   ret = daos_bucket->open(dpp);
   if (ret != 0) {
     return ret;
@@ -824,28 +813,33 @@ int DaosObject::open(bool create) {
     if (path.front() != '/') path = "/" + path;
     ret = dfs_lookup(daos_bucket->dfs, path.c_str(), O_RDWR, &dfs_obj, nullptr,
                      nullptr);
-    ldout(store->cctx, 20) << "dfs_lookup path=" << path << " ret=" << ret
+    ldpp_dout(dpp, 20) << "DEBUG dfs_lookup path=" << path << " ret=" << ret
                            << dendl;
   } else {
     // TODO recursively create parent directories
     mode_t mode = S_IFREG | DEFFILEMODE;
     ret = dfs_open(daos_bucket->dfs, nullptr, path.c_str(), mode,
                    O_RDWR | O_CREAT, 0, 0, nullptr, &dfs_obj);
-    ldout(store->cctx, 20) << "dfs_open path=" << path << " ret=" << ret
+    ldpp_dout(dpp, 20) << "DEBUG dfs_open path=" << path << " ret=" << ret
                            << dendl;
   }
-  // XXX: should we close?
-  daos_bucket->close(dpp);
+  if (ret == 0) {
+    _is_open = true;
+  }
   return ret;
 }
 
-int DaosObject::close() {
-  if (!is_opened()) {
+int DaosObject::close(const DoutPrefixProvider* dpp) {
+  if (!is_open()) {
     return 0;
   }
 
   int ret = dfs_release(dfs_obj);
-  ldout(store->cctx, 20) << "dfs_release ret=" << ret << dendl;
+  ldpp_dout(dpp, 20) << "dfs_release ret=" << ret << dendl;
+
+  if (ret == 0) {
+    _is_open = false;
+  }
   return ret;
 }
 
@@ -864,20 +858,44 @@ DaosAtomicWriter::DaosAtomicWriter(
       obj(_store, _head_obj->get_key(), _head_obj->get_bucket()) {}
 
 int DaosAtomicWriter::prepare(optional_yield y) {
-  if (obj.is_opened()) {
+  if (obj.is_open()) {
     return 0;
   }
-  int ret = obj.open();
+  int ret = obj.open(dpp, true);
+  if (ret != 0) {
+    ldpp_dout(dpp, 0) << "ERROR: failed to open daos object ("
+                      << obj.get_bucket()->get_name() << "/"
+                      << obj.get_key().to_str() << "): ret=" << ret << dendl;
+  }
   return ret;
 }
 
-// Accumulate enough data first to make a reasonable decision about the
-// optimal unit size for a new object, or bs for existing object (32M seems
-// enough for 4M units in 8+2 parity groups, a common config on wide pools),
-// and then launch the write operations.
+// XXX: Do we need to accumulate writes as motr does?
 int DaosAtomicWriter::process(bufferlist&& data, uint64_t offset) {
-  //
-  return 0;
+  if (data.length() == 0) {
+    return 0;
+  }
+
+  int ret = 0;
+  if (!obj.is_open()) {
+    ret = obj.open(dpp, true);
+  }
+
+  // XXX: Combine multiple streams into one as motr does
+  d_sg_list_t wsgl;
+  d_iov_t iov;
+  d_iov_set(&iov, data.c_str(), data.length());
+  wsgl.sg_nr = 1;
+  wsgl.sg_iovs = &iov;
+  ret = dfs_write(obj.get_daos_bucket()->dfs, obj.dfs_obj, &wsgl, offset,
+                  nullptr);
+  if (ret != 0) {
+    ldpp_dout(dpp, 0) << "ERROR: failed to write into daos object ("
+                      << obj.get_bucket()->get_name() << "/"
+                      << obj.get_key().to_str() << "): ret=" << ret << dendl;
+  }
+  total_data_size+=data.length();
+  return ret;
 }
 
 int DaosAtomicWriter::complete(
@@ -886,6 +904,8 @@ int DaosAtomicWriter::complete(
     ceph::real_time delete_at, const char* if_match, const char* if_nomatch,
     const std::string* user_data, rgw_zone_set* zones_trace, bool* canceled,
     optional_yield y) {
+  // XXX: set metadata
+  obj.close(dpp);
   return 0;
 }
 
