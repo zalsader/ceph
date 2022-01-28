@@ -423,11 +423,11 @@ int DaosBucket::check_quota(const DoutPrefixProvider* dpp,
 
 int DaosBucket::merge_and_store_attrs(const DoutPrefixProvider* dpp,
                                       Attrs& new_attrs, optional_yield y) {
-  int ret = Bucket::merge_and_store_attrs(dpp, new_attrs, y);
+  for (auto& it : new_attrs) {
+    attrs[it.first] = it.second;
+  }
 
-  /* XXX: handle has_instance_obj like in set_bucket_instance_attrs() */
-
-  return ret;
+  return put_info(dpp, y, ceph::real_time());
 }
 
 int DaosBucket::try_refresh_info(const DoutPrefixProvider* dpp,
@@ -1218,7 +1218,7 @@ std::unique_ptr<Completions> DaosStore::get_completions(void) { return 0; }
 std::unique_ptr<Notification> DaosStore::get_notification(
     rgw::sal::Object* obj, rgw::sal::Object* src_obj, struct req_state* s,
     rgw::notify::EventType event_type, const std::string* object_name) {
-  return std::make_unique<DaosNotification>(obj, event_type);
+  return std::make_unique<DaosNotification>(obj, src_obj, event_type);
 }
 
 std::unique_ptr<Notification> DaosStore::get_notification(
@@ -1253,8 +1253,7 @@ void DaosStore::get_quota(RGWQuotaInfo& bucket_quota,
 
 void DaosStore::get_ratelimit(RGWRateLimitInfo& bucket_ratelimit,
                               RGWRateLimitInfo& user_ratelimit,
-                              RGWRateLimitInfo& anon_ratelimit)
-{
+                              RGWRateLimitInfo& anon_ratelimit) {
   return;
 }
 
