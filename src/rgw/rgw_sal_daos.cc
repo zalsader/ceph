@@ -210,6 +210,14 @@ int DaosUser::load_user(const DoutPrefixProvider* dpp, optional_yield y) {
   return 0;
 }
 
+int DaosUser::merge_and_store_attrs(const DoutPrefixProvider* dpp,
+                                    Attrs& new_attrs, optional_yield y) {
+  for (auto& it : new_attrs) {
+    attrs[it.first] = it.second;
+  }
+  return store_user(dpp, y, false);
+}
+
 int DaosUser::store_user(const DoutPrefixProvider* dpp, optional_yield y,
                          bool exclusive, RGWUserInfo* old_info) {
   ldpp_dout(dpp, 10) << "DEBUG: Store_user(): User = " << info.user_id.id
@@ -325,7 +333,8 @@ int DaosBucket::put_info(const DoutPrefixProvider* dpp, bool exclusive,
   return ret;
 }
 
-int DaosBucket::load_bucket(const DoutPrefixProvider* dpp, optional_yield y) {
+int DaosBucket::load_bucket(const DoutPrefixProvider* dpp, optional_yield y,
+                            bool get_stats) {
   ldpp_dout(dpp, 20) << "DEBUG: load_bucket(): bucket name=" << info.bucket.name
                      << dendl;
   int ret = open(dpp);
@@ -1207,9 +1216,17 @@ std::unique_ptr<Lifecycle> DaosStore::get_lifecycle(void) { return 0; }
 std::unique_ptr<Completions> DaosStore::get_completions(void) { return 0; }
 
 std::unique_ptr<Notification> DaosStore::get_notification(
-    rgw::sal::Object* obj, struct req_state* s,
+    rgw::sal::Object* obj, rgw::sal::Object* src_obj, struct req_state* s,
     rgw::notify::EventType event_type, const std::string* object_name) {
   return std::make_unique<DaosNotification>(obj, event_type);
+}
+
+std::unique_ptr<Notification> DaosStore::get_notification(
+    const DoutPrefixProvider* dpp, Object* obj, Object* src_obj,
+    RGWObjectCtx* rctx, rgw::notify::EventType event_type,
+    rgw::sal::Bucket* _bucket, std::string& _user_id, std::string& _user_tenant,
+    std::string& _req_id, optional_yield y) {
+  return std::make_unique<DaosNotification>(obj, src_obj, event_type);
 }
 
 int DaosStore::log_usage(const DoutPrefixProvider* dpp,
@@ -1231,6 +1248,13 @@ int DaosStore::register_to_service_map(const DoutPrefixProvider* dpp,
 void DaosStore::get_quota(RGWQuotaInfo& bucket_quota,
                           RGWQuotaInfo& user_quota) {
   // XXX: Not handled for the first pass
+  return;
+}
+
+void DaosStore::get_ratelimit(RGWRateLimitInfo& bucket_ratelimit,
+                              RGWRateLimitInfo& user_ratelimit,
+                              RGWRateLimitInfo& anon_ratelimit)
+{
   return;
 }
 
