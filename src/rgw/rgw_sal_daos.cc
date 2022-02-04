@@ -864,7 +864,7 @@ int DaosObject::open(const DoutPrefixProvider* dpp, bool create) {
 
     // Finally create the file
     ret = dfs_open(daos_bucket->dfs, parent, file_name.c_str(), S_IFREG | mode,
-                   O_RDWR | O_CREAT, 0, 0, nullptr, &dfs_obj);
+                   O_RDWR | O_CREAT | O_TRUNC, 0, 0, nullptr, &dfs_obj);
     ldpp_dout(dpp, 20) << "DEBUG dfs_open file_name=" << file_name
                        << " ret=" << ret << dendl;
     if (parent) {
