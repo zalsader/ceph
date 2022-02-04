@@ -709,13 +709,48 @@ int DaosObject::DaosReadOp::prepare(optional_yield y,
   ldpp_dout(dpp, 20) << __func__
                      << ": bucket=" << source->get_bucket()->get_name()
                      << dendl;
-  
+
   int ret = source->open(dpp, false);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to open daos object ("
                       << source->get_bucket()->get_name() << "/"
-                      << source->get_key().to_str() << "): ret=" << ret << dendl;
+                      << source->get_key().to_str() << "): ret=" << ret
+                      << dendl;
+    return ret;
   }
+
+  vector<uint8_t> value(DFS_MAX_XATTR_LEN);
+  size_t size = value.size();
+  dfs_getxattr(source->get_daos_bucket()->dfs, source->dfs_obj, "rgw_entry",
+               value.data(), &size);
+  if (ret != 0) {
+    ldpp_dout(dpp, 0) << "ERROR: failed to get xattr of daos object ("
+                      << source->get_bucket()->get_name() << "/"
+                      << source->get_key().to_str() << "): ret=" << ret
+                      << dendl;
+    return ret;
+  }
+
+  bufferlist bl;
+  rgw_bucket_dir_entry ent;
+  bl.append(reinterpret_cast<char*>(value.data()), size);
+  auto iter = bl.cbegin();
+  ent.decode(iter);
+
+  // Set source object's attrs. The attrs is key/value map and is used
+  // in send_response_data() to set attributes, including etag.
+  bufferlist etag_bl;
+  string& etag = ent.meta.etag;
+  ldpp_dout(dpp, 20) << __func__ << ": object's etag: " << ent.meta.etag
+                     << dendl;
+  etag_bl.append(etag.c_str(), etag.size());
+  source->get_attrs().emplace(std::move(RGW_ATTR_ETAG), std::move(etag_bl));
+
+  source->set_key(ent.key);
+  source->set_obj_size(ent.meta.size);
+  ldpp_dout(dpp, 20) << __func__ << ": object's size: " << ent.meta.size
+                     << dendl;
+
   return ret;
 }
 
@@ -737,13 +772,15 @@ int DaosObject::DaosReadOp::read(int64_t off, int64_t end, bufferlist& bl,
 int DaosObject::DaosReadOp::iterate(const DoutPrefixProvider* dpp, int64_t off,
                                     int64_t end, RGWGetDataCB* cb,
                                     optional_yield y) {
+  ldpp_dout(dpp, 20) << __func__ << ": off=" << off << " end=" << end << dendl;
   int ret = 0;
   if (!source->is_open()) {
     ret = source->open(dpp, false);
     if (ret != 0) {
       ldpp_dout(dpp, 0) << "ERROR: failed to open daos object ("
                         << source->get_bucket()->get_name() << "/"
-                        << source->get_key().to_str() << "): ret=" << ret << dendl;
+                        << source->get_key().to_str() << "): ret=" << ret
+                        << dendl;
     }
     return ret;
   }
@@ -752,27 +789,28 @@ int DaosObject::DaosReadOp::iterate(const DoutPrefixProvider* dpp, int64_t off,
   uint64_t size = end - off + 1;
 
   // Reserve buffers
-  bufferlist bl(size);
+  bufferlist bl;
   d_iov_t iov;
   d_sg_list_t rsgl;
-  d_iov_set(&iov, bl.c_str(), bl.length());
+  d_iov_set(&iov, bl.append_hole(size).c_str(), size);
   rsgl.sg_nr = 1;
   rsgl.sg_iovs = &iov;
   rsgl.sg_nr_out = 1;
 
   uint64_t actual;
-  ret = dfs_read(source->get_daos_bucket()->dfs, source->dfs_obj, &rsgl, off, &actual,
-                  nullptr);
+  ret = dfs_read(source->get_daos_bucket()->dfs, source->dfs_obj, &rsgl, off,
+                 &actual, nullptr);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to read from daos object ("
                       << source->get_bucket()->get_name() << "/"
-                      << source->get_key().to_str() << "): ret=" << ret << dendl;
+                      << source->get_key().to_str() << "): ret=" << ret
+                      << dendl;
     return ret;
   }
 
   // Call cb to process returned data.
   ldpp_dout(dpp, 20) << __func__
-                     << ": call cb to process data" << dendl;
+                     << ": call cb to process data, actual=" << actual << dendl;
   cb->handle_data(bl, off, actual);
   return ret;
 }
@@ -1002,9 +1040,82 @@ int DaosAtomicWriter::complete(
     ceph::real_time delete_at, const char* if_match, const char* if_nomatch,
     const std::string* user_data, rgw_zone_set* zones_trace, bool* canceled,
     optional_yield y) {
-  // XXX: set metadata
+  bufferlist bl;
+  rgw_bucket_dir_entry ent;
+
+  // Set rgw_bucet_dir_entry. Some of the members of this structure may not
+  // apply to daos.
+  //
+  // Checkout AtomicObjectProcessor::complete() in rgw_putobj_processor.cc
+  // and RGWRados::Object::Write::write_meta() in rgw_rados.cc for what and
+  // how to set the dir entry. Only set the basic ones for POC, no ACLs and
+  // other attrs.
+  obj.get_key().get_index_key(&ent.key);
+  ent.meta.size = total_data_size;
+  ent.meta.accounted_size = total_data_size;
+  ent.meta.mtime =
+      real_clock::is_zero(set_mtime) ? ceph::real_clock::now() : set_mtime;
+  ent.meta.etag = etag;
+  ent.meta.owner = owner.to_str();
+  ent.meta.owner_display_name =
+      obj.get_bucket()->get_owner()->get_display_name();
+  bool is_versioned = obj.get_key().have_instance();
+  if (is_versioned)
+    ent.flags =
+        rgw_bucket_dir_entry::FLAG_VER | rgw_bucket_dir_entry::FLAG_CURRENT;
+  ldpp_dout(dpp, 20) << __func__ << ": key=" << obj.get_key().to_str()
+                     << " etag: " << etag << " user_data=" << user_data
+                     << dendl;
+  if (user_data) ent.meta.user_data = *user_data;
+  ent.encode(bl);
+
+  RGWBucketInfo& info = obj.get_bucket()->get_info();
+  if (info.obj_lock_enabled() && info.obj_lock.has_rule()) {
+    auto iter = attrs.find(RGW_ATTR_OBJECT_RETENTION);
+    if (iter == attrs.end()) {
+      real_time lock_until_date =
+          info.obj_lock.get_lock_until_date(ent.meta.mtime);
+      string mode = info.obj_lock.get_mode();
+      RGWObjectRetention obj_retention(mode, lock_until_date);
+      bufferlist retention_bl;
+      obj_retention.encode(retention_bl);
+      attrs[RGW_ATTR_OBJECT_RETENTION] = retention_bl;
+    }
+  }
+  encode(attrs, bl);
+
+  // TODO implement versioning
+  // if (is_versioned) {
+    // get the list of all versioned objects with the same key and
+    // unset their FLAG_CURRENT later, if do_idx_op_by_name() is successful.
+    // Note: without distributed lock on the index - it is possible that 2
+    // CURRENT entries would appear in the bucket. For example, consider the
+    // following scenario when two clients are trying to add the new object
+    // version concurrently:
+    //   client 1: reads all the CURRENT entries
+    //   client 2: updates the index and sets the new CURRENT
+    //   client 1: updates the index and sets the new CURRENT
+    // At the step (1) client 1 would not see the new current record from step (2),
+    // so it won't update it. As a result, two CURRENT version entries will appear
+    // in the bucket.
+    // TODO: update the current version (unset the flag) and insert the new current
+    // version can be launched in one motr op. This requires change at do_idx_op()
+    // and do_idx_op_by_name().
+    // int rc = obj.update_version_entries(dpp);
+    // if (rc < 0)
+    //   return rc;
+  // }
+
+  // Add rgw_bucket_dir_entry into object xattr
+  int ret = dfs_setxattr(obj.get_daos_bucket()->dfs, obj.dfs_obj, "rgw_entry",
+                         bl.c_str(), bl.length(), 0);
+  if (ret != 0) {
+    ldpp_dout(dpp, 0) << "ERROR: failed to set xattr of daos object ("
+                      << obj.get_bucket()->get_name() << "/"
+                      << obj.get_key().to_str() << "): ret=" << ret << dendl;
+  }
   obj.close(dpp);
-  return 0;
+  return ret;
 }
 
 int DaosMultipartUpload::delete_parts(const DoutPrefixProvider* dpp) {
