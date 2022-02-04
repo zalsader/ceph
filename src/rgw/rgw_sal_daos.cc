@@ -709,8 +709,14 @@ int DaosObject::DaosReadOp::prepare(optional_yield y,
   ldpp_dout(dpp, 20) << __func__
                      << ": bucket=" << source->get_bucket()->get_name()
                      << dendl;
-
-  return 0;
+  
+  int ret = source->open(dpp, false);
+  if (ret != 0) {
+    ldpp_dout(dpp, 0) << "ERROR: failed to open daos object ("
+                      << source->get_bucket()->get_name() << "/"
+                      << source->get_key().to_str() << "): ret=" << ret << dendl;
+  }
+  return ret;
 }
 
 int DaosObject::DaosReadOp::read(int64_t off, int64_t end, bufferlist& bl,
@@ -731,7 +737,44 @@ int DaosObject::DaosReadOp::read(int64_t off, int64_t end, bufferlist& bl,
 int DaosObject::DaosReadOp::iterate(const DoutPrefixProvider* dpp, int64_t off,
                                     int64_t end, RGWGetDataCB* cb,
                                     optional_yield y) {
-  return 0;
+  int ret = 0;
+  if (!source->is_open()) {
+    ret = source->open(dpp, false);
+    if (ret != 0) {
+      ldpp_dout(dpp, 0) << "ERROR: failed to open daos object ("
+                        << source->get_bucket()->get_name() << "/"
+                        << source->get_key().to_str() << "): ret=" << ret << dendl;
+    }
+    return ret;
+  }
+
+  // Calculate size, end is inclusive
+  uint64_t size = end - off + 1;
+
+  // Reserve buffers
+  bufferlist bl(size);
+  d_iov_t iov;
+  d_sg_list_t rsgl;
+  d_iov_set(&iov, bl.c_str(), bl.length());
+  rsgl.sg_nr = 1;
+  rsgl.sg_iovs = &iov;
+  rsgl.sg_nr_out = 1;
+
+  uint64_t actual;
+  ret = dfs_read(source->get_daos_bucket()->dfs, source->dfs_obj, &rsgl, off, &actual,
+                  nullptr);
+  if (ret != 0) {
+    ldpp_dout(dpp, 0) << "ERROR: failed to read from daos object ("
+                      << source->get_bucket()->get_name() << "/"
+                      << source->get_key().to_str() << "): ret=" << ret << dendl;
+    return ret;
+  }
+
+  // Call cb to process returned data.
+  ldpp_dout(dpp, 20) << __func__
+                     << ": call cb to process data" << dendl;
+  cb->handle_data(bl, off, actual);
+  return ret;
 }
 
 int DaosObject::DaosReadOp::get_attr(const DoutPrefixProvider* dpp,
@@ -910,9 +953,6 @@ DaosAtomicWriter::DaosAtomicWriter(
       obj(_store, _head_obj->get_key(), _head_obj->get_bucket()) {}
 
 int DaosAtomicWriter::prepare(optional_yield y) {
-  if (obj.is_open()) {
-    return 0;
-  }
   int ret = obj.open(dpp, true);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to open daos object ("

@@ -38,12 +38,6 @@ namespace rgw::sal {
 
 class DaosStore;
 
-// Global Daos indices
-#define RGW_DAOS_USERS_IDX_NAME "daos.rgw.users"
-#define RGW_DAOS_BUCKET_INST_IDX_NAME "daos.rgw.bucket.instances"
-#define RGW_DAOS_BUCKET_HD_IDX_NAME "daos.rgw.bucket.headers"
-//#define RGW_DAOS_BUCKET_ACL_IDX_NAME  "daos.rgw.bucket.acls"
-
 struct DaosUserInfo {
   RGWUserInfo info;
   obj_version user_version;
