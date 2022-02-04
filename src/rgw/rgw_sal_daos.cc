@@ -6,7 +6,7 @@
  *
  * SAL implementation for the CORTX DAOS backend
  *
- * Copyright (C) 2021 Seagate Technology LLC and/or its Affiliates
+ * Copyright (C) 2022 Seagate Technology LLC and/or its Affiliates
  *
  * This is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -242,6 +242,7 @@ int DaosBucket::open(const DoutPrefixProvider* dpp) {
 
   int ret;
   daos_cont_info_t cont_info;
+  // TODO: We need to cache open container handles
   ret = daos_cont_open(store->poh, info.bucket.name.c_str(), DAOS_COO_RW, &coh,
                        &cont_info, nullptr);
   ldpp_dout(dpp, 20) << "DEBUG: daos_cont_open, name=" << info.bucket.name
@@ -325,6 +326,7 @@ int DaosBucket::put_info(const DoutPrefixProvider* dpp, bool exclusive,
   char const* const names[] = {"rgw_info"};
   void const* const values[] = {bl.c_str()};
   size_t const sizes[] = {bl.length()};
+  // TODO: separate attributes
   ret = daos_cont_set_attr(coh, 1, names, values, sizes, nullptr);
   if (ret < 0) {
     ldpp_dout(dpp, 0) << "ERROR: daos_cont_set_attr failed: " << ret << dendl;
@@ -819,6 +821,7 @@ int DaosObject::open(const DoutPrefixProvider* dpp, bool create) {
     return ret;
   }
 
+  // TODO: perhaps cache open file handles
   if (!create) {
     if (path.front() != '/') path = "/" + path;
     ret = dfs_lookup(daos_bucket->dfs, path.c_str(), O_RDWR, &dfs_obj, nullptr,
@@ -927,7 +930,7 @@ int DaosAtomicWriter::process(bufferlist&& data, uint64_t offset) {
 
   int ret = 0;
   if (!obj.is_open()) {
-    ret = obj.open(dpp, true);
+    ret = obj.open(dpp, false);
     if (ret != 0) {
       ldpp_dout(dpp, 0) << "ERROR: failed to open daos object ("
                         << obj.get_bucket()->get_name() << "/"
