@@ -44,6 +44,8 @@ namespace rgw::sal {
 using ::ceph::decode;
 using ::ceph::encode;
 
+#define RGW_DIR_ENTRY_XATTR "rgw_entry"
+
 int DaosUser::list_buckets(const DoutPrefixProvider* dpp, const string& marker,
                            const string& end_marker, uint64_t max,
                            bool need_stats, BucketList& buckets,
@@ -506,12 +508,119 @@ std::unique_ptr<Object> DaosBucket::get_object(const rgw_obj_key& k) {
 
 int DaosBucket::list(const DoutPrefixProvider* dpp, ListParams& params, int max,
                      ListResults& results, optional_yield y) {
-  vector<string> keys(max);
-  vector<bufferlist> vals(max);
-
   ldpp_dout(dpp, 20) << "DEBUG: list bucket=" << info.bucket.name
-                     << " prefix=" << params.prefix
-                     << " marker=" << params.marker << " max=" << max << dendl;
+                     << " max=" << max << " params=" << params << dendl;
+
+  // TODO: support the case when delim is not /
+  if (params.delim != "/") {
+    return -EINVAL;
+  }
+
+  // End
+  if (max == 0) {
+    return 0;
+  }
+
+  int ret = open(dpp);
+  if (ret < 0) {
+    return ret;
+  }
+
+  size_t file_start = params.prefix.rfind(params.delim);
+  string path = "";
+  string prefix_rest = params.prefix;
+
+  if (file_start != std::string::npos) {
+    path = params.prefix.substr(0, file_start);
+    prefix_rest = params.prefix.substr(file_start + params.delim.length());
+  }
+
+  dfs_obj_t* dir_obj;
+
+  string lookup_path = "/" + path;
+  ret =
+      dfs_lookup(dfs, lookup_path.c_str(), O_RDWR, &dir_obj, nullptr, nullptr);
+
+  ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup lookup_path=" << lookup_path
+                     << " ret=" << ret << dendl;
+  if (ret != 0) {
+    return ret;
+  }
+
+  vector<struct dirent> dirents(max);
+  // TODO handle bigger directories
+  // TODO handle ordering
+  daos_anchor_t anchor;
+  daos_anchor_init(&anchor, 0);
+
+  uint32_t nr = dirents.size();
+  ret = dfs_readdir(dfs, dir_obj, &anchor, &nr, dirents.data());
+  ldpp_dout(dpp, 20) << "DEBUG: dfs_readdir path=" << path << " nr=" << nr
+                     << " ret=" << ret << dendl;
+  if (ret != 0) {
+    return ret;
+  }
+
+  if (!daos_anchor_is_eof(&anchor)) {
+    results.is_truncated = true;
+  }
+
+  for (uint32_t i = 0; i < nr; i++) {
+    const auto& name = dirents[i].d_name;
+
+    // Skip entries that do not start with prefix_rest
+    // TODO handle how this affects max
+    if (string(name).compare(0, prefix_rest.length(), prefix_rest) != 0) {
+      continue;
+    }
+
+    dfs_obj_t* entry_obj;
+    mode_t mode;
+    ret =
+        dfs_lookup_rel(dfs, dir_obj, name, O_RDWR, &entry_obj, &mode, nullptr);
+    ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel i=" << i << " entry=" << name
+                       << " ret=" << ret << dendl;
+    if (ret != 0) {
+      return ret;
+    }
+
+    if (S_ISDIR(mode)) {
+      // The entry is a directory, add to common prefix
+      string key = path.empty() ? "" : path + params.delim;
+      key += name + params.delim;
+      results.common_prefixes[key] = true;
+
+    } else if (S_ISREG(mode)) {
+      // The entry is a regular file, read the xattr and add to objs
+      vector<uint8_t> value(DFS_MAX_XATTR_LEN);
+      size_t size = value.size();
+      dfs_getxattr(dfs, entry_obj, RGW_DIR_ENTRY_XATTR, value.data(), &size);
+      ldpp_dout(dpp, 0) << "DEBUG: dfs_getxattr entry=" << name
+                        << " xattr=" << RGW_DIR_ENTRY_XATTR << dendl;
+      if (ret != 0) {
+        return ret;
+      }
+
+      bufferlist bl;
+      rgw_bucket_dir_entry ent;
+      bl.append(reinterpret_cast<char*>(value.data()), size);
+      auto iter = bl.cbegin();
+      ent.decode(iter);
+      if (params.list_versions || ent.is_visible()) {
+        results.objs.emplace_back(std::move(ent));
+      }
+    }
+    // skip other types
+
+    // Close handles
+    ret = dfs_release(entry_obj);
+    ldpp_dout(dpp, 20) << "DEBUG: dfs_release entry_obj ret=" << ret << dendl;
+  }
+
+  ret = dfs_release(dir_obj);
+  ldpp_dout(dpp, 20) << "DEBUG: dfs_release dir_obj ret=" << ret << dendl;
+
+  ret = close(dpp);
 
   return 0;
 }
@@ -721,8 +830,8 @@ int DaosObject::DaosReadOp::prepare(optional_yield y,
 
   vector<uint8_t> value(DFS_MAX_XATTR_LEN);
   size_t size = value.size();
-  dfs_getxattr(source->get_daos_bucket()->dfs, source->dfs_obj, "rgw_entry",
-               value.data(), &size);
+  dfs_getxattr(source->get_daos_bucket()->dfs, source->dfs_obj,
+               RGW_DIR_ENTRY_XATTR, value.data(), &size);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to get xattr of daos object ("
                       << source->get_bucket()->get_name() << "/"
@@ -907,7 +1016,7 @@ int DaosObject::open(const DoutPrefixProvider* dpp, bool create) {
     if (path.front() != '/') path = "/" + path;
     ret = dfs_lookup(daos_bucket->dfs, path.c_str(), O_RDWR, &dfs_obj, nullptr,
                      nullptr);
-    ldpp_dout(dpp, 20) << "DEBUG dfs_lookup path=" << path << " ret=" << ret
+    ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup path=" << path << " ret=" << ret
                        << dendl;
   } else {
     dfs_obj_t* parent = nullptr;
@@ -926,21 +1035,21 @@ int DaosObject::open(const DoutPrefixProvider* dpp, bool create) {
 
       for (const auto& dir : dirs) {
         ret = dfs_mkdir(daos_bucket->dfs, parent, dir.c_str(), mode, 0);
-        ldpp_dout(dpp, 20) << "DEBUG dfs_mkdir dir=" << dir << " ret=" << ret
+        ldpp_dout(dpp, 20) << "DEBUG: dfs_mkdir dir=" << dir << " ret=" << ret
                            << dendl;
         if (ret != 0 && ret != EEXIST) {
           return ret;
         }
         ret = dfs_lookup_rel(daos_bucket->dfs, parent, dir.c_str(), O_RDWR,
                              &dir_obj, nullptr, nullptr);
-        ldpp_dout(dpp, 20) << "DEBUG dfs_lookup_rel dir=" << dir
+        ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel dir=" << dir
                            << " ret=" << ret << dendl;
         if (ret != 0) {
           return ret;
         }
         if (parent) {
           ret = dfs_release(parent);
-          ldpp_dout(dpp, 20) << "DEBUG dfs_release ret=" << ret << dendl;
+          ldpp_dout(dpp, 20) << "DEBUG: dfs_release ret=" << ret << dendl;
         }
         parent = dir_obj;
       }
@@ -949,11 +1058,11 @@ int DaosObject::open(const DoutPrefixProvider* dpp, bool create) {
     // Finally create the file
     ret = dfs_open(daos_bucket->dfs, parent, file_name.c_str(), S_IFREG | mode,
                    O_RDWR | O_CREAT | O_TRUNC, 0, 0, nullptr, &dfs_obj);
-    ldpp_dout(dpp, 20) << "DEBUG dfs_open file_name=" << file_name
+    ldpp_dout(dpp, 20) << "DEBUG: dfs_open file_name=" << file_name
                        << " ret=" << ret << dendl;
     if (parent) {
       ret = dfs_release(parent);
-      ldpp_dout(dpp, 20) << "DEBUG dfs_release ret=" << ret << dendl;
+      ldpp_dout(dpp, 20) << "DEBUG: dfs_release ret=" << ret << dendl;
     }
   }
   if (ret == 0 || ret == EEXIST) {
@@ -968,7 +1077,7 @@ int DaosObject::close(const DoutPrefixProvider* dpp) {
   }
 
   int ret = dfs_release(dfs_obj);
-  ldpp_dout(dpp, 20) << "DEBUG dfs_release ret=" << ret << dendl;
+  ldpp_dout(dpp, 20) << "DEBUG: dfs_release ret=" << ret << dendl;
 
   if (ret == 0) {
     _is_open = false;
@@ -1107,8 +1216,8 @@ int DaosAtomicWriter::complete(
   // }
 
   // Add rgw_bucket_dir_entry into object xattr
-  int ret = dfs_setxattr(obj.get_daos_bucket()->dfs, obj.dfs_obj, "rgw_entry",
-                         bl.c_str(), bl.length(), 0);
+  int ret = dfs_setxattr(obj.get_daos_bucket()->dfs, obj.dfs_obj,
+                         RGW_DIR_ENTRY_XATTR, bl.c_str(), bl.length(), 0);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to set xattr of daos object ("
                       << obj.get_bucket()->get_name() << "/"
