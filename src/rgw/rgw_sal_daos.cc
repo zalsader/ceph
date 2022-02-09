@@ -675,7 +675,9 @@ bool DaosZone::is_writeable() { return true; }
 
 bool DaosZone::get_redirect_endpoint(std::string* endpoint) { return false; }
 
-bool DaosZone::has_zonegroup_api(const std::string& api) const { return false; }
+bool DaosZone::has_zonegroup_api(const std::string& api) const {
+  return (zonegroup->api_name == api);
+}
 
 const std::string& DaosZone::get_current_period_id() {
   return current_period->get_id();
@@ -688,6 +690,43 @@ std::unique_ptr<LuaScriptManager> DaosStore::get_lua_script_manager() {
 int DaosObject::get_obj_state(const DoutPrefixProvider* dpp, RGWObjectCtx* rctx,
                               RGWObjState** _state, optional_yield y,
                               bool follow_olh) {
+  if (state == nullptr) state = new RGWObjState();
+  *_state = state;
+
+  // Get object's metadata (those stored in rgw_bucket_dir_entry)
+  int ret = open(dpp, false);
+  vector<uint8_t> value(DFS_MAX_XATTR_LEN);
+  size_t size = value.size();
+  ret = dfs_getxattr(get_daos_bucket()->dfs, dfs_obj, RGW_DIR_ENTRY_XATTR,
+                     value.data(), &size);
+  if (ret != 0) {
+    ldpp_dout(dpp, 0) << "ERROR: failed to get xattr of daos object ("
+                      << get_bucket()->get_name() << "/" << get_key().to_str()
+                      << "): ret=" << ret << dendl;
+    return ret;
+  }
+
+  bufferlist bl;
+  rgw_bucket_dir_entry ent;
+  bl.append(reinterpret_cast<char*>(value.data()), size);
+  auto iter = bl.cbegin();
+  ent.decode(iter);
+
+  // Set object state.
+  state->obj = get_obj();
+  state->exists = true;
+  state->size = ent.meta.size;
+  state->accounted_size = ent.meta.size;
+  state->mtime = ent.meta.mtime;
+
+  state->has_attrs = true;
+  bufferlist etag_bl;
+  string& etag = ent.meta.etag;
+  ldpp_dout(dpp, 20) << __func__ << ": object's etag:  " << ent.meta.etag
+                     << dendl;
+  etag_bl.append(etag);
+  state->attrset[RGW_ATTR_ETAG] = etag_bl;
+
   return 0;
 }
 
@@ -699,6 +738,7 @@ DaosObject::~DaosObject() {
 int DaosObject::set_obj_attrs(const DoutPrefixProvider* dpp, RGWObjectCtx* rctx,
                               Attrs* setattrs, Attrs* delattrs,
                               optional_yield y, rgw_obj* target_obj) {
+  // TODO: implement
   ldpp_dout(dpp, 20) << "DEBUG: DaosObject::set_obj_attrs()" << dendl;
   return 0;
 }
@@ -706,6 +746,36 @@ int DaosObject::set_obj_attrs(const DoutPrefixProvider* dpp, RGWObjectCtx* rctx,
 int DaosObject::get_obj_attrs(RGWObjectCtx* rctx, optional_yield y,
                               const DoutPrefixProvider* dpp,
                               rgw_obj* target_obj) {
+  string bname, key;
+  if (target_obj) {
+    bname = target_obj->bucket.name;
+    key = target_obj->key.to_str();
+  } else {
+    bname = this->get_bucket()->get_name();
+    key = this->get_key().to_str();
+  }
+  ldpp_dout(dpp, 20) << "DaosObject::get_obj_attrs(): " << bname << "/" << key
+                     << dendl;
+
+  // Get object's metadata (those stored in rgw_bucket_dir_entry)
+  int ret = open(dpp, false);
+  vector<uint8_t> value(DFS_MAX_XATTR_LEN);
+  size_t size = value.size();
+  ret = dfs_getxattr(get_daos_bucket()->dfs, dfs_obj, RGW_DIR_ENTRY_XATTR,
+                     value.data(), &size);
+  if (ret != 0) {
+    ldpp_dout(dpp, 0) << "ERROR: failed to get xattr of daos object ("
+                      << get_bucket()->get_name() << "/" << get_key().to_str()
+                      << "): ret=" << ret << dendl;
+    return ret;
+  }
+
+  bufferlist bl;
+  rgw_bucket_dir_entry ent;
+  bl.append(reinterpret_cast<char*>(value.data()), size);
+  auto iter = bl.cbegin();
+  ent.decode(iter);
+  decode(attrs, iter);
   return 0;
 }
 
@@ -750,7 +820,7 @@ bool DaosObject::is_expired() { return false; }
 
 // Taken from rgw_rados.cc
 void DaosObject::gen_rand_obj_instance_name() {
-#define OBJ_INSTANCE_LEN 32
+  enum { OBJ_INSTANCE_LEN = 32 };
   char buf[OBJ_INSTANCE_LEN + 1];
 
   gen_rand_alphanumeric_no_underscore(store->ctx(), buf, OBJ_INSTANCE_LEN);
@@ -830,7 +900,7 @@ int DaosObject::DaosReadOp::prepare(optional_yield y,
 
   vector<uint8_t> value(DFS_MAX_XATTR_LEN);
   size_t size = value.size();
-  dfs_getxattr(source->get_daos_bucket()->dfs, source->dfs_obj,
+  ret = dfs_getxattr(source->get_daos_bucket()->dfs, source->dfs_obj,
                RGW_DIR_ENTRY_XATTR, value.data(), &size);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to get xattr of daos object ("
