@@ -1012,16 +1012,55 @@ DaosObject::DaosDeleteOp::DaosDeleteOp(DaosObject* _source, RGWObjectCtx* _rctx)
 // to retrieve and set object's state from object's metadata.
 //
 // TODO:
-// 1. The POC only remove the object's entry from bucket index and delete
-// corresponding Daos objects. It doesn't handle the DeleteOp::params.
-// Delete::delete_obj() in rgw_rados.cc shows how rados backend process the
-// params.
+// 1. The POC only deletes the Daos objects. It doesn't handle the
+// DeleteOp::params. Delete::delete_obj() in rgw_rados.cc shows how rados
+// backend process the params.
 // 2. Delete an object when its versioning is turned on.
+// 3. Handle empty directories
 int DaosObject::DaosDeleteOp::delete_obj(const DoutPrefixProvider* dpp,
                                          optional_yield y) {
-  ldpp_dout(dpp, 20) << "delete " << source->get_key().to_str() << " from "
+  ldpp_dout(dpp, 20) << "DaosDeleteOp::delete_obj "
+                     << source->get_key().to_str() << " from "
                      << source->get_bucket()->get_name() << dendl;
-  return 0;
+  // Open bucket
+  int ret = 0;
+  std::string path = source->get_key().to_str();
+  DaosBucket* daos_bucket = source->get_daos_bucket();
+  ret = daos_bucket->open(dpp);
+  if (ret != 0) {
+    return ret;
+  }
+
+  // Remove the daos object
+  dfs_obj_t* parent = nullptr;
+  std::string file_name = path;
+
+  size_t file_start = path.rfind("/");
+
+  if (file_start != std::string::npos) {
+    // Open parent dir
+    std::string parent_path = "/" + path.substr(0, file_start);
+    file_name = path.substr(file_start + 1);
+    ret = dfs_lookup(daos_bucket->dfs, parent_path.c_str(), O_RDWR, &parent,
+                     nullptr, nullptr);
+    ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup parent_path=" << parent_path
+                       << " ret=" << ret << dendl;
+    if (ret != 0) {
+      return ret;
+    }
+  }
+
+  ret = dfs_remove(daos_bucket->dfs, parent, file_name.c_str(), false, nullptr);
+  ldpp_dout(dpp, 20) << "DEBUG: dfs_remove file_name=" << file_name
+                     << " ret=" << ret << dendl;
+
+  // result.delete_marker = parent_op.result.delete_marker;
+  // result.version_id = parent_op.result.version_id;
+
+  // Finalize
+  dfs_release(parent);
+  daos_bucket->close(dpp);
+  return ret;
 }
 
 int DaosObject::delete_object(const DoutPrefixProvider* dpp,
