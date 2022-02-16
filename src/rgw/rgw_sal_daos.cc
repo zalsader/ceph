@@ -506,6 +506,11 @@ std::unique_ptr<Object> DaosBucket::get_object(const rgw_obj_key& k) {
   return std::make_unique<DaosObject>(this->store, k, this);
 }
 
+bool compare_rgw_bucket_dir_entry(rgw_bucket_dir_entry& entry1,
+                                  rgw_bucket_dir_entry& entry2) {
+  return (entry1.key < entry2.key);
+}
+
 int DaosBucket::list(const DoutPrefixProvider* dpp, ListParams& params, int max,
                      ListResults& results, optional_yield y) {
   ldpp_dout(dpp, 20) << "DEBUG: list bucket=" << info.bucket.name
@@ -615,6 +620,10 @@ int DaosBucket::list(const DoutPrefixProvider* dpp, ListParams& params, int max,
     // Close handles
     ret = dfs_release(entry_obj);
     ldpp_dout(dpp, 20) << "DEBUG: dfs_release entry_obj ret=" << ret << dendl;
+  }
+
+  if (!params.allow_unordered) {
+    std::sort(results.objs.begin(), results.objs.end(), compare_rgw_bucket_dir_entry);
   }
 
   ret = dfs_release(dir_obj);
@@ -901,7 +910,7 @@ int DaosObject::DaosReadOp::prepare(optional_yield y,
   vector<uint8_t> value(DFS_MAX_XATTR_LEN);
   size_t size = value.size();
   ret = dfs_getxattr(source->get_daos_bucket()->dfs, source->dfs_obj,
-               RGW_DIR_ENTRY_XATTR, value.data(), &size);
+                     RGW_DIR_ENTRY_XATTR, value.data(), &size);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to get xattr of daos object ("
                       << source->get_bucket()->get_name() << "/"
