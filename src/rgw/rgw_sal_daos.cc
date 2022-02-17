@@ -44,6 +44,7 @@ namespace rgw::sal {
 using ::ceph::decode;
 using ::ceph::encode;
 
+#define RGW_BUCKET_RGW_INFO "rgw_info"
 #define RGW_DIR_ENTRY_XATTR "rgw_entry"
 
 int DaosUser::list_buckets(const DoutPrefixProvider* dpp, const string& marker,
@@ -325,7 +326,7 @@ int DaosBucket::put_info(const DoutPrefixProvider* dpp, bool exclusive,
   dbinfo.bucket_version = bucket_version;
   dbinfo.encode(bl);
 
-  char const* const names[] = {"rgw_info"};
+  char const* const names[] = {RGW_BUCKET_RGW_INFO};
   void const* const values[] = {bl.c_str()};
   size_t const sizes[] = {bl.length()};
   // TODO: separate attributes
@@ -349,7 +350,7 @@ int DaosBucket::load_bucket(const DoutPrefixProvider* dpp, optional_yield y,
   bufferlist bl;
   DaosBucketInfo dbinfo;
   vector<uint8_t> value(DFS_MAX_XATTR_LEN);
-  char const* const names[] = {"rgw_info"};
+  char const* const names[] = {RGW_BUCKET_RGW_INFO};
   void* const values[] = {value.data()};
   size_t sizes[] = {value.size()};
 
@@ -747,24 +748,56 @@ DaosObject::~DaosObject() {
 int DaosObject::set_obj_attrs(const DoutPrefixProvider* dpp, RGWObjectCtx* rctx,
                               Attrs* setattrs, Attrs* delattrs,
                               optional_yield y, rgw_obj* target_obj) {
-  // TODO: implement
   ldpp_dout(dpp, 20) << "DEBUG: DaosObject::set_obj_attrs()" << dendl;
+  // TODO handle target_obj
+
+  // Get object's metadata (those stored in rgw_bucket_dir_entry)
+  int ret = open(dpp, false);
+  vector<uint8_t> value(DFS_MAX_XATTR_LEN);
+  size_t size = value.size();
+  ret = dfs_getxattr(get_daos_bucket()->dfs, dfs_obj, RGW_DIR_ENTRY_XATTR,
+                     value.data(), &size);
+  if (ret != 0) {
+    ldpp_dout(dpp, 0) << "ERROR: failed to get xattr of daos object ("
+                      << get_bucket()->get_name() << "/" << get_key().to_str()
+                      << "): ret=" << ret << dendl;
+    return ret;
+  }
+
+  bufferlist rbl;
+  rgw_bucket_dir_entry ent;
+  rbl.append(reinterpret_cast<char*>(value.data()), size);
+  auto iter = rbl.cbegin();
+  ent.decode(iter);
+
+  // Update object metadata
+  Attrs updateattrs = setattrs ? attrs : *setattrs;
+  if (delattrs) {
+    for (auto const& [attr, attrval] : *delattrs) {
+      updateattrs.erase(attr);
+    }
+  }
+
+  bufferlist wbl;
+  ent.encode(wbl);
+  encode(updateattrs, wbl);
+
+  // Write rgw_bucket_dir_entry into object xattr
+  ret = dfs_setxattr(get_daos_bucket()->dfs, dfs_obj, RGW_DIR_ENTRY_XATTR,
+                     wbl.c_str(), wbl.length(), 0);
+  if (ret != 0) {
+    ldpp_dout(dpp, 0) << "ERROR: failed to set xattr of daos object ("
+                      << get_bucket()->get_name() << "/" << get_key().to_str()
+                      << "): ret=" << ret << dendl;
+  }
   return 0;
 }
 
 int DaosObject::get_obj_attrs(RGWObjectCtx* rctx, optional_yield y,
                               const DoutPrefixProvider* dpp,
                               rgw_obj* target_obj) {
-  string bname, key;
-  if (target_obj) {
-    bname = target_obj->bucket.name;
-    key = target_obj->key.to_str();
-  } else {
-    bname = this->get_bucket()->get_name();
-    key = this->get_key().to_str();
-  }
-  ldpp_dout(dpp, 20) << "DaosObject::get_obj_attrs(): " << bname << "/" << key
-                     << dendl;
+  ldpp_dout(dpp, 20) << "DEBUG: DaosObject::get_obj_attrs()" << dendl;
+  // TODO handle target_obj
 
   // Get object's metadata (those stored in rgw_bucket_dir_entry)
   int ret = open(dpp, false);
@@ -784,6 +817,8 @@ int DaosObject::get_obj_attrs(RGWObjectCtx* rctx, optional_yield y,
   bl.append(reinterpret_cast<char*>(value.data()), size);
   auto iter = bl.cbegin();
   ent.decode(iter);
+  obj_size = ent.meta.size;
+  mtime = ent.meta.mtime;
   decode(attrs, iter);
   return 0;
 }
@@ -825,7 +860,27 @@ void DaosObject::set_prefetch_data(RGWObjectCtx* rctx) { return; }
 /* XXX: Placeholder. Should not be needed later after Dan's patch */
 void DaosObject::set_compressed(RGWObjectCtx* rctx) { return; }
 
-bool DaosObject::is_expired() { return false; }
+bool DaosObject::is_expired() {
+  auto iter = attrs.find(RGW_ATTR_DELETE_AT);
+  if (iter != attrs.end()) {
+    utime_t delete_at;
+    try {
+      auto bufit = iter->second.cbegin();
+      decode(delete_at, bufit);
+    } catch (buffer::error& err) {
+      ldout(store->ctx(), 0)
+          << "ERROR: " << __func__
+          << ": failed to decode " RGW_ATTR_DELETE_AT " attr" << dendl;
+      return false;
+    }
+
+    if (delete_at <= ceph_clock_now() && !delete_at.is_zero()) {
+      return true;
+    }
+  }
+
+  return false;
+}
 
 // Taken from rgw_rados.cc
 void DaosObject::gen_rand_obj_instance_name() {
