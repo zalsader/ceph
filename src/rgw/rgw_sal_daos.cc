@@ -77,7 +77,9 @@ int DaosUser::list_buckets(const DoutPrefixProvider* dpp, const string& marker,
   for (const auto& db : daos_buckets) {
     RGWBucketEnt ent = {};
     ent.bucket.name = db.pci_label;
-    buckets.add(std::make_unique<DaosBucket>(this->store, ent, this));
+    DaosBucket* daos_bucket = new DaosBucket(this->store, ent, this);
+    daos_bucket->load_bucket(dpp, y);
+    buckets.add(std::unique_ptr<DaosBucket>(daos_bucket));
   }
 
   buckets.set_truncated(is_truncated);
@@ -133,6 +135,7 @@ int DaosUser::create_bucket(
     info.bucket = b;
     info.owner = this->get_info().user_id;
     info.zonegroup = zonegroup_id;
+    info.creation_time = ceph::real_clock::now();
     if (obj_lock_enabled)
       info.flags = BUCKET_VERSIONED | BUCKET_OBJ_LOCK_ENABLED;
     bucket->set_version(ep_objv);
