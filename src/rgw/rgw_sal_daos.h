@@ -61,6 +61,57 @@ struct DaosUserInfo {
 };
 WRITE_CLASS_ENCODER(DaosUserInfo);
 
+struct DaosEmailInfo {
+  std::string user_id;
+  std::string email_id;
+
+  DaosEmailInfo() {}
+  DaosEmailInfo(std::string _user_id, std::string _email_id )
+    : user_id(std::move(_user_id)), email_id(std::move(_email_id)) {}
+
+  void encode(bufferlist& bl) const {
+    ENCODE_START(2, 2, bl);
+    encode(user_id, bl);
+    encode(email_id, bl);
+    ENCODE_FINISH(bl);
+  }
+
+  void decode(bufferlist::const_iterator& bl) {
+     DECODE_START_LEGACY_COMPAT_LEN_32(2, 2, 2, bl);
+     decode(user_id, bl);
+     decode(email_id, bl);
+      DECODE_FINISH(bl);
+  }
+};
+WRITE_CLASS_ENCODER(DaosEmailInfo);
+
+struct DaosAccessKey {
+  std::string id; // AccessKey
+  std::string key; // SecretKey
+  std::string user_id; // UserID
+  
+  DaosAccessKey() {}
+  DaosAccessKey(std::string _id, std::string _key, std::string _user_id)
+    : id(std::move(_id)), key(std::move(_key)), user_id(std::move(_user_id)) {}
+
+  void encode(bufferlist& bl) const {
+    ENCODE_START(2, 2, bl);
+    encode(id, bl);
+    encode(key, bl);
+    encode(user_id, bl);
+    ENCODE_FINISH(bl);
+  }
+
+  void decode(bufferlist::const_iterator& bl) {
+     DECODE_START_LEGACY_COMPAT_LEN_32(2, 2, 2, bl);
+     decode(id, bl);
+     decode(key, bl);
+     decode(user_id, bl);
+     DECODE_FINISH(bl);
+  }
+};
+WRITE_CLASS_ENCODER(DaosAccessKey);
+
 class DaosNotification : public Notification {
  public:
   DaosNotification(Object* _obj, Object* _src_obj, rgw::notify::EventType _type)
