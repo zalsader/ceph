@@ -891,6 +891,8 @@ class DaosStore : public Store {
   virtual void set_luarocks_path(const std::string& path) override {
     luarocks_path = path;
   }
+
+  int initialize(void);
 };
 
 }  // namespace rgw::sal

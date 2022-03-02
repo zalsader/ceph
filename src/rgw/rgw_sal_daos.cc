@@ -627,7 +627,8 @@ int DaosBucket::list(const DoutPrefixProvider* dpp, ListParams& params, int max,
   }
 
   if (!params.allow_unordered) {
-    std::sort(results.objs.begin(), results.objs.end(), compare_rgw_bucket_dir_entry);
+    std::sort(results.objs.begin(), results.objs.end(),
+              compare_rgw_bucket_dir_entry);
   }
 
   ret = dfs_release(dir_obj);
@@ -658,12 +659,39 @@ void DaosStore::finalize(void) {
     if (rc != 0) {
       ldout(cctx, 0) << "ERROR: daos_pool_disconnect() failed: " << rc << dendl;
     }
+    poh = DAOS_HDL_INVAL;
   }
 
   rc = daos_fini();
   if (rc != 0) {
     ldout(cctx, 0) << "ERROR: daos_fini() failed: " << rc << dendl;
   }
+}
+
+int DaosStore::initialize(void) {
+  int rc = daos_init();
+
+  // DAOS init failed, allow the case where init is already done
+  if (rc != 0 && rc != DER_ALREADY) {
+    ldout(cctx, 0) << "ERROR: daos_init() failed: " << rc << dendl;
+    return rc;
+  }
+
+  // XXX: these params should be taken from config settings and
+  // cct somehow?
+  const auto& daos_pool = g_conf().get_val<std::string>("daos_pool");
+  ldout(cctx, 0) << "INFO: daos pool: " << daos_pool << dendl;
+  daos_pool_info_t pool_info = {};
+  rc = daos_pool_connect(daos_pool.c_str(), nullptr, DAOS_PC_RW, &poh,
+                         &pool_info, nullptr);
+
+  if (rc != 0) {
+    ldout(cctx, 0) << "ERROR: daos_pool_connect() failed: " << rc << dendl;
+    return rc;
+  }
+
+  uuid_copy(pool, pool_info.pi_uuid);
+  return 0;
 }
 
 const RGWZoneGroup& DaosZone::get_zonegroup() { return *zonegroup; }
@@ -1763,35 +1791,14 @@ void* newDaosStore(CephContext* cct) {
   rgw::sal::DaosStore* store = new rgw::sal::DaosStore(cct);
 
   if (store) {
-    rc = daos_init();
-
-    // DAOS init failed, allow the case where init is already done
-    if (rc != 0 && rc != DER_ALREADY) {
-      ldout(cct, 0) << "ERROR: daos_init() failed: " << rc << dendl;
-      goto err;
-    }
-
-    // XXX: these params should be taken from config settings and
-    // cct somehow?
-    const auto& daos_pool = g_conf().get_val<std::string>("daos_pool");
-    ldout(cct, 0) << "INFO: daos pool: " << daos_pool << dendl;
-    daos_pool_info_t pool_info = {};
-    rc = daos_pool_connect(daos_pool.c_str(), nullptr, DAOS_PC_RW, &store->poh,
-                           &pool_info, nullptr);
-
+    rc = store->initialize();
     if (rc != 0) {
-      ldout(cct, 0) << "ERROR: daos_pool_connect() failed: " << rc << dendl;
-      goto err_fini;
+      ldout(cct, 0) << "ERROR: store->initialize() failed: " << rc << dendl;
+      store->finalize();
+      delete store;
+      return nullptr;
     }
-
-    uuid_copy(store->pool, pool_info.pi_uuid);
   }
-
   return store;
-err_fini:
-  daos_fini();
-err:
-  delete store;
-  return nullptr;
 }
 }
