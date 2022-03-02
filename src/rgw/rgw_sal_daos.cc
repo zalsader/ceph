@@ -46,6 +46,7 @@ using ::ceph::encode;
 
 #define RGW_BUCKET_RGW_INFO "rgw_info"
 #define RGW_DIR_ENTRY_XATTR "rgw_entry"
+#define METADATA_BUCKET "_METADATA"
 
 int DaosUser::list_buckets(const DoutPrefixProvider* dpp, const string& marker,
                            const string& end_marker, uint64_t max,
@@ -653,44 +654,91 @@ int DaosBucket::abort_multiparts(const DoutPrefixProvider* dpp,
 }
 
 void DaosStore::finalize(void) {
-  int rc;
+  int ret;
+
+  if (meta_dfs != nullptr) {
+    ret = dfs_umount(meta_dfs);
+    if (ret < 0) {
+      ldout(cctx, 0) << "ERROR: dfs_umount() failed: " << ret << dendl;
+    }
+    meta_dfs = nullptr;
+  }
+  
+  if (daos_handle_is_valid(meta_coh)) {
+    ret = daos_cont_close(meta_coh, nullptr);
+    if (ret < 0) {
+      ldout(cctx, 0) << "ERROR: daos_cont_close() failed: " << ret << dendl;
+    }
+    meta_coh = DAOS_HDL_INVAL;
+  }
+
   if (daos_handle_is_valid(poh)) {
-    rc = daos_pool_disconnect(poh, nullptr);
-    if (rc != 0) {
-      ldout(cctx, 0) << "ERROR: daos_pool_disconnect() failed: " << rc << dendl;
+    ret = daos_pool_disconnect(poh, nullptr);
+    if (ret != 0) {
+      ldout(cctx, 0) << "ERROR: daos_pool_disconnect() failed: " << ret << dendl;
     }
     poh = DAOS_HDL_INVAL;
   }
 
-  rc = daos_fini();
-  if (rc != 0) {
-    ldout(cctx, 0) << "ERROR: daos_fini() failed: " << rc << dendl;
+  ret = daos_fini();
+  if (ret != 0) {
+    ldout(cctx, 0) << "ERROR: daos_fini() failed: " << ret << dendl;
   }
 }
 
 int DaosStore::initialize(void) {
-  int rc = daos_init();
+  int ret = daos_init();
 
   // DAOS init failed, allow the case where init is already done
-  if (rc != 0 && rc != DER_ALREADY) {
-    ldout(cctx, 0) << "ERROR: daos_init() failed: " << rc << dendl;
-    return rc;
+  if (ret != 0 && ret != DER_ALREADY) {
+    ldout(cctx, 0) << "ERROR: daos_init() failed: " << ret << dendl;
+    return ret;
   }
 
   // XXX: these params should be taken from config settings and
   // cct somehow?
   const auto& daos_pool = g_conf().get_val<std::string>("daos_pool");
-  ldout(cctx, 0) << "INFO: daos pool: " << daos_pool << dendl;
+  ldout(cctx, 20) << "INFO: daos pool: " << daos_pool << dendl;
   daos_pool_info_t pool_info = {};
-  rc = daos_pool_connect(daos_pool.c_str(), nullptr, DAOS_PC_RW, &poh,
-                         &pool_info, nullptr);
+  ret = daos_pool_connect(daos_pool.c_str(), nullptr, DAOS_PC_RW, &poh,
+                          &pool_info, nullptr);
 
-  if (rc != 0) {
-    ldout(cctx, 0) << "ERROR: daos_pool_connect() failed: " << rc << dendl;
-    return rc;
+  if (ret != 0) {
+    ldout(cctx, 0) << "ERROR: daos_pool_connect() failed: " << ret << dendl;
+    return ret;
   }
 
   uuid_copy(pool, pool_info.pi_uuid);
+
+  // Connect to metadata container
+  // TODO use dfs_connect
+  // Attempt to create
+  ret = dfs_cont_create_with_label(poh, METADATA_BUCKET, nullptr, nullptr,
+                                   &meta_coh, &meta_dfs);
+
+  if (ret == EEXIST) {
+    // Metadata container exists, mount it
+    ret = daos_cont_open(poh, METADATA_BUCKET, DAOS_COO_RW, &meta_coh, nullptr,
+                         nullptr);
+
+    if (ret != 0) {
+      ldout(cctx, 0) << "ERROR: daos_cont_open failed! ret=" << ret << dendl;
+      return ret;
+    }
+
+    ret = dfs_mount(poh, meta_coh, O_RDWR, &meta_dfs);
+
+    if (ret != 0) {
+      ldout(cctx, 0) << "ERROR: dfs_mount failed! ret=" << ret << dendl;
+      return ret;
+    }
+
+  } else if (ret != 0) {
+    ldout(cctx, 0) << "ERROR: dfs_cont_create_with_label failed! ret=" << ret
+                   << dendl;
+    return ret;
+  }
+
   return 0;
 }
 
