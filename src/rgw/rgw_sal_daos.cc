@@ -76,8 +76,14 @@ int DaosUser::list_buckets(const DoutPrefixProvider* dpp, const string& marker,
   }
 
   for (const auto& db : daos_buckets) {
+    string name = db.pci_label;
+    if (name == METADATA_BUCKET) {
+      // Skip metadata bucket
+      continue;
+    }
+
     RGWBucketEnt ent = {};
-    ent.bucket.name = db.pci_label;
+    ent.bucket.name = name;
     DaosBucket* daos_bucket = new DaosBucket(this->store, ent, this);
     daos_bucket->load_bucket(dpp, y);
     buckets.add(std::unique_ptr<DaosBucket>(daos_bucket));
