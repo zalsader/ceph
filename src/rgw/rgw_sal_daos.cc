@@ -47,6 +47,15 @@ using ::ceph::encode;
 #define RGW_BUCKET_RGW_INFO "rgw_info"
 #define RGW_DIR_ENTRY_XATTR "rgw_entry"
 #define METADATA_BUCKET "_METADATA"
+#define USERS_DIR "users"
+#define EMAILS_DIR "emails"
+#define ACCESS_KEYS_DIR "access_keys"
+
+static const std::string METADATA_DIRS[] = {
+  USERS_DIR,
+  EMAILS_DIR,
+  ACCESS_KEYS_DIR
+};
 
 int DaosUser::list_buckets(const DoutPrefixProvider* dpp, const string& marker,
                            const string& end_marker, uint64_t max,
@@ -662,6 +671,12 @@ int DaosBucket::abort_multiparts(const DoutPrefixProvider* dpp,
 void DaosStore::finalize(void) {
   int ret;
 
+  for (auto const& [dir_name, dir_obj] : dirs) {
+    ret = dfs_release(dir_obj);
+    ldout(cctx, 20) << "DEBUG: dfs_release name=" << dir_name << ", ret=" << ret
+                    << dendl;
+  }
+
   if (meta_dfs != nullptr) {
     ret = dfs_umount(meta_dfs);
     if (ret < 0) {
@@ -669,7 +684,7 @@ void DaosStore::finalize(void) {
     }
     meta_dfs = nullptr;
   }
-  
+
   if (daos_handle_is_valid(meta_coh)) {
     ret = daos_cont_close(meta_coh, nullptr);
     if (ret < 0) {
@@ -681,7 +696,8 @@ void DaosStore::finalize(void) {
   if (daos_handle_is_valid(poh)) {
     ret = daos_pool_disconnect(poh, nullptr);
     if (ret != 0) {
-      ldout(cctx, 0) << "ERROR: daos_pool_disconnect() failed: " << ret << dendl;
+      ldout(cctx, 0) << "ERROR: daos_pool_disconnect() failed: " << ret
+                     << dendl;
     }
     poh = DAOS_HDL_INVAL;
   }
@@ -722,7 +738,19 @@ int DaosStore::initialize(void) {
   ret = dfs_cont_create_with_label(poh, METADATA_BUCKET, nullptr, nullptr,
                                    &meta_coh, &meta_dfs);
 
-  if (ret == EEXIST) {
+  if (ret == 0) {
+    // Create inner directories
+    mode_t mode = DEFFILEMODE;
+    for (auto& dir : METADATA_DIRS) {
+      ret = dfs_mkdir(meta_dfs, nullptr, dir.c_str(), mode, 0);
+      ldout(cctx, 20) << "DEBUG: dfs_mkdir dir=" << dir << " ret=" << ret
+                      << dendl;
+      if (ret != 0 && ret != EEXIST) {
+        ldout(cctx, 0) << "ERROR: dfs_mkdir failed! ret=" << ret << dendl;
+        return ret;
+      }
+    }
+  } else if (ret == EEXIST) {
     // Metadata container exists, mount it
     ret = daos_cont_open(poh, METADATA_BUCKET, DAOS_COO_RW, &meta_coh, nullptr,
                          nullptr);
@@ -739,10 +767,23 @@ int DaosStore::initialize(void) {
       return ret;
     }
 
-  } else if (ret != 0) {
+  } else {
     ldout(cctx, 0) << "ERROR: dfs_cont_create_with_label failed! ret=" << ret
                    << dendl;
     return ret;
+  }
+
+  // Open metadata dirs
+  for (auto& dir : METADATA_DIRS) {
+    dirs[dir] = nullptr;
+    ret = dfs_lookup_rel(meta_dfs, nullptr, dir.c_str(), O_RDWR, &dirs[dir],
+                         nullptr, nullptr);
+    ldout(cctx, 20) << "DEBUG: dfs_lookup_rel dir=" << dir << " ret=" << ret
+                    << dendl;
+    if (ret != 0) {
+      ldout(cctx, 0) << "ERROR: dfs_lookup_rel failed! ret=" << ret << dendl;
+      return ret;
+    }
   }
 
   return 0;
