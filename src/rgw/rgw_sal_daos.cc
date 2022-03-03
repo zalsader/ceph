@@ -219,16 +219,19 @@ int DaosUser::trim_usage(const DoutPrefixProvider* dpp, uint64_t start_epoch,
 }
 
 int DaosUser::load_user(const DoutPrefixProvider* dpp, optional_yield y) {
-  ldpp_dout(dpp, 20) << "DEBUG: load user: user id =   "
-                     << info.user_id.to_str() << dendl;
-  // XXX: implement actual code here
-  rgw_user testid_user("", "tester", "");
-  info.user_id = testid_user;
-  info.display_name = "Daos Explorer";
-  info.user_email = "tester@seagate.com";
-  RGWAccessKey k1("0555b35654ad1656d804",
-                  "h7GhxuBLTrlhVUyxSPUKUV8r/2EI4ngqJxD7iBdBYLhwluN30JaT3Q==");
-  info.access_keys["0555b35654ad1656d804"] = k1;
+  const string name = info.user_id.to_str();
+  ldpp_dout(dpp, 20) << "DEBUG: load_user, name=" << name << dendl;
+
+  DaosUserInfo duinfo;
+  int ret = store->read_user(dpp, USERS_DIR, name, &duinfo);
+  if (ret != 0) {
+    ldpp_dout(dpp, 0) << "ERROR: load_user failed, name=" << name << dendl;
+    return ret;
+  }
+
+  info = duinfo.info;
+  attrs = duinfo.attrs;
+  objv_tracker.read_version = duinfo.user_version;
   return 0;
 }
 
@@ -242,11 +245,132 @@ int DaosUser::merge_and_store_attrs(const DoutPrefixProvider* dpp,
 
 int DaosUser::store_user(const DoutPrefixProvider* dpp, optional_yield y,
                          bool exclusive, RGWUserInfo* old_info) {
-  ldpp_dout(dpp, 10) << "DEBUG: Store_user(): User = " << info.user_id.id
-                     << dendl;
-  if (old_info) {
-    *old_info = info;
+  const string name = info.user_id.to_str();
+  ldpp_dout(dpp, 10) << "DEBUG: Store_user(): User name=" << name << dendl;
+
+  // Read user
+  int ret = 0;
+  struct DaosUserInfo duinfo;
+  ret = store->read_user(dpp, USERS_DIR, name, &duinfo);
+  obj_version obj_ver = duinfo.user_version;
+
+  // Check if the user already exists
+  if (ret == 0 && obj_ver.ver) {
+    // already exists.
+
+    if (old_info) {
+      *old_info = duinfo.info;
+    }
+
+    if (objv_tracker.read_version.ver != obj_ver.ver) {
+      // Object version mismatch.. return ECANCELED
+      ret = -ECANCELED;
+      ldpp_dout(dpp, 0) << "User Read version mismatch read_version=" << objv_tracker.read_version.ver
+                        << " obj_ver=" << obj_ver.ver
+                        << dendl;
+      return ret;
+    }
+
+    if (exclusive) {
+      // return
+      return ret;
+    }
+    obj_ver.ver++;
+  } else {
+    obj_ver.ver = 1;
+    obj_ver.tag = "UserTAG";
   }
+
+  // Encode user data
+  bufferlist bl;
+  duinfo.info = info;
+  duinfo.attrs = attrs;
+  duinfo.user_version = obj_ver;
+  duinfo.encode(bl);
+
+  // Open user file
+  dfs_obj_t* user_obj;
+  mode_t mode = DEFFILEMODE;
+  ret = dfs_open(store->meta_dfs, store->dirs[USERS_DIR], name.c_str(),
+                 S_IFREG | mode, O_RDWR | O_CREAT | O_TRUNC, 0, 0, nullptr,
+                 &user_obj);
+  if (ret != 0) {
+    ldpp_dout(dpp, 0) << "ERROR: failed to open user file, name=" << name
+                      << " ret=" << ret << dendl;
+    return ret;
+  }
+
+  // Write user data
+  d_sg_list_t wsgl;
+  d_iov_t iov;
+  d_iov_set(&iov, bl.c_str(), bl.length());
+  wsgl.sg_nr = 1;
+  wsgl.sg_iovs = &iov;
+  ret = dfs_write(store->meta_dfs, user_obj, &wsgl, 0, nullptr);
+  if (ret != 0) {
+    ldpp_dout(dpp, 0) << "ERROR: failed to write to user file, name=" << name
+                      << " ret=" << ret << dendl;
+    return ret;
+  }
+
+  // Close file
+  ret = dfs_release(user_obj);
+  if (ret != 0) {
+    ldpp_dout(dpp, 0) << "ERROR: dfs_release failed, user name=" << name
+                      << " ret=" << ret << dendl;
+    return ret;
+  }
+
+  if (ret == 0) {
+    objv_tracker.read_version = obj_ver;
+    objv_tracker.write_version = obj_ver;
+  }
+
+  std::ostringstream user_path_build;
+  user_path_build << "../" << USERS_DIR << "/" << name;
+  std::string user_path = user_path_build.str();
+
+  // Store access key in access key index
+  if (!info.access_keys.empty()) {
+    for (auto const& [id, key] : info.access_keys) {
+      ret = dfs_open(store->meta_dfs, store->dirs[ACCESS_KEYS_DIR],
+                     id.c_str(), S_IFLNK | mode, O_RDWR | O_CREAT | O_TRUNC, 0,
+                     0, user_path.c_str(), &user_obj);
+      if (ret != 0) {
+        ldpp_dout(dpp, 0) << "ERROR: failed to create user file, id=" << id
+                          << " ret=" << ret << dendl;
+        return ret;
+      }
+
+      ret = dfs_release(user_obj);
+      if (ret != 0) {
+        ldpp_dout(dpp, 0) << "ERROR: dfs_release failed, user file, id=" << id
+                          << " ret=" << ret << dendl;
+        return ret;
+      }
+    }
+  }
+
+  // Store email in email index
+  if (!info.user_email.empty()) {
+    string& email = info.user_email;
+    ret = dfs_open(store->meta_dfs, store->dirs[EMAILS_DIR], email.c_str(),
+                   S_IFLNK | mode, O_RDWR | O_CREAT | O_TRUNC, 0, 0,
+                   user_path.c_str(), &user_obj);
+    if (ret != 0) {
+      ldpp_dout(dpp, 0) << "ERROR: failed to create user file, email=" << email
+                        << " ret=" << ret << dendl;
+      return ret;
+    }
+
+    ret = dfs_release(user_obj);
+    if (ret != 0) {
+      ldpp_dout(dpp, 0) << "ERROR: dfs_release failed, user file, email="
+                        << email << " ret=" << ret << dendl;
+      return ret;
+    }
+  }
+
   return 0;
 }
 
@@ -260,6 +384,11 @@ int DaosBucket::open(const DoutPrefixProvider* dpp) {
   // Idempotent
   if (_is_open) {
     return 0;
+  }
+
+  // Prevent attempting to open metadata bucket
+  if (info.bucket.name == METADATA_BUCKET) {
+    return -ENOENT;
   }
 
   int ret;
@@ -1651,6 +1780,52 @@ std::unique_ptr<Writer> DaosStore::get_atomic_writer(
       olh_epoch, unique_tag);
 }
 
+int DaosStore::read_user(const DoutPrefixProvider* dpp, std::string parent,
+                         std::string name, DaosUserInfo* duinfo) {
+  // Open file
+  dfs_obj_t* user_obj;
+  int ret = dfs_lookup_rel(meta_dfs, dirs[parent],
+                           name.c_str(), O_RDWR, &user_obj, nullptr, nullptr);
+  ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel parent=" << parent
+                     << " name=" << name << " ret=" << ret << dendl;
+  if (ret != 0) {
+    return -ENOENT;
+  }
+
+  // Reserve buffers
+  uint64_t size = DFS_MAX_XATTR_LEN;
+  bufferlist bl;
+  d_iov_t iov;
+  d_sg_list_t rsgl;
+  d_iov_set(&iov, bl.append_hole(size).c_str(), size);
+  rsgl.sg_nr = 1;
+  rsgl.sg_iovs = &iov;
+  rsgl.sg_nr_out = 1;
+
+  // Read file
+  uint64_t actual;
+  ret = dfs_read(meta_dfs, user_obj, &rsgl, 0, &actual, nullptr);
+  if (ret != 0) {
+    ldpp_dout(dpp, 0) << "ERROR: failed to read user file, name=" << name
+                      << " ret=" << ret << dendl;
+    return ret;
+  }
+
+  // Close file
+  ret = dfs_release(user_obj);
+  if (ret != 0) {
+    ldpp_dout(dpp, 0) << "ERROR: dfs_release failed, user name=" << name
+                      << " ret=" << ret << dendl;
+    return ret;
+  }
+
+  // Decode
+  bufferlist& blr = bl;
+  auto iter = blr.cbegin();
+  duinfo->decode(iter);
+  return 0;
+}
+
 std::unique_ptr<User> DaosStore::get_user(const rgw_user& u) {
   ldout(cctx, 20) << "DEBUG: bucket's user:  " << u.to_str() << dendl;
   return std::make_unique<DaosUser>(this, u);
@@ -1659,48 +1834,37 @@ std::unique_ptr<User> DaosStore::get_user(const rgw_user& u) {
 int DaosStore::get_user_by_access_key(const DoutPrefixProvider* dpp,
                                       const std::string& key, optional_yield y,
                                       std::unique_ptr<User>* user) {
-  RGWUserInfo uinfo;
-  User* u;
-  RGWObjVersionTracker objv_tracker;
+  DaosUserInfo duinfo;
+  int ret = read_user(dpp, ACCESS_KEYS_DIR, key, &duinfo);
+  if (ret != 0) {
+    ldpp_dout(dpp, 0) << "ERROR: get_user_by_access_key failed, key=" << key << dendl;
+    return ret;
+  }
 
-  /* Hard code user info for test. */
-  rgw_user testid_user("", "tester", "");
-  uinfo.user_id = testid_user;
-  uinfo.display_name = "Daos Explorer";
-  uinfo.user_email = "tester@seagate.com";
-  RGWAccessKey k1("0555b35654ad1656d804",
-                  "h7GhxuBLTrlhVUyxSPUKUV8r/2EI4ngqJxD7iBdBYLhwluN30JaT3Q==");
-  uinfo.access_keys["0555b35654ad1656d804"] = k1;
+  User *u = new DaosUser(this, duinfo.info);
+  if (!u) {
+    return -ENOMEM;
+  }
 
-  u = new DaosUser(this, uinfo);
-  if (!u) return -ENOMEM;
-
-  u->get_version_tracker() = objv_tracker;
   user->reset(u);
-
   return 0;
 }
 
 int DaosStore::get_user_by_email(const DoutPrefixProvider* dpp,
                                  const std::string& email, optional_yield y,
                                  std::unique_ptr<User>* user) {
-  RGWUserInfo uinfo;
-  User* u;
-  RGWObjVersionTracker objv_tracker;
+  DaosUserInfo duinfo;
+  int ret = read_user(dpp, EMAILS_DIR, email, &duinfo);
+  if (ret != 0) {
+    ldpp_dout(dpp, 0) << "ERROR: get_user_by_email failed, email=" << email << dendl;
+    return ret;
+  }
 
-  /* Hard code user info for test. */
-  rgw_user testid_user("", "tester", "");
-  uinfo.user_id = testid_user;
-  uinfo.display_name = "Daos Explorer";
-  uinfo.user_email = "tester@seagate.com";
-  RGWAccessKey k1("0555b35654ad1656d804",
-                  "h7GhxuBLTrlhVUyxSPUKUV8r/2EI4ngqJxD7iBdBYLhwluN30JaT3Q==");
-  uinfo.access_keys["0555b35654ad1656d804"] = k1;
+  User *u = new DaosUser(this, duinfo.info);
+  if (!u) {
+    return -ENOMEM;
+  }
 
-  u = new DaosUser(this, uinfo);
-  if (!u) return -ENOMEM;
-
-  u->get_version_tracker() = objv_tracker;
   user->reset(u);
   return 0;
 }
