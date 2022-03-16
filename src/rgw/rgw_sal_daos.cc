@@ -50,11 +50,13 @@ using ::ceph::encode;
 #define USERS_DIR "users"
 #define EMAILS_DIR "emails"
 #define ACCESS_KEYS_DIR "access_keys"
+#define MULTIPART_DIR "multipart"
 
 static const std::string METADATA_DIRS[] = {
   USERS_DIR,
   EMAILS_DIR,
-  ACCESS_KEYS_DIR
+  ACCESS_KEYS_DIR,
+  MULTIPART_DIR
 };
 
 int DaosUser::list_buckets(const DoutPrefixProvider* dpp, const string& marker,
@@ -162,7 +164,7 @@ int DaosUser::create_bucket(
     ret = dfs_cont_create_with_label(store->poh, bucket->get_name().c_str(),
                                      nullptr, nullptr, nullptr, nullptr);
     ldpp_dout(dpp, 20) << "DEBUG: dfs_cont_create_with_label ret=" << ret
-                       << " name=" << bucket->get_name().c_str() << dendl;
+                       << " name=" << bucket->get_name() << dendl;
     if (ret != 0) {
       ldpp_dout(dpp, 0) << "ERROR: dfs_cont_create_with_label failed! ret="
                         << ret << dendl;
@@ -172,6 +174,17 @@ int DaosUser::create_bucket(
     if (ret != 0) {
       ldpp_dout(dpp, 0) << "ERROR: failed to put bucket info! ret=" << ret
                         << dendl;
+      return ret;
+    }
+
+    // Create multipart index
+    ret = dfs_mkdir(store->meta_dfs, store->dirs[MULTIPART_DIR],
+                    bucket->get_name().c_str(), mode, 0);
+    ldout(cctx, 20) << "DEBUG: multipart index dfs_mkdir bucket="
+                    << bucket->get_name() << " ret=" << ret << dendl;
+    if (ret != 0 && ret != EEXIST) {
+      ldout(cctx, 0) << "ERROR: multipart index creation failed! dfs_mkdir ret="
+                     << ret << dendl;
       return ret;
     }
   } else {
@@ -789,11 +802,13 @@ int DaosBucket::list_multiparts(
     const string& delim, const int& max_uploads,
     vector<std::unique_ptr<MultipartUpload>>& uploads,
     map<string, bool>* common_prefixes, bool* is_truncated) {
+  // TODO
   return 0;
 }
 
 int DaosBucket::abort_multiparts(const DoutPrefixProvider* dpp,
                                  CephContext* cct) {
+  // TODO
   return 0;
 }
 
