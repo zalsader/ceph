@@ -1441,7 +1441,8 @@ int DaosObject::swift_versioning_copy(RGWObjectCtx* obj_ctx,
   return 0;
 }
 
-int DaosObject::open(const DoutPrefixProvider* dpp, bool create) {
+int DaosObject::open(const DoutPrefixProvider* dpp, bool create,
+                     bool exclusive = false) {
   if (is_open()) {
     return 0;
   }
@@ -1499,8 +1500,10 @@ int DaosObject::open(const DoutPrefixProvider* dpp, bool create) {
     }
 
     // Finally create the file
+    int flags = O_RDWR | O_CREAT;
+    flags |= exclusive ? O_EXCL : O_TRUNC;
     ret = dfs_open(daos_bucket->dfs, parent, file_name.c_str(), S_IFREG | mode,
-                   O_RDWR | O_CREAT | O_TRUNC, 0, 0, nullptr, &dfs_obj);
+                   flags, 0, 0, nullptr, &dfs_obj);
     ldpp_dout(dpp, 20) << "DEBUG: dfs_open file_name=" << file_name
                        << " ret=" << ret << dendl;
     if (parent) {
@@ -1508,7 +1511,7 @@ int DaosObject::open(const DoutPrefixProvider* dpp, bool create) {
       ldpp_dout(dpp, 20) << "DEBUG: dfs_release ret=" << ret << dendl;
     }
   }
-  if (ret == 0 || ret == EEXIST) {
+  if (ret == 0 || (!exclusive && ret == EEXIST)) {
     _is_open = true;
   }
   return ret;

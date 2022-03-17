@@ -522,7 +522,7 @@ class DaosObject : public Object {
                                   bool must_exist, optional_yield y) override;
 
   bool is_open() { return _is_open; };
-  int open(const DoutPrefixProvider* dpp, bool create);
+  int open(const DoutPrefixProvider* dpp, bool create, bool exclusive = false);
   int close(const DoutPrefixProvider* dpp);
   DaosBucket* get_daos_bucket() {
     return static_cast<DaosBucket*>(get_bucket());
