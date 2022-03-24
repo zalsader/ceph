@@ -1683,14 +1683,62 @@ int DaosMultipartUpload::abort(const DoutPrefixProvider* dpp, CephContext* cct,
 }
 
 std::unique_ptr<rgw::sal::Object> DaosMultipartUpload::get_meta_obj() {
-  return nullptr;
+  return bucket->get_object(rgw_obj_key(tmp_obj_name, string(), mp_ns));
 }
 
 int DaosMultipartUpload::init(const DoutPrefixProvider* dpp, optional_yield y,
                               RGWObjectCtx* obj_ctx, ACLOwner& _owner,
                               rgw_placement_rule& dest_placement,
                               rgw::sal::Attrs& attrs) {
-  return 0;
+  int ret;
+  std::string oid = mp_obj.get_key();
+
+  while (true) {
+    char buf[33];
+    string tmp_obj_name;
+    std::unique_ptr<rgw::sal::Object> obj;
+    gen_rand_alphanumeric(store->ctx(), buf, sizeof(buf) - 1);
+    std::string upload_id = MULTIPART_UPLOAD_ID_PREFIX; /* v2 upload id */
+    upload_id.append(buf);
+
+    mp_obj.init(oid, upload_id);
+    tmp_obj_name = mp_obj.get_meta();
+
+    obj = get_meta_obj();
+
+    // Create object
+    ret = obj->open(dpp, true, true);
+    if (ret == 0) {
+      // Created successfully
+      break;
+    } else if (ret == EEXIST) {
+      // upload_id exists, retry.
+      obj->close();
+      continue;
+    } else {
+      ldpp_dout(dpp, 0) << "ERROR: failed to open daos object ("
+                        << obj.get_bucket()->get_name() << "/"
+                        << obj.get_key().to_str() << "): ret=" << ret << dendl;
+      return ret;
+    }
+  }
+
+  // Create an initial entry in the bucket. The entry will be
+  // updated when multipart upload is completed, for example,
+  // size, etag etc.
+  bufferlist bl;
+  rgw_bucket_dir_entry ent;
+  obj->get_key().get_index_key(&ent.key);
+  ent.meta.owner = owner.get_id().to_str();
+  ent.meta.category = RGWObjCategory::MultiMeta;
+  ent.meta.mtime = ceph::real_clock::now();
+  // ent.meta.user_data.assign(mpbl.c_str(), mpbl.c_str() + mpbl.length());
+  ent.encode(bl);
+
+  ret = obj_op.write_meta(dpp, bl.length(), 0, attrs, y);
+  
+
+  return ret;
 }
 
 int DaosMultipartUpload::list_parts(const DoutPrefixProvider* dpp,
@@ -1726,10 +1774,50 @@ std::unique_ptr<Writer> DaosMultipartUpload::get_writer(
       ptail_placement_rule, part_num, part_num_str);
 }
 
-int DaosMultipartWriter::prepare(optional_yield y) { return 0; }
+int DaosMultipartWriter::prepare(optional_yield y) {
+  DaosObject* obj = get_daos_head_obj();
+  int ret = obj->open(dpp, false);
+  if (ret != 0) {
+    ldpp_dout(dpp, 0) << "ERROR: failed to open daos object ("
+                      << obj->get_bucket()->get_name() << "/"
+                      << obj->get_key().to_str() << "): ret=" << ret << dendl;
+  }
+  return ret;
+ }
 
 int DaosMultipartWriter::process(bufferlist&& data, uint64_t offset) {
-  return 0;
+  if (data.length() == 0) {
+    return 0;
+  }
+
+  DaosObject* obj = get_daos_head_obj();
+  int ret = 0;
+  if (!obj->is_open()) {
+    ret = obj->open(dpp, false);
+    if (ret != 0) {
+      ldpp_dout(dpp, 0) << "ERROR: failed to open daos object ("
+                        << obj->get_bucket()->get_name() << "/"
+                        << obj->get_key().to_str() << "): ret=" << ret << dendl;
+    }
+    return ret;
+  }
+
+  // XXX: Combine multiple streams into one as motr does
+  // XXX: Dry this part
+  d_sg_list_t wsgl;
+  d_iov_t iov;
+  d_iov_set(&iov, data.c_str(), data.length());
+  wsgl.sg_nr = 1;
+  wsgl.sg_iovs = &iov;
+  ret = dfs_write(obj->get_daos_bucket()->dfs, obj->dfs_obj, &wsgl, offset,
+                  nullptr);
+  if (ret != 0) {
+    ldpp_dout(dpp, 0) << "ERROR: failed to write into daos object ("
+                      << obj->get_bucket()->get_name() << "/"
+                      << obj->get_key().to_str() << "): ret=" << ret << dendl;
+  }
+  actual_part_size += data.length();
+  return ret;
 }
 
 int DaosMultipartWriter::complete(
@@ -1738,6 +1826,35 @@ int DaosMultipartWriter::complete(
     ceph::real_time delete_at, const char* if_match, const char* if_nomatch,
     const std::string* user_data, rgw_zone_set* zones_trace, bool* canceled,
     optional_yield y) {
+  // Close writing on head object
+  get_daos_head_obj()->close(dpp);
+
+  ldpp_dout(dpp, 20) << "DaosMultipartWriter::complete(): enter" << dendl;
+  // Add an entry into object_nnn_part_index.
+  bufferlist bl;
+  RGWUploadPartInfo info;
+  info.num = part_num;
+  info.etag = etag;
+  info.size = actual_part_size;
+  info.accounted_size = accounted_size;
+  info.modified = real_clock::now();
+
+  bool compressed;
+  int ret = rgw_compression_info_from_attrset(attrs, compressed, info.cs_info);
+  ldpp_dout(dpp, 20) << "DaosMultipartWriter::complete(): compression rc=" << rc << dendl;
+  if (ret < 0) {
+    ldpp_dout(dpp, 1) << "cannot get compression info" << dendl;
+    return ret;
+  }
+  encode(info, bl);
+  encode(attrs, bl);
+
+  // TODO write to part object
+
+  if (ret < 0) {
+    return ret == -ENOENT ? -ERR_NO_SUCH_UPLOAD : ret;
+  }
+
   return 0;
 }
 
