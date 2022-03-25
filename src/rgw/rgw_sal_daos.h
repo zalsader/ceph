@@ -524,6 +524,7 @@ class DaosObject : public Object {
   bool is_open() { return _is_open; };
   int open(const DoutPrefixProvider* dpp, bool create, bool exclusive = false);
   int close(const DoutPrefixProvider* dpp);
+  int write(const DoutPrefixProvider* dpp, bufferlist&& data, uint64_t offset);
   DaosBucket* get_daos_bucket() {
     return static_cast<DaosBucket*>(get_bucket());
   }

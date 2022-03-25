@@ -1531,6 +1531,22 @@ int DaosObject::close(const DoutPrefixProvider* dpp) {
   return ret;
 }
 
+int DaosObject::write(const DoutPrefixProvider* dpp, bufferlist&& data,
+                      uint64_t offset) {
+  d_sg_list_t wsgl;
+  d_iov_t iov;
+  d_iov_set(&iov, data.c_str(), data.length());
+  wsgl.sg_nr = 1;
+  wsgl.sg_iovs = &iov;
+  int ret = dfs_write(get_daos_bucket()->dfs, dfs_obj, &wsgl, offset, nullptr);
+  if (ret != 0) {
+    ldpp_dout(dpp, 0) << "ERROR: failed to write into daos object ("
+                      << get_bucket()->get_name() << "/" << get_key().to_str()
+                      << "): ret=" << ret << dendl;
+  }
+  return ret;
+}
+
 DaosAtomicWriter::DaosAtomicWriter(
     const DoutPrefixProvider* dpp, optional_yield y,
     std::unique_ptr<rgw::sal::Object> _head_obj, DaosStore* _store,
@@ -1573,19 +1589,10 @@ int DaosAtomicWriter::process(bufferlist&& data, uint64_t offset) {
   }
 
   // XXX: Combine multiple streams into one as motr does
-  d_sg_list_t wsgl;
-  d_iov_t iov;
-  d_iov_set(&iov, data.c_str(), data.length());
-  wsgl.sg_nr = 1;
-  wsgl.sg_iovs = &iov;
-  ret = dfs_write(obj.get_daos_bucket()->dfs, obj.dfs_obj, &wsgl, offset,
-                  nullptr);
-  if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: failed to write into daos object ("
-                      << obj.get_bucket()->get_name() << "/"
-                      << obj.get_key().to_str() << "): ret=" << ret << dendl;
+  ret = obj.write(dpp, std::move(data), offset);
+  if (ret == 0) {
+    total_data_size += data.length();
   }
-  total_data_size += data.length();
   return ret;
 }
 
@@ -1683,7 +1690,7 @@ int DaosMultipartUpload::abort(const DoutPrefixProvider* dpp, CephContext* cct,
 }
 
 std::unique_ptr<rgw::sal::Object> DaosMultipartUpload::get_meta_obj() {
-  return bucket->get_object(rgw_obj_key(tmp_obj_name, string(), mp_ns));
+  return bucket->get_object(rgw_obj_key(get_meta(), string(), mp_ns));
 }
 
 int DaosMultipartUpload::init(const DoutPrefixProvider* dpp, optional_yield y,
@@ -1695,14 +1702,12 @@ int DaosMultipartUpload::init(const DoutPrefixProvider* dpp, optional_yield y,
 
   while (true) {
     char buf[33];
-    string tmp_obj_name;
     std::unique_ptr<rgw::sal::Object> obj;
     gen_rand_alphanumeric(store->ctx(), buf, sizeof(buf) - 1);
     std::string upload_id = MULTIPART_UPLOAD_ID_PREFIX; /* v2 upload id */
     upload_id.append(buf);
 
     mp_obj.init(oid, upload_id);
-    tmp_obj_name = mp_obj.get_meta();
 
     obj = get_meta_obj();
 
@@ -1803,20 +1808,10 @@ int DaosMultipartWriter::process(bufferlist&& data, uint64_t offset) {
   }
 
   // XXX: Combine multiple streams into one as motr does
-  // XXX: Dry this part
-  d_sg_list_t wsgl;
-  d_iov_t iov;
-  d_iov_set(&iov, data.c_str(), data.length());
-  wsgl.sg_nr = 1;
-  wsgl.sg_iovs = &iov;
-  ret = dfs_write(obj->get_daos_bucket()->dfs, obj->dfs_obj, &wsgl, offset,
-                  nullptr);
-  if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: failed to write into daos object ("
-                      << obj->get_bucket()->get_name() << "/"
-                      << obj->get_key().to_str() << "): ret=" << ret << dendl;
+  ret = obj->write(dpp, std::move(data), offset);
+  if (ret == 0) {
+    actual_part_size += data.length();
   }
-  actual_part_size += data.length();
   return ret;
 }
 
