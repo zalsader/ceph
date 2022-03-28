@@ -30,7 +30,6 @@
 #include "rgw_bucket.h"
 #include "rgw_compression.h"
 #include "rgw_sal.h"
-#include "daos_fs_sys.h"
 
 #define dout_subsys ceph_subsys_rgw
 
