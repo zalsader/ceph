@@ -210,6 +210,7 @@ target_link_libraries(rgw_common
     cls_timeindex_client
     cls_user_client
     cls_version_client
+    dfs
     librados
     rt
     fmt::fmt
