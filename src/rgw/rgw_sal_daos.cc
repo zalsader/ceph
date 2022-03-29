@@ -46,6 +46,7 @@ using ::ceph::encode;
 
 #define RGW_BUCKET_RGW_INFO "rgw_info"
 #define RGW_DIR_ENTRY_XATTR "rgw_entry"
+#define RGW_PART_XATTR "rgw_part"
 #define METADATA_BUCKET "_METADATA"
 #define USERS_DIR "users"
 #define EMAILS_DIR "emails"
@@ -1884,22 +1885,46 @@ std::unique_ptr<Writer> DaosMultipartUpload::get_writer(
 }
 
 int DaosMultipartWriter::prepare(optional_yield y) {
-  DaosObject* obj = get_daos_head_obj();
+  DaosObject* obj = get_daos_meta_obj();
   int ret = obj->open(dpp, false);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to open daos object ("
                       << obj->get_bucket()->get_name() << "/"
                       << obj->get_key().to_str() << "): ret=" << ret << dendl;
+    return ret;
+  }
+
+  dfs_obj_t* upload_dir;
+  string name = obj->get_bucket()->get_name() + '/' + upload_id;
+  int ret = dfs_lookup_rel(store->meta_dfs, store->dirs[MULTIPART_DIR], name,
+                           O_RDWR, &upload_dir, nullptr, nullptr);
+  if (ret != 0) {
+    if (ret == ENOENT) {
+      ret = -ERR_NO_SUCH_UPLOAD;
+    }
+    obj->close();
+    return ret;
+  }
+
+  // Create part file
+  int flags = O_RDWR | O_CREAT;
+  ret = dfs_open(obj->get_daos_bucket()->dfs, upload_dir, part_num_str.c_str(),
+                 S_IFREG | DEFFILEMODE, flags, 0, 0, nullptr, &part_dfs_obj);
+  ldpp_dout(dpp, 20) << "DEBUG: dfs_open file_name=" << file_name
+                     << " ret=" << ret << dendl;
+  dfs_release(upload_dir);
+  if (ret != 0) {
+    obj->close();
   }
   return ret;
- }
+}
 
 int DaosMultipartWriter::process(bufferlist&& data, uint64_t offset) {
   if (data.length() == 0) {
     return 0;
   }
 
-  DaosObject* obj = get_daos_head_obj();
+  DaosObject* obj = get_daos_meta_obj();
   int ret = 0;
   if (!obj->is_open()) {
     ret = obj->open(dpp, false);
@@ -1925,11 +1950,12 @@ int DaosMultipartWriter::complete(
     ceph::real_time delete_at, const char* if_match, const char* if_nomatch,
     const std::string* user_data, rgw_zone_set* zones_trace, bool* canceled,
     optional_yield y) {
-  // Close writing on head object
-  get_daos_head_obj()->close(dpp);
+  // Close writing on object
+  get_daos_meta_obj()->close(dpp);
 
   ldpp_dout(dpp, 20) << "DaosMultipartWriter::complete(): enter" << dendl;
-  // Add an entry into object_nnn_part_index.
+
+  // Add an entry into part index
   bufferlist bl;
   RGWUploadPartInfo info;
   info.num = part_num;
@@ -1940,21 +1966,31 @@ int DaosMultipartWriter::complete(
 
   bool compressed;
   int ret = rgw_compression_info_from_attrset(attrs, compressed, info.cs_info);
-  ldpp_dout(dpp, 20) << "DaosMultipartWriter::complete(): compression rc=" << rc << dendl;
+  ldpp_dout(dpp, 20) << "DaosMultipartWriter::complete(): compression ret=" << ret
+                     << dendl;
   if (ret < 0) {
     ldpp_dout(dpp, 1) << "cannot get compression info" << dendl;
-    return ret;
+    goto out;
   }
   encode(info, bl);
   encode(attrs, bl);
 
-  // TODO write to part object
+  ret = dfs_setxattr(store->meta_dfs, part_dfs_obj, RGW_PART_XATTR, bl.c_str(),
+                     bl.length(), 0);
 
-  if (ret < 0) {
-    return ret == -ENOENT ? -ERR_NO_SUCH_UPLOAD : ret;
+  if (ret != 0) {
+    ldpp_dout(dpp, 0) << "ERROR: failed to set xattr part ("
+                      << meta_obj->get_bucket()->get_name() << "/" << upload_id
+                      << "/" << part_num_str << "): ret=" << ret << dendl;
+    if (ret == ENOENT) {
+      ret = -ERR_NO_SUCH_UPLOAD;
+    }
+    goto out;
   }
 
-  return 0;
+out:
+  dfs_release(part_dfs_obj);
+  return ret;
 }
 
 std::unique_ptr<RGWRole> DaosStore::get_role(
