@@ -392,27 +392,9 @@ int DaosBucket::open(const DoutPrefixProvider* dpp) {
   }
 
   int ret;
-#ifdef OLD_CODE
-  daos_cont_info_t cont_info;
-  // TODO: We need to cache open container handles
-  ret = daos_cont_open(store->poh, info.bucket.name.c_str(), DAOS_COO_RW, &coh,
-                       &cont_info, nullptr);
-  ldpp_dout(dpp, 20) << "DEBUG: daos_cont_open, name=" << info.bucket.name
-                     << ", ret=" << ret << dendl;
-
-  if (ret != 0) {
-    return -ENOENT;
-  }
-
-  uuid_copy(cont_uuid, cont_info.ci_uuid);
-
-  ret = dfs_mount(store->poh, coh, O_RDWR, &dfs);
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_mount ret=" << ret << dendl;
-#else
   // How can i get the pool name?
   const auto& daos_pool = g_conf().get_val<std::string>("daos_pool");
   ret = dfs_connect(daos_pool.c_str(), nullptr, info.bucket.name.c_str(), O_RDWR, nullptr, &dfs);
-#endif
 
   if (ret != 0) {
     daos_cont_close(coh, nullptr);
@@ -429,19 +411,7 @@ int DaosBucket::close(const DoutPrefixProvider* dpp) {
   }
 
   int ret = 0;
-#ifdef OLD_CODE
-  ret = dfs_umount(dfs);
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_umount ret=" << ret << dendl;
-
-  if (ret < 0) {
-    return ret;
-  }
-
-  ret = daos_cont_close(coh, nullptr);
-  ldpp_dout(dpp, 20) << "DEBUG: daos_cont_close ret=" << ret << dendl;
-#else
   ret = dfs_disconnect(dfs);
-#endif
 
   if (ret < 0) {
     return ret;
