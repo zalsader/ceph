@@ -762,10 +762,14 @@ int DaosBucket::list(const DoutPrefixProvider* dpp, ListParams& params, int max,
       vector<uint8_t> value(DFS_MAX_XATTR_LEN);
       size_t size = value.size();
       dfs_getxattr(dfs, entry_obj, RGW_DIR_ENTRY_XATTR, value.data(), &size);
-      ldpp_dout(dpp, 0) << "DEBUG: dfs_getxattr entry=" << name
-                        << " xattr=" << RGW_DIR_ENTRY_XATTR << dendl;
+      ldpp_dout(dpp, 20) << "DEBUG: dfs_getxattr entry=" << name
+                         << " xattr=" << RGW_DIR_ENTRY_XATTR << dendl;
+      // Skip if file has no dirent
       if (ret != 0) {
-        return ret;
+        ldpp_dout(dpp, 20) << "DEBUG: no dirent, skipping entry=" << name
+                           << dendl;
+        dfs_release(entry_obj);
+        continue;
       }
 
       bufferlist bl;
@@ -1699,33 +1703,44 @@ int DaosMultipartUpload::init(const DoutPrefixProvider* dpp, optional_yield y,
                               rgw::sal::Attrs& attrs) {
   int ret;
   std::string oid = mp_obj.get_key();
+  dfs_obj_t* multipart_dir;
+  ret = dfs_lookup_rel(store->meta_dfs, store->dirs[MULTIPART_DIR],
+                       bucket->get_name().c_str(), O_RDWR, &multipart_dir,
+                       nullptr, nullptr);
+  ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel multipart dir for bucket="
+                     << bucket->get_name() << " ret=" << ret << dendl;
 
-  while (true) {
+  do {
     char buf[33];
-    std::unique_ptr<rgw::sal::Object> obj;
     gen_rand_alphanumeric(store->ctx(), buf, sizeof(buf) - 1);
     std::string upload_id = MULTIPART_UPLOAD_ID_PREFIX; /* v2 upload id */
     upload_id.append(buf);
 
     mp_obj.init(oid, upload_id);
 
-    obj = get_meta_obj();
+    // Create meta index
+    ret = dfs_mkdir(store->meta_dfs, multipart_dir, upload_id.c_str(),
+                    DEFFILEMODE, 0);
+  } while (ret == EEXIST);
 
-    // Create object
-    ret = obj->open(dpp, true, true);
-    if (ret == 0) {
-      // Created successfully
-      break;
-    } else if (ret == EEXIST) {
-      // upload_id exists, retry.
-      obj->close();
-      continue;
-    } else {
-      ldpp_dout(dpp, 0) << "ERROR: failed to open daos object ("
-                        << obj.get_bucket()->get_name() << "/"
-                        << obj.get_key().to_str() << "): ret=" << ret << dendl;
-      return ret;
-    }
+  if (ret != 0) {
+    ldpp_dout(dpp, 0) << "ERROR: failed to create multipart upload dir ("
+                      << bucket->get_name() << "/" << upload_id
+                      << "): ret=" << ret << dendl;
+    goto out;
+  }
+
+  // Create object, this creates object: path/to/key.<upload_id>.meta
+  // TODO exclude from listing
+  std::unique_ptr<rgw::sal::Object> obj = get_meta_obj();
+  DaosObject* daos_obj = static_cast<DaosObject*>(obj.get());
+  ret = daos_obj->open(dpp, true, true);
+  daos_obj->close();
+  if (ret != 0) {
+    ldpp_dout(dpp, 0) << "ERROR: failed to open daos object ("
+                      << obj->get_bucket()->get_name() << "/"
+                      << obj->get_key().to_str() << "): ret=" << ret << dendl;
+    goto out;
   }
 
   // Create an initial entry in the bucket. The entry will be
@@ -1737,12 +1752,32 @@ int DaosMultipartUpload::init(const DoutPrefixProvider* dpp, optional_yield y,
   ent.meta.owner = owner.get_id().to_str();
   ent.meta.category = RGWObjCategory::MultiMeta;
   ent.meta.mtime = ceph::real_clock::now();
-  // ent.meta.user_data.assign(mpbl.c_str(), mpbl.c_str() + mpbl.length());
+
+  multipart_upload_info upload_info;
+  upload_info.dest_placement = dest_placement;
+  bufferlist mpbl;
+  encode(upload_info, mpbl);
+
+  ent.meta.user_data.assign(mpbl.c_str(), mpbl.c_str() + mpbl.length());
   ent.encode(bl);
+  encode(attrs, bl);
 
-  ret = obj_op.write_meta(dpp, bl.length(), 0, attrs, y);
-  
+  // Insert an entry into bucket multipart index so it is not shown
+  // when listing a bucket.
+  dfs_obj_t* upload_dir;
+  ret = dfs_lookup_rel(store->meta_dfs, multipart_dir, upload_id.c_str(),
+                       O_RDWR, &upload_dir, nullptr, nullptr);
 
+  ret = dfs_setxattr(store->meta_dfs, upload_dir, RGW_DIR_ENTRY_XATTR,
+                         bl.c_str(), bl.length(), 0);
+  if (ret != 0) {
+    ldpp_dout(dpp, 0) << "ERROR: failed to set xattr of multipart upload dir ("
+                      << bucket->get_name() << "/" << upload_id
+                      << "): ret=" << ret << dendl;
+  }
+  dfs_release(upload_dir);
+out:
+  dfs_release(multipart_dir);
   return ret;
 }
 
