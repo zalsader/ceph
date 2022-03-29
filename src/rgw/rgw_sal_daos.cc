@@ -2316,13 +2316,13 @@ std::string DaosStore::get_cluster_id(const DoutPrefixProvider* dpp,
 extern "C" {
 
 void* newDaosStore(CephContext* cct) {
-  int rc = -1;
+  int ret = -1;
   rgw::sal::DaosStore* store = new rgw::sal::DaosStore(cct);
 
   if (store) {
-    rc = store->initialize();
-    if (rc != 0) {
-      ldout(cct, 0) << "ERROR: store->initialize() failed: " << rc << dendl;
+    ret = store->initialize();
+    if (ret != 0) {
+      ldout(cct, 0) << "ERROR: store->initialize() failed: " << ret << dendl;
       store->finalize();
       delete store;
       return nullptr;
