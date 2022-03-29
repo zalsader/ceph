@@ -806,7 +806,9 @@ int DaosBucket::list_multiparts(
     const string& delim, const int& max_uploads,
     vector<std::unique_ptr<MultipartUpload>>& uploads,
     map<string, bool>* common_prefixes, bool* is_truncated) {
-  // TODO
+  // TODO handle markers
+  // TODO handle delimeters
+
   return 0;
 }
 
@@ -1755,11 +1757,9 @@ int DaosMultipartUpload::init(const DoutPrefixProvider* dpp, optional_yield y,
 
   multipart_upload_info upload_info;
   upload_info.dest_placement = dest_placement;
-  bufferlist mpbl;
-  encode(upload_info, mpbl);
 
-  ent.meta.user_data.assign(mpbl.c_str(), mpbl.c_str() + mpbl.length());
   ent.encode(bl);
+  encode(upload_info, bl);
   encode(attrs, bl);
 
   // Insert an entry into bucket multipart index so it is not shown
@@ -1801,6 +1801,61 @@ int DaosMultipartUpload::get_info(const DoutPrefixProvider* dpp,
                                   optional_yield y, RGWObjectCtx* obj_ctx,
                                   rgw_placement_rule** rule,
                                   rgw::sal::Attrs* attrs) {
+  if (!rule && !attrs) {
+    return 0;
+  }
+
+  if (rule) {
+    if (!placement.empty()) {
+      *rule = &placement;
+      if (!attrs) {
+        // Don't need attrs, done
+        return 0;
+      }
+    } else {
+      *rule = nullptr;
+    }
+  }
+
+  // Read the multipart upload dirent from index
+
+  dfs_obj_t* upload_dir;
+  string name = bucket->get_name() + '/' + get_upload_id();
+  int ret = dfs_lookup_rel(store->meta_dfs, store->dirs[MULTIPART_DIR], name,
+                           O_RDWR, &upload_dir, nullptr, nullptr);
+  if (ret == ENOENT) {
+    return -ERR_NO_SUCH_UPLOAD;
+  } else if (ret != 0) {
+    return ret;
+  }
+
+  vector<uint8_t> value(DFS_MAX_XATTR_LEN);
+  size_t size = value.size();
+  ret = dfs_getxattr(dfs, entry_obj, RGW_DIR_ENTRY_XATTR, value.data(), &size);
+  ldpp_dout(dpp, 20) << "DEBUG: dfs_getxattr entry=" << name
+                     << " xattr=" << RGW_DIR_ENTRY_XATTR << dendl;
+  dfs_release(upload_dir);
+
+  multipart_upload_info upload_info;
+  rgw_bucket_dir_entry ent;
+  bufferlist bl;
+  bl.append(reinterpret_cast<char*>(value.data()), size);
+  auto iter = bl.cbegin();
+  ent.decode(iter);
+  decode(upload_info, mpbl_iter);
+
+  if (attrs) {
+    decode(*attrs, iter);
+    if (!rule || *rule != nullptr) {
+      // placement was cached; don't actually read
+      return 0;
+    }
+  }
+
+  // Now add the placement rule
+  placement = upload_info.dest_placement;
+  *rule = &placement;
+
   return 0;
 }
 
