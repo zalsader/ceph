@@ -1735,17 +1735,6 @@ int DaosMultipartUpload::init(const DoutPrefixProvider* dpp, optional_yield y,
     goto out;
   }
 
-  // Create object, this creates object: path/to/key.<upload_id>.meta
-  std::unique_ptr<rgw::sal::Object> obj = get_meta_obj();
-  DaosObject* daos_obj = static_cast<DaosObject*>(obj.get());
-  ret = daos_obj->open(dpp, true, true);
-  if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: failed to open daos object ("
-                      << obj->get_bucket()->get_name() << "/"
-                      << obj->get_key().to_str() << "): ret=" << ret << dendl;
-    goto out;
-  }
-
   // Create an initial entry in the bucket. The entry will be
   // updated when multipart upload is completed, for example,
   // size, etag etc.
@@ -1769,15 +1758,37 @@ int DaosMultipartUpload::init(const DoutPrefixProvider* dpp, optional_yield y,
                        O_RDWR, &upload_dir, nullptr, nullptr);
 
   ret = dfs_setxattr(store->meta_dfs, upload_dir, RGW_DIR_ENTRY_XATTR,
-                         bl.c_str(), bl.length(), 0);
+                     bl.c_str(), bl.length(), 0);
+  dfs_release(upload_dir);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to set xattr of multipart upload dir ("
                       << bucket->get_name() << "/" << upload_id
                       << "): ret=" << ret << dendl;
+    goto out;
   }
-  dfs_release(upload_dir);
-out:
+
+  // Create object, this creates object: path/to/key.<upload_id>.meta
+  std::unique_ptr<rgw::sal::Object> obj = get_meta_obj();
+  DaosObject* daos_obj = static_cast<DaosObject*>(obj.get());
+  ret = daos_obj->open(dpp, true, true);
+  if (ret != 0) {
+    ldpp_dout(dpp, 0) << "ERROR: failed to open daos object ("
+                      << obj->get_bucket()->get_name() << "/"
+                      << obj->get_key().to_str() << "): ret=" << ret << dendl;
+    goto out_obj;
+  }
+
+  // Write meta to object
+  ret = dfs_setxattr(daos_obj->get_daos_bucket()->dfs, daos_obj->dfs_obj,
+                     RGW_DIR_ENTRY_XATTR, bl.c_str(), bl.length(), 0);
+  if (ret != 0) {
+    ldpp_dout(dpp, 0) << "ERROR: failed to set xattr of daos object ("
+                      << obj->get_bucket()->get_name() << "/"
+                      << obj->get_key().to_str() << "): ret=" << ret << dendl;
+  }
+out_obj:
   daos_obj->close();
+out:
   dfs_release(multipart_dir);
   return ret;
 }
