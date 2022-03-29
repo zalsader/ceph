@@ -766,8 +766,8 @@ int DaosBucket::list(const DoutPrefixProvider* dpp, ListParams& params, int max,
                          << " xattr=" << RGW_DIR_ENTRY_XATTR << dendl;
       // Skip if file has no dirent
       if (ret != 0) {
-        ldpp_dout(dpp, 20) << "DEBUG: no dirent, skipping entry=" << name
-                           << dendl;
+        ldpp_dout(dpp, 0) << "ERROR: no dirent, skipping entry=" << name
+                          << dendl;
         dfs_release(entry_obj);
         continue;
       }
@@ -777,11 +777,14 @@ int DaosBucket::list(const DoutPrefixProvider* dpp, ListParams& params, int max,
       bl.append(reinterpret_cast<char*>(value.data()), size);
       auto iter = bl.cbegin();
       ent.decode(iter);
-      if (params.list_versions || ent.is_visible()) {
+      if (ent.meta.category != RGWObjCategory::MultiMeta &&
+          (params.list_versions || ent.is_visible())) {
         results.objs.emplace_back(std::move(ent));
       }
+    } else {
+      // Skip other types
+      ldpp_dout(dpp, 20) << "DEBUG: skipping entry=" << name << dendl;
     }
-    // skip other types
 
     // Close handles
     ret = dfs_release(entry_obj);
@@ -1733,11 +1736,9 @@ int DaosMultipartUpload::init(const DoutPrefixProvider* dpp, optional_yield y,
   }
 
   // Create object, this creates object: path/to/key.<upload_id>.meta
-  // TODO exclude from listing
   std::unique_ptr<rgw::sal::Object> obj = get_meta_obj();
   DaosObject* daos_obj = static_cast<DaosObject*>(obj.get());
   ret = daos_obj->open(dpp, true, true);
-  daos_obj->close();
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to open daos object ("
                       << obj->get_bucket()->get_name() << "/"
@@ -1759,11 +1760,10 @@ int DaosMultipartUpload::init(const DoutPrefixProvider* dpp, optional_yield y,
   upload_info.dest_placement = dest_placement;
 
   ent.encode(bl);
-  encode(upload_info, bl);
   encode(attrs, bl);
+  encode(upload_info, bl);
 
-  // Insert an entry into bucket multipart index so it is not shown
-  // when listing a bucket.
+  // Insert an entry into bucket multipart index
   dfs_obj_t* upload_dir;
   ret = dfs_lookup_rel(store->meta_dfs, multipart_dir, upload_id.c_str(),
                        O_RDWR, &upload_dir, nullptr, nullptr);
@@ -1777,6 +1777,7 @@ int DaosMultipartUpload::init(const DoutPrefixProvider* dpp, optional_yield y,
   }
   dfs_release(upload_dir);
 out:
+  daos_obj->close();
   dfs_release(multipart_dir);
   return ret;
 }
@@ -1838,21 +1839,23 @@ int DaosMultipartUpload::get_info(const DoutPrefixProvider* dpp,
 
   multipart_upload_info upload_info;
   rgw_bucket_dir_entry ent;
+  Attrs decoded_attrs;
   bufferlist bl;
   bl.append(reinterpret_cast<char*>(value.data()), size);
   auto iter = bl.cbegin();
   ent.decode(iter);
-  decode(upload_info, mpbl_iter);
+  decode(decoded_attrs, iter);
 
   if (attrs) {
-    decode(*attrs, iter);
+    *attrs = decoded_attrs;
     if (!rule || *rule != nullptr) {
       // placement was cached; don't actually read
       return 0;
     }
   }
 
-  // Now add the placement rule
+  // Now decode the placement rule
+  decode(upload_info, iter);
   placement = upload_info.dest_placement;
   *rule = &placement;
 
