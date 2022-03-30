@@ -699,7 +699,6 @@ class DaosMultipartUpload : public MultipartUpload {
       std::unique_ptr<rgw::sal::Object> _head_obj, const rgw_user& owner,
       RGWObjectCtx& obj_ctx, const rgw_placement_rule* ptail_placement_rule,
       uint64_t part_num, const std::string& part_num_str) override;
-  int delete_parts(const DoutPrefixProvider* dpp);
 };
 
 class DaosStore : public Store {

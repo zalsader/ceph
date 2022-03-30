@@ -1690,12 +1690,20 @@ int DaosAtomicWriter::complete(
   return ret;
 }
 
-int DaosMultipartUpload::delete_parts(const DoutPrefixProvider* dpp) {
-  return 0;
-}
-
 int DaosMultipartUpload::abort(const DoutPrefixProvider* dpp, CephContext* cct,
                                RGWObjectCtx* obj_ctx) {
+  // Remove meta object
+  std::unique_ptr<rgw::sal::Object> obj = get_meta_obj();
+  obj->delete_object(dpp, obj_ctx, null_yield);
+
+  // Remove upload from bucket multipart index
+  dfs_obj_t* multipart_dir;
+  ret = dfs_lookup_rel(store->meta_dfs, store->dirs[MULTIPART_DIR],
+                       bucket->get_name().c_str(), O_RDWR, &multipart_dir,
+                       nullptr, nullptr);
+  ret = dfs_remove(store->meta_dfs, multipart_dir, get_upload_id().c_str(),
+                   true, nullptr);
+  dfs_release(multipart_dir);
   return 0;
 }
 
