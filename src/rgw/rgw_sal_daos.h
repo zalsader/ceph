@@ -594,7 +594,7 @@ class DaosMultipartWriter : public Writer {
   dfs_obj_t* part_dfs_obj;
 
   DaosObject* get_daos_meta_obj() {
-    return static_cast<DaosObject*>(head_obj.get());
+    return static_cast<DaosObject*>(meta_obj.get());
   }
 
  public:
@@ -606,9 +606,9 @@ class DaosMultipartWriter : public Writer {
                       const rgw_placement_rule* ptail_placement_rule,
                       uint64_t _part_num, const std::string& part_num_str)
       : Writer(dpp, y),
+        store(_store),
         meta_obj(upload->get_meta_obj()),
         upload_id(upload->get_upload_id()),
-        store(_store),
         part_num(_part_num),
         part_num_str(part_num_str) {}
   ~DaosMultipartWriter() = default;

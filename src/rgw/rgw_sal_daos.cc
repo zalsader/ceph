@@ -52,6 +52,7 @@ using ::ceph::encode;
 #define EMAILS_DIR "emails"
 #define ACCESS_KEYS_DIR "access_keys"
 #define MULTIPART_DIR "multipart"
+#define MULTIPART_MAX_PARTS 10000
 
 static const std::string METADATA_DIRS[] = {
   USERS_DIR,
@@ -1451,7 +1452,7 @@ int DaosObject::swift_versioning_copy(RGWObjectCtx* obj_ctx,
 }
 
 int DaosObject::open(const DoutPrefixProvider* dpp, bool create,
-                     bool exclusive = false) {
+                     bool exclusive) {
   if (is_open()) {
     return 0;
   }
@@ -1703,7 +1704,7 @@ int DaosMultipartUpload::abort(const DoutPrefixProvider* dpp, CephContext* cct,
   ret = dfs_remove(store->meta_dfs, multipart_dir, get_upload_id().c_str(),
                    true, nullptr);
   dfs_release(multipart_dir);
-  return 0;
+  return ret;
 }
 
 static string mp_ns = RGW_OBJ_NS_MULTIPART;
@@ -1800,9 +1801,7 @@ int DaosMultipartUpload::init(const DoutPrefixProvider* dpp, optional_yield y,
                       << obj->get_bucket()->get_name() << "/"
                       << obj->get_key().to_str() << "): ret=" << ret << dendl;
   }
-out_obj:
   daos_obj->close(dpp);
-out:
   dfs_release(multipart_dir);
   return ret;
 }
@@ -1826,15 +1825,17 @@ int DaosMultipartUpload::list_parts(const DoutPrefixProvider* dpp,
   daos_anchor_init(&anchor, 0);
 
   uint32_t nr = dirents.size();
-  ret = dfs_readdir(dfs, dir_obj, &anchor, &nr, dirents.data());
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_readdir path=" << path << " nr=" << nr
+  ret = dfs_readdir(store->meta_dfs, upload_dir, &anchor, &nr, dirents.data());
+  ldpp_dout(dpp, 20) << "DEBUG: dfs_readdir name=" << name << " nr=" << nr
                      << " ret=" << ret << dendl;
   if (ret != 0) {
-    dfs_release(upload_dir) return ret;
+    dfs_release(upload_dir);
+    return ret;
   }
 
   for (uint32_t i = 0; i < nr; i++) {
     const auto& part_name = dirents[i].d_name;
+    std::string err;
     const int part_num = strict_strtol(part_name, 10, &err);
     if (!err.empty()) {
       ldpp_dout(dpp, 10) << "bad part number: " << part_name << ": " << err
@@ -1850,7 +1851,7 @@ int DaosMultipartUpload::list_parts(const DoutPrefixProvider* dpp,
 
     dfs_obj_t* part_obj;
     mode_t mode;
-    ret = dfs_lookup_rel(dfs, dir_obj, part_name, O_RDWR, &part_obj, &mode,
+    ret = dfs_lookup_rel(store->meta_dfs, upload_dir, part_name, O_RDWR, &part_obj, &mode,
                          nullptr);
     ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel i=" << i
                        << " entry=" << part_name << " ret=" << ret << dendl;
@@ -1861,7 +1862,7 @@ int DaosMultipartUpload::list_parts(const DoutPrefixProvider* dpp,
     // The entry is a regular file, read the xattr and add to objs
     vector<uint8_t> value(DFS_MAX_XATTR_LEN);
     size_t size = value.size();
-    dfs_getxattr(dfs, part_obj, RGW_PART_XATTR, value.data(), &size);
+    dfs_getxattr(store->meta_dfs, part_obj, RGW_PART_XATTR, value.data(), &size);
     ldpp_dout(dpp, 20) << "DEBUG: dfs_getxattr entry=" << part_name
                        << " xattr=" << RGW_PART_XATTR << dendl;
     // Skip if the part has no info
@@ -1878,7 +1879,7 @@ int DaosMultipartUpload::list_parts(const DoutPrefixProvider* dpp,
     std::unique_ptr<DaosMultipartPart> part =
         std::make_unique<DaosMultipartPart>();
     auto iter = bl.cbegin();
-    decode(part->info, bl);
+    decode(part->info, iter);
     parts[part->info.num] = std::move(part);
 
     // Close handles
@@ -2072,7 +2073,7 @@ int DaosMultipartUpload::complete(
   // TODO handle errors
   dfs_obj_t* upload_dir;
   string name = bucket->get_name() + '/' + get_upload_id();
-  int ret = dfs_lookup_rel(store->meta_dfs, store->dirs[MULTIPART_DIR], name.c_str(),
+  ret = dfs_lookup_rel(store->meta_dfs, store->dirs[MULTIPART_DIR], name.c_str(),
                            O_RDWR, &upload_dir, nullptr, nullptr);
   if (ret == ENOENT) {
     return -ERR_NO_SUCH_UPLOAD;
@@ -2089,12 +2090,10 @@ int DaosMultipartUpload::complete(
 
   multipart_upload_info upload_info;
   rgw_bucket_dir_entry ent;
-  Attrs attrs;
   bufferlist bl;
   bl.append(reinterpret_cast<char*>(value.data()), size);
   auto iter = bl.cbegin();
   ent.decode(iter);
-  decode(attrs, iter);
 
   // Update entry data and name
   target_obj->get_key().get_index_key(&ent.key);
@@ -2247,7 +2246,7 @@ int DaosMultipartWriter::prepare(optional_yield y) {
 
   dfs_obj_t* upload_dir;
   string name = obj->get_bucket()->get_name() + '/' + upload_id;
-  int ret = dfs_lookup_rel(store->meta_dfs, store->dirs[MULTIPART_DIR], name.c_str(),
+  ret = dfs_lookup_rel(store->meta_dfs, store->dirs[MULTIPART_DIR], name.c_str(),
                            O_RDWR, &upload_dir, nullptr, nullptr);
   if (ret != 0) {
     if (ret == ENOENT) {
