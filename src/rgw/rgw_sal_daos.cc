@@ -818,7 +818,6 @@ int DaosBucket::list_multiparts(
 
 int DaosBucket::abort_multiparts(const DoutPrefixProvider* dpp,
                                  CephContext* cct) {
-  // TODO
   return 0;
 }
 
@@ -1812,7 +1811,104 @@ int DaosMultipartUpload::list_parts(const DoutPrefixProvider* dpp,
                                     CephContext* cct, int num_parts, int marker,
                                     int* next_marker, bool* truncated,
                                     bool assume_unsorted) {
-  return 0;
+  dfs_obj_t* upload_dir;
+  string name = bucket->get_name() + '/' + get_upload_id();
+  int ret = dfs_lookup_rel(store->meta_dfs, store->dirs[MULTIPART_DIR],
+                           name.c_str(), O_RDWR, &upload_dir, nullptr, nullptr);
+  if (ret == ENOENT) {
+    return -ERR_NO_SUCH_UPLOAD;
+  } else if (ret != 0) {
+    return ret;
+  }
+
+  vector<struct dirent> dirents(MULTIPART_MAX_PARTS);
+  daos_anchor_t anchor;
+  daos_anchor_init(&anchor, 0);
+
+  uint32_t nr = dirents.size();
+  ret = dfs_readdir(dfs, dir_obj, &anchor, &nr, dirents.data());
+  ldpp_dout(dpp, 20) << "DEBUG: dfs_readdir path=" << path << " nr=" << nr
+                     << " ret=" << ret << dendl;
+  if (ret != 0) {
+    dfs_release(upload_dir) return ret;
+  }
+
+  for (uint32_t i = 0; i < nr; i++) {
+    const auto& part_name = dirents[i].d_name;
+    const int part_num = strict_strtol(part_name, 10, &err);
+    if (!err.empty()) {
+      ldpp_dout(dpp, 10) << "bad part number: " << part_name << ": " << err
+                         << dendl;
+      dfs_release(upload_dir);
+      return -EINVAL;
+    }
+
+    // Skip entries that are not larger than marker
+    if (part_num <= marker) {
+      continue;
+    }
+
+    dfs_obj_t* part_obj;
+    mode_t mode;
+    ret = dfs_lookup_rel(dfs, dir_obj, part_name, O_RDWR, &part_obj, &mode,
+                         nullptr);
+    ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel i=" << i
+                       << " entry=" << part_name << " ret=" << ret << dendl;
+    if (ret != 0) {
+      return ret;
+    }
+
+    // The entry is a regular file, read the xattr and add to objs
+    vector<uint8_t> value(DFS_MAX_XATTR_LEN);
+    size_t size = value.size();
+    dfs_getxattr(dfs, part_obj, RGW_PART_XATTR, value.data(), &size);
+    ldpp_dout(dpp, 20) << "DEBUG: dfs_getxattr entry=" << part_name
+                       << " xattr=" << RGW_PART_XATTR << dendl;
+    // Skip if the part has no info
+    if (ret != 0) {
+      ldpp_dout(dpp, 0) << "ERROR: no part info, skipping part=" << part_name
+                        << dendl;
+      dfs_release(part_obj);
+      continue;
+    }
+
+    bufferlist bl;
+    bl.append(reinterpret_cast<char*>(value.data()), size);
+
+    std::unique_ptr<DaosMultipartPart> part =
+        std::make_unique<DaosMultipartPart>();
+    auto iter = bl.cbegin();
+    decode(part->info, bl);
+    parts[part->info.num] = std::move(part);
+
+    // Close handles
+    ret = dfs_release(part_obj);
+    ldpp_dout(dpp, 20) << "DEBUG: dfs_release part_obj ret=" << ret << dendl;
+  }
+
+  // rebuild a map with only num_parts entries
+  int last_num = 0;
+  std::map<uint32_t, std::unique_ptr<MultipartPart>> new_parts;
+  std::map<uint32_t, std::unique_ptr<MultipartPart>>::iterator piter;
+  int i;
+  for (i = 0, piter = parts.begin(); i < num_parts && piter != parts.end();
+       ++i, ++piter) {
+    last_num = piter->first;
+    new_parts[piter->first] = std::move(piter->second);
+  }
+
+  if (truncated) {
+    *truncated = (piter != parts.end());
+  }
+
+  parts.swap(new_parts);
+
+  if (next_marker) {
+    *next_marker = last_num;
+  }
+
+  dfs_release(upload_dir);
+  return ret;
 }
 
 // Heavily copied from rgw_sal_rados.cc
