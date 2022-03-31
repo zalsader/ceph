@@ -715,7 +715,7 @@ class DaosStore : public Store {
   /** Metadata bucket handle */
   daos_handle_t meta_coh;
   /** Metadata dfs handle */
-  dfs_t* meta_dfs;
+  dfs_t* meta_dfs = nullptr;
   /** Metadata index directories */
   std::map<std::string, dfs_obj_t*> dirs;
 
