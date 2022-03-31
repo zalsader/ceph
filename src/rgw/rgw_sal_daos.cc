@@ -1743,7 +1743,8 @@ int DaosMultipartUpload::init(const DoutPrefixProvider* dpp, optional_yield y,
     ldpp_dout(dpp, 0) << "ERROR: failed to create multipart upload dir ("
                       << bucket->get_name() << "/" << get_upload_id()
                       << "): ret=" << ret << dendl;
-    goto out;
+    dfs_release(multipart_dir);
+    return ret;
   }
 
   std::unique_ptr<rgw::sal::Object> obj = get_meta_obj();
@@ -1777,7 +1778,8 @@ int DaosMultipartUpload::init(const DoutPrefixProvider* dpp, optional_yield y,
     ldpp_dout(dpp, 0) << "ERROR: failed to set xattr of multipart upload dir ("
                       << bucket->get_name() << "/" << get_upload_id()
                       << "): ret=" << ret << dendl;
-    goto out;
+    dfs_release(multipart_dir);
+    return ret;
   }
 
   // Create object, this creates object: path/to/key.<upload_id>.meta
@@ -1787,7 +1789,8 @@ int DaosMultipartUpload::init(const DoutPrefixProvider* dpp, optional_yield y,
     ldpp_dout(dpp, 0) << "ERROR: failed to open daos object ("
                       << obj->get_bucket()->get_name() << "/"
                       << obj->get_key().to_str() << "): ret=" << ret << dendl;
-    goto out_obj;
+    dfs_release(multipart_dir);
+    return ret;
   }
 
   // Write meta to object
@@ -2222,10 +2225,13 @@ int DaosMultipartWriter::complete(
                      << dendl;
   if (ret < 0) {
     ldpp_dout(dpp, 1) << "cannot get compression info" << dendl;
-    goto out;
+    dfs_release(part_dfs_obj);
+    return ret;
   }
   encode(info, bl);
   encode(attrs, bl);
+  ldpp_dout(dpp, 20) << "DaosMultipartWriter::complete(): entry size" << bl.length()
+                     << dendl;
 
   ret = dfs_setxattr(store->meta_dfs, part_dfs_obj, RGW_PART_XATTR, bl.c_str(),
                      bl.length(), 0);
@@ -2237,10 +2243,8 @@ int DaosMultipartWriter::complete(
     if (ret == ENOENT) {
       ret = -ERR_NO_SUCH_UPLOAD;
     }
-    goto out;
   }
 
-out:
   dfs_release(part_dfs_obj);
   return ret;
 }
