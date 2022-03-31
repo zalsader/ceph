@@ -394,7 +394,7 @@ int DaosBucket::open(const DoutPrefixProvider* dpp) {
   int ret;
   // How can i get the pool name?
   const auto& daos_pool = g_conf().get_val<std::string>("daos_pool");
-  ret = dfs_connect(daos_pool.c_str(), nullptr, info.bucket.name.c_str(), O_RDWR, nullptr, &dfs);
+  ret = dfs_connect(daos_pool.c_str(), nullptr, get_name().c_str(), O_RDWR, nullptr, &dfs);
 
   if (ret != 0) {
     daos_cont_close(coh, nullptr);
@@ -827,6 +827,13 @@ int DaosStore::initialize(void) {
     return ret;
   }
 
+  ret = dfs_init();
+  // Initialize dfs for dfs_connect/dfs_disconnect calls.
+  if (ret != 0) {
+    ldout(cctx, 0) << "ERROR: dfs_init() failed: " << ret << dendl;
+    return ret;
+  }
+
   // XXX: these params should be taken from config settings and
   // cct somehow?
   const auto& daos_pool = g_conf().get_val<std::string>("daos_pool");
@@ -843,10 +850,7 @@ int DaosStore::initialize(void) {
   uuid_copy(pool, pool_info.pi_uuid);
 
   // Connect to metadata container
-  // TODO use dfs_connect
-  // Attempt to create
-  ret = dfs_cont_create_with_label(poh, METADATA_BUCKET, nullptr, nullptr,
-                                   &meta_coh, &meta_dfs);
+  ret = dfs_connect(daos_pool.c_str(), nullptr, METADATA_BUCKET, O_CREAT|O_RDWR, nullptr, &meta_dfs);
 
   if (ret == 0) {
     // Create inner directories
@@ -862,18 +866,9 @@ int DaosStore::initialize(void) {
     }
   } else if (ret == EEXIST) {
     // Metadata container exists, mount it
-    ret = daos_cont_open(poh, METADATA_BUCKET, DAOS_COO_RW, &meta_coh, nullptr,
-                         nullptr);
-
+    ret = dfs_connect(daos_pool.c_str(), nullptr, METADATA_BUCKET, O_RDWR, nullptr, &meta_dfs);
     if (ret != 0) {
-      ldout(cctx, 0) << "ERROR: daos_cont_open failed! ret=" << ret << dendl;
-      return ret;
-    }
-
-    ret = dfs_mount(poh, meta_coh, O_RDWR, &meta_dfs);
-
-    if (ret != 0) {
-      ldout(cctx, 0) << "ERROR: dfs_mount failed! ret=" << ret << dendl;
+      ldout(cctx, 0) << "ERROR: dfs_connect failed! ret=" << ret << dendl;
       return ret;
     }
 
