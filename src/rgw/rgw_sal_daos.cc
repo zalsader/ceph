@@ -779,8 +779,7 @@ int DaosBucket::list(const DoutPrefixProvider* dpp, ListParams& params, int max,
       bl.append(reinterpret_cast<char*>(value.data()), size);
       auto iter = bl.cbegin();
       ent.decode(iter);
-      if (ent.meta.category != RGWObjCategory::MultiMeta &&
-          (params.list_versions || ent.is_visible())) {
+      if (params.list_versions || ent.is_visible()) {
         results.objs.emplace_back(std::move(ent));
       }
     } else {
@@ -1697,10 +1696,6 @@ int DaosAtomicWriter::complete(
 
 int DaosMultipartUpload::abort(const DoutPrefixProvider* dpp, CephContext* cct,
                                RGWObjectCtx* obj_ctx) {
-  // Remove meta object
-  std::unique_ptr<rgw::sal::Object> obj = get_meta_obj();
-  obj->delete_object(dpp, obj_ctx, null_yield);
-
   // Remove upload from bucket multipart index
   dfs_obj_t* multipart_dir;
   int ret = dfs_lookup_rel(store->meta_dfs, store->dirs[MULTIPART_DIR],
@@ -1715,7 +1710,12 @@ int DaosMultipartUpload::abort(const DoutPrefixProvider* dpp, CephContext* cct,
 static string mp_ns = RGW_OBJ_NS_MULTIPART;
 
 std::unique_ptr<rgw::sal::Object> DaosMultipartUpload::get_meta_obj() {
+  // TODO fix this so it refers to the upload_dir
   return bucket->get_object(rgw_obj_key(get_meta(), string(), mp_ns));
+}
+
+std::unique_ptr<DaosObject> DaosMultipartUpload::get_obj() {
+  return bucket->get_object(rgw_obj_key(get_key(), string(), mp_ns));
 }
 
 int DaosMultipartUpload::init(const DoutPrefixProvider* dpp, optional_yield y,
@@ -1778,7 +1778,6 @@ int DaosMultipartUpload::init(const DoutPrefixProvider* dpp, optional_yield y,
 
   ret = dfs_setxattr(store->meta_dfs, upload_dir, RGW_DIR_ENTRY_XATTR,
                      bl.c_str(), bl.length(), 0);
-  dfs_release(upload_dir);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to set xattr of multipart upload dir ("
                       << bucket->get_name() << "/" << get_upload_id()
@@ -1787,26 +1786,7 @@ int DaosMultipartUpload::init(const DoutPrefixProvider* dpp, optional_yield y,
     return ret;
   }
 
-  // Create object, this creates object: path/to/key.<upload_id>.meta
-  DaosObject* daos_obj = static_cast<DaosObject*>(obj.get());
-  ret = daos_obj->open(dpp, true, true);
-  if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: failed to open daos object ("
-                      << obj->get_bucket()->get_name() << "/"
-                      << obj->get_key().to_str() << "): ret=" << ret << dendl;
-    dfs_release(multipart_dir);
-    return ret;
-  }
-
-  // Write meta to object
-  ret = dfs_setxattr(daos_obj->get_daos_bucket()->dfs, daos_obj->dfs_obj,
-                     RGW_DIR_ENTRY_XATTR, bl.c_str(), bl.length(), 0);
-  if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: failed to set xattr of daos object ("
-                      << obj->get_bucket()->get_name() << "/"
-                      << obj->get_key().to_str() << "): ret=" << ret << dendl;
-  }
-  daos_obj->close(dpp);
+  dfs_release(upload_dir);
   dfs_release(multipart_dir);
   return ret;
 }
@@ -2085,9 +2065,9 @@ int DaosMultipartUpload::complete(
   }
 
   // Different from rgw_sal_rados.cc starts here
-  // Read the object's multipart info
   // TODO reduce redundant code
   // TODO handle errors
+  // Read the object's multipart info
   dfs_obj_t* multipart_dir;
   dfs_obj_t* upload_dir;
   ret = dfs_lookup_rel(store->meta_dfs, store->dirs[MULTIPART_DIR],
@@ -2138,44 +2118,67 @@ int DaosMultipartUpload::complete(
   ent.encode(wbl);
   encode(attrs, wbl);
 
-  // Find parent dir
-  std::unique_ptr<rgw::sal::Object> meta_obj = get_meta_obj();
-  DaosBucket* daos_bucket = static_cast<DaosBucket*>(bucket);
-  ret = daos_bucket->open(dpp);
-  std::string new_path = target_obj->get_key().to_str();
-  std::string old_path = meta_obj->get_key().to_str();
-  dfs_obj_t* parent = nullptr;
-  std::string new_file_name = new_path;
-  std::string old_file_name = old_path;
-
-  size_t file_start = old_path.rfind("/");
-  if (file_start != std::string::npos) {
-    std::string parent_path = old_path.substr(0, file_start);
-    new_file_name = new_path.substr(file_start + 1);
-    old_file_name = old_path.substr(file_start + 1);
-    ret = dfs_lookup_rel(daos_bucket->dfs, nullptr, parent_path.c_str(), O_RDWR,
-                         &parent, nullptr, nullptr);
+  // Open object
+  std::unique_ptr<DaosObject> obj = get_obj();
+  ret = obj->open(dpp);
+  if (ret != 0) {
+    ldpp_dout(dpp, 0) << "ERROR: failed to open daos object ("
+                      << obj->get_bucket()->get_name() << "/"
+                      << obj->get_key().to_str() << "): ret=" << ret << dendl;
+    dfs_release(multipart_dir);
+    return ret;
   }
 
-  // Rename object
-  ret = dfs_move(daos_bucket->dfs, parent, old_file_name.c_str(), parent,
-                 new_file_name.c_str(), nullptr);
+  // Copy data from parts to object
+  uint64_t write_off = 0;
+  for (auto const& [part_num, part] : get_parts()) {
+    // TODO DRY
+    std::unique_ptr<DaosObject> part_obj =
+        store->get_part_object(get_upload_id(), string(part_num));
+    ret = part_obj->open();
+    if (ret != 0) {
+      ldpp_dout(dpp, 0) << "ERROR: failed to open daos object ("
+                        << part_obj->get_bucket()->get_name() << "/"
+                        << part_obj->get_key().to_str() << "): ret=" << ret
+                        << dendl;
+      obj->close();
+      dfs_release(multipart_dir);
+      return ret;
+    }
+    uint64_t size = part->get_size();
 
-  // Open object
-  dfs_obj_t* dfs_obj;
-  ret = dfs_lookup_rel(daos_bucket->dfs, parent, new_file_name.c_str(), O_RDWR,
-                       &dfs_obj, nullptr, nullptr);
+    // Reserve buffers
+    bufferlist bl;
+    d_iov_t iov;
+    d_sg_list_t rsgl;
+    d_iov_set(&iov, bl.append_hole(size).c_str(), size);
+    rsgl.sg_nr = 1;
+    rsgl.sg_iovs = &iov;
+    rsgl.sg_nr_out = 1;
+
+    ret = dfs_read(part_obj->get_daos_bucket()->dfs, part_obj->dfs_obj, &rsgl,
+                   0, &size, nullptr);
+    if (ret != 0) {
+      ldpp_dout(dpp, 0) << "ERROR: failed to read from daos object ("
+                        << part_obj->get_bucket()->get_name() << "/"
+                        << part_obj->get_key().to_str() << "): ret=" << ret
+                        << dendl;
+      part_obj->close();
+      obj->close();
+      dfs_release(multipart_dir);
+      return ret;
+    }
+
+    // write to obj
+    obj->write(dpp, std::move(bl), write_off);
+    part_obj->close();
+    write_off += part->get_size();
+  }
 
   // Set attributes
-  ret = dfs_setxattr(daos_bucket->dfs, dfs_obj, RGW_DIR_ENTRY_XATTR,
+  ret = dfs_setxattr(daos_bucket->dfs, obj->dfs_obj, RGW_DIR_ENTRY_XATTR,
                      wbl.c_str(), wbl.length(), 0);
-
-  dfs_release(dfs_obj);
-
-  if (parent) {
-    dfs_release(parent);
-  }
-  daos_bucket->close(dpp);
+  obj->close(dpp);
 
   // Remove upload from bucket multipart index
   ret = dfs_remove(store->meta_dfs, multipart_dir, get_upload_id().c_str(),
