@@ -2240,6 +2240,7 @@ int DaosMultipartUpload::get_info(const DoutPrefixProvider* dpp,
   auto iter = bl.cbegin();
   ent.decode(iter);
   decode(decoded_attrs, iter);
+  ldpp_dout(dpp, 20) << "DEBUG: decoded_attrs=" << attrs << dendl;
 
   if (attrs) {
     *attrs = decoded_attrs;
@@ -2262,13 +2263,16 @@ std::unique_ptr<Writer> DaosMultipartUpload::get_writer(
     std::unique_ptr<rgw::sal::Object> _head_obj, const rgw_user& owner,
     RGWObjectCtx& obj_ctx, const rgw_placement_rule* ptail_placement_rule,
     uint64_t part_num, const std::string& part_num_str) {
+  ldpp_dout(dpp, 20) << "DaosMultipartUpload::get_writer(): enter part="
+                     << part_num << " head_obj=" << _head_obj << dendl;
   return std::make_unique<DaosMultipartWriter>(
       dpp, y, this, std::move(_head_obj), store, owner, obj_ctx,
       ptail_placement_rule, part_num, part_num_str);
 }
 
 int DaosMultipartWriter::prepare(optional_yield y) {
-  ldpp_dout(dpp, 20) << "DaosMultipartWriter::prepare(): enter" << dendl;
+  ldpp_dout(dpp, 20) << "DaosMultipartWriter::prepare(): enter part="
+                     << part_num_str << dendl;
 
   DaosObject* obj = get_daos_meta_obj();
   int ret = obj->open(dpp, false);
@@ -2315,6 +2319,8 @@ int DaosMultipartWriter::prepare(optional_yield y) {
 }
 
 int DaosMultipartWriter::process(bufferlist&& data, uint64_t offset) {
+  ldpp_dout(dpp, 20) << "DaosMultipartWriter::process(): enter part="
+                     << part_num_str << " offset=" << offset << dendl;
   if (data.length() == 0) {
     return 0;
   }
@@ -2345,7 +2351,8 @@ int DaosMultipartWriter::complete(
     ceph::real_time delete_at, const char* if_match, const char* if_nomatch,
     const std::string* user_data, rgw_zone_set* zones_trace, bool* canceled,
     optional_yield y) {
-  ldpp_dout(dpp, 20) << "DaosMultipartWriter::complete(): enter" << dendl;
+  ldpp_dout(dpp, 20) << "DaosMultipartWriter::complete(): enter part="
+                     << part_num_str << dendl;
 
   // Close writing on object
   get_daos_meta_obj()->close(dpp);
