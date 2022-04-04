@@ -706,6 +706,7 @@ class DaosStore : public Store {
   std::string luarocks_path;
   DaosZone zone;
   RGWSyncModuleInstanceRef sync_module;
+  std::unique_ptr<DaosBucket> metadata_bucket;
 
  public:
   /** UUID of the pool */
@@ -872,6 +873,8 @@ class DaosStore : public Store {
 
   int initialize(void);
   int read_user(const DoutPrefixProvider* dpp, std::string parent, std::string name, DaosUserInfo* duinfo);
+  DaosBucket* get_metadata_bucket();
+  std::unique_ptr<DaosObject> get_part_object(std::string upload_id, std::string part_num_str);
 };
 
 }  // namespace rgw::sal

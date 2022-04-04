@@ -927,6 +927,11 @@ int DaosStore::initialize(void) {
     return ret;
   }
 
+  // XXX: if we do this, do we need to keep everything else open?
+  rgw_bucket b;
+  b.name = METADATA_BUCKET;
+  metadata_bucket = std::make_unique<DaosBucket>(this, b);
+
   // Open metadata dirs
   for (auto& dir : METADATA_DIRS) {
     dirs[dir] = nullptr;
@@ -2591,6 +2596,20 @@ int DaosStore::get_bucket(const DoutPrefixProvider* dpp, User* u,
   b.name = name;
 
   return get_bucket(dpp, u, b, bucket, y);
+}
+
+std::unique_ptr<DaosBucket> DaosStore::get_metadata_bucket() {
+  return metadata_bucket.get();
+}
+
+std::unique_ptr<DaosObject> DaosStore::get_part_object(
+    std::string upload_id, std::string part_num_str) {
+  // XXX: create a util for path build
+  std::ostringstream part_path_build;
+  part_path_build << MULTIPART_DIR << "/" << upload_id << "/" << part_num_str;
+  rgw_obj_key k;
+  k.name = part_path_build.str();
+  return std::make_unique<DaosObject>(this, k, get_metadata_bucket());
 }
 
 bool DaosStore::is_meta_master() { return true; }
