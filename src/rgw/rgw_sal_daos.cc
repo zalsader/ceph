@@ -54,12 +54,8 @@ using ::ceph::encode;
 #define MULTIPART_DIR "multipart"
 #define MULTIPART_MAX_PARTS 10000
 
-static const std::string METADATA_DIRS[] = {
-  USERS_DIR,
-  EMAILS_DIR,
-  ACCESS_KEYS_DIR,
-  MULTIPART_DIR
-};
+static const std::string METADATA_DIRS[] = {USERS_DIR, EMAILS_DIR,
+                                            ACCESS_KEYS_DIR, MULTIPART_DIR};
 
 int DaosUser::list_buckets(const DoutPrefixProvider* dpp, const string& marker,
                            const string& end_marker, uint64_t max,
@@ -402,7 +398,6 @@ int DaosBucket::open(const DoutPrefixProvider* dpp) {
     return 0;
   }
 
-  // XXX: Prevent attempting to open metadata bucket
   int ret;
   daos_cont_info_t cont_info;
   // TODO: We need to cache open container handles
@@ -511,8 +506,15 @@ int DaosBucket::put_info(const DoutPrefixProvider* dpp, bool exclusive,
 
 int DaosBucket::load_bucket(const DoutPrefixProvider* dpp, optional_yield y,
                             bool get_stats) {
-  ldpp_dout(dpp, 20) << "DEBUG: load_bucket(): bucket name=" << info.bucket.name
+  ldpp_dout(dpp, 20) << "DEBUG: load_bucket(): bucket name=" << get_name()
                      << dendl;
+
+  // Prevent attempting to load metadata bucket
+  if (get_name() == METADATA_BUCKET) {
+    ldpp_dout(dpp, 0) << "ERROR: Cannot load metadata bucket" << dendl;
+    return -ENOENT;
+  }
+
   int ret = open(dpp);
   if (ret < 0) {
     return ret;
@@ -1669,7 +1671,7 @@ int DaosAtomicWriter::complete(
   encode(attrs, bl);
 
   // TODO implement versioning
-  // if (is_versioned) {
+  /* if (is_versioned) {
     // get the list of all versioned objects with the same key and
     // unset their FLAG_CURRENT later, if do_idx_op_by_name() is successful.
     // Note: without distributed lock on the index - it is possible that 2
@@ -1685,10 +1687,10 @@ int DaosAtomicWriter::complete(
     // TODO: update the current version (unset the flag) and insert the new current
     // version can be launched in one motr op. This requires change at do_idx_op()
     // and do_idx_op_by_name().
-    // int rc = obj.update_version_entries(dpp);
-    // if (rc < 0)
-    //   return rc;
-  // }
+    int rc = obj.update_version_entries(dpp);
+    if (rc < 0)
+      return rc;
+ } */
 
   // Add rgw_bucket_dir_entry into object xattr
   int ret = dfs_setxattr(obj.get_daos_bucket()->dfs, obj.dfs_obj,
