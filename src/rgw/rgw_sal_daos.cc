@@ -2279,48 +2279,17 @@ int DaosMultipartWriter::prepare(optional_yield y) {
   ldpp_dout(dpp, 20) << "DaosMultipartWriter::prepare(): enter part="
                      << part_num_str << dendl;
 
-  DaosObject* obj = get_daos_meta_obj();
-  int ret = obj->open(dpp, false);
-  if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: failed to open daos object ("
-                      << obj->get_bucket()->get_name() << "/"
-                      << obj->get_key().to_str() << "): ret=" << ret << dendl;
-    return ret;
-  }
-
-  dfs_obj_t* multipart_dir;
-  dfs_obj_t* upload_dir;
-  ret = dfs_lookup_rel(store->meta_dfs, store->dirs[MULTIPART_DIR],
-                       obj->get_bucket()->get_name().c_str(), O_RDWR,
-                       &multipart_dir, nullptr, nullptr);
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel entry="
-                     << obj->get_bucket()->get_name() << " ret=" << ret
-                     << dendl;
-  ret = dfs_lookup_rel(store->meta_dfs, multipart_dir, upload_id.c_str(),
-                       O_RDWR, &upload_dir, nullptr, nullptr);
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel entry=" << upload_id
-                     << " ret=" << ret << dendl;
+  part_obj = store->get_part_obj(upload_id, part_num_str);
+  int ret = part_obj->open(dpp, true);
   if (ret != 0) {
     if (ret == ENOENT) {
       ret = -ERR_NO_SUCH_UPLOAD;
     }
-    dfs_release(multipart_dir);
-    obj->close(dpp);
+    ldpp_dout(dpp, 0) << "ERROR: failed to open daos object ("
+                      << part_obj->get_bucket()->get_name() << "/"
+                      << part_obj->get_key().to_str() << "): ret=" << ret << dendl;
     return ret;
   }
-
-  // Create part file
-  int flags = O_RDWR | O_CREAT;
-  ret = dfs_open(obj->get_daos_bucket()->dfs, upload_dir, part_num_str.c_str(),
-                 S_IFREG | DEFFILEMODE, flags, 0, 0, nullptr, &part_dfs_obj);
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_open part_num_str=" << part_num_str
-                     << " ret=" << ret << dendl;
-  dfs_release(upload_dir);
-  dfs_release(multipart_dir);
-  if (ret != 0) {
-    obj->close(dpp);
-  }
-  return ret;
 }
 
 int DaosMultipartWriter::process(bufferlist&& data, uint64_t offset) {
@@ -2330,20 +2299,19 @@ int DaosMultipartWriter::process(bufferlist&& data, uint64_t offset) {
     return 0;
   }
 
-  DaosObject* obj = get_daos_meta_obj();
   int ret = 0;
-  if (!obj->is_open()) {
-    ret = obj->open(dpp, false);
+  if (!part_obj->is_open()) {
+    ret = part_obj->open(dpp, false);
     if (ret != 0) {
       ldpp_dout(dpp, 0) << "ERROR: failed to open daos object ("
-                        << obj->get_bucket()->get_name() << "/"
-                        << obj->get_key().to_str() << "): ret=" << ret << dendl;
+                        << part_obj->get_bucket()->get_name() << "/"
+                        << part_obj->get_key().to_str() << "): ret=" << ret << dendl;
     }
     return ret;
   }
 
   // XXX: Combine multiple streams into one as motr does
-  ret = obj->write(dpp, std::move(data), offset);
+  ret = part_obj->write(dpp, std::move(data), offset);
   if (ret == 0) {
     actual_part_size += data.length();
   }
@@ -2358,9 +2326,6 @@ int DaosMultipartWriter::complete(
     optional_yield y) {
   ldpp_dout(dpp, 20) << "DaosMultipartWriter::complete(): enter part="
                      << part_num_str << dendl;
-
-  // Close writing on object
-  get_daos_meta_obj()->close(dpp);
 
   // Add an entry into part index
   bufferlist bl;
@@ -2377,7 +2342,7 @@ int DaosMultipartWriter::complete(
                      << ret << dendl;
   if (ret < 0) {
     ldpp_dout(dpp, 1) << "cannot get compression info" << dendl;
-    dfs_release(part_dfs_obj);
+    part_obj->close(dpp);
     return ret;
   }
   encode(info, bl);
@@ -2385,19 +2350,18 @@ int DaosMultipartWriter::complete(
   ldpp_dout(dpp, 20) << "DaosMultipartWriter::complete(): entry size"
                      << bl.length() << dendl;
 
-  ret = dfs_setxattr(store->meta_dfs, part_dfs_obj, RGW_PART_XATTR, bl.c_str(),
-                     bl.length(), 0);
+  ret = dfs_setxattr(store->meta_dfs, part_obj->dfs_obj, RGW_PART_XATTR,
+                     bl.c_str(), bl.length(), 0);
 
   if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: failed to set xattr part ("
-                      << meta_obj->get_bucket()->get_name() << "/" << upload_id
-                      << "/" << part_num_str << "): ret=" << ret << dendl;
+    ldpp_dout(dpp, 0) << "ERROR: failed to set xattr part (" << upload_id << "/"
+                      << part_num_str << "): ret=" << ret << dendl;
     if (ret == ENOENT) {
       ret = -ERR_NO_SUCH_UPLOAD;
     }
   }
 
-  dfs_release(part_dfs_obj);
+  part_obj->close(dpp);
   return ret;
 }
 

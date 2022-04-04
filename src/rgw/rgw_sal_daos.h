@@ -583,19 +583,13 @@ class DaosMultipartWriter : public Writer {
   rgw::sal::DaosStore* store;
 
   // Uploaded Object.
-  std::unique_ptr<rgw::sal::Object> meta_obj;
+  std::unique_ptr<DaosObject> part_obj;
   std::string upload_id;
 
   // Part parameters.
   const uint64_t part_num;
   const std::string part_num_str;
   uint64_t actual_part_size = 0;
-
-  dfs_obj_t* part_dfs_obj;
-
-  DaosObject* get_daos_meta_obj() {
-    return static_cast<DaosObject*>(meta_obj.get());
-  }
 
  public:
   DaosMultipartWriter(const DoutPrefixProvider* dpp, optional_yield y,
