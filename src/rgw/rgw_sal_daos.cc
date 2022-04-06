@@ -1872,14 +1872,12 @@ int DaosMultipartUpload::init(const DoutPrefixProvider* dpp, optional_yield y,
     return ret;
   }
 
-  std::unique_ptr<rgw::sal::Object> obj = get_meta_obj();
-
   // Create an initial entry in the bucket. The entry will be
   // updated when multipart upload is completed, for example,
   // size, etag etc.
   bufferlist bl;
   rgw_bucket_dir_entry ent;
-  obj->get_key().get_index_key(&ent.key);
+  ent.key.name = oid;
   ent.meta.owner = owner.get_id().to_str();
   ent.meta.category = RGWObjCategory::MultiMeta;
   ent.meta.mtime = ceph::real_clock::now();
