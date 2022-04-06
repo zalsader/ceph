@@ -864,8 +864,8 @@ int DaosBucket::list_multiparts(
     return ret;
   }
 
-  if (!daos_anchor_is_eof(&anchor)) {
-    is_truncated = true;
+  if (is_truncated && !daos_anchor_is_eof(&anchor)) {
+    *is_truncated = true;
   }
 
   for (uint32_t i = 0; i < nr; i++) {
@@ -916,7 +916,7 @@ int DaosBucket::list_multiparts(
       // Add common prefixes
       if (common_prefixes && !delim.empty()) {
         // Name key has delim after the prefix
-        const int delim_pos = name.find(delim, prefix.size());
+        const size_t delim_pos = name.find(delim, prefix.size());
         if (delim_pos != std::string::npos) {
           string prefix_key = name.substr(0, delim_pos + delim.length());
           (*common_prefixes)[prefix_key] = true;
@@ -929,11 +929,11 @@ int DaosBucket::list_multiparts(
     ldpp_dout(dpp, 20) << "DEBUG: dfs_release upload_dir ret=" << ret << dendl;
   }
 
-  // Sort results
-  std::sort(results.begin(), results.end(), compare_multipart_upload);
+  // Sort uploads
+  std::sort(uploads.begin(), uploads.end(), compare_multipart_upload);
 
-  ret = dfs_release(dir_obj);
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_release dir_obj ret=" << ret << dendl;
+  ret = dfs_release(multipart_dir);
+  ldpp_dout(dpp, 20) << "DEBUG: dfs_release multipart_dir ret=" << ret << dendl;
 
   ret = close(dpp);
 
