@@ -383,6 +383,15 @@ class DaosOIDCProvider : public RGWOIDCProvider {
   void decode(bufferlist::const_iterator& bl) { RGWOIDCProvider::decode(bl); }
 };
 
+enum class DaosObjectOpen {
+  // Only lookup the object, do not create
+  Lookup,
+  // Create the object, truncate if exists
+  Create,
+  // Create the object, do not create parent directories, truncate if exists
+  CreateNoDir
+};
+
 class DaosObject : public Object {
  private:
   DaosStore* store;
@@ -525,7 +534,7 @@ class DaosObject : public Object {
                                   bool must_exist, optional_yield y) override;
 
   bool is_open() { return _is_open; };
-  int open(const DoutPrefixProvider* dpp, bool create, bool exclusive = false);
+  int open(const DoutPrefixProvider* dpp, DaosObjectOpen open_flag);
   int close(const DoutPrefixProvider* dpp);
   int write(const DoutPrefixProvider* dpp, bufferlist&& data, uint64_t offset);
   DaosBucket* get_daos_bucket() {
