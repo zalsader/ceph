@@ -1752,7 +1752,7 @@ int DaosAtomicWriter::complete(
   // other attrs.
   obj.get_key().get_index_key(&ent.key);
   ent.meta.size = total_data_size;
-  ent.meta.accounted_size = total_data_size;
+  ent.meta.accounted_size = accounted_size;
   ent.meta.mtime =
       real_clock::is_zero(set_mtime) ? ceph::real_clock::now() : set_mtime;
   ent.meta.etag = etag;
