@@ -708,7 +708,6 @@ class DaosMultipartUpload : public MultipartUpload {
       std::unique_ptr<rgw::sal::Object> _head_obj, const rgw_user& owner,
       RGWObjectCtx& obj_ctx, const rgw_placement_rule* ptail_placement_rule,
       uint64_t part_num, const std::string& part_num_str) override;
-  std::unique_ptr<DaosObject> get_daos_object();
   DaosBucket* get_daos_bucket() { return static_cast<DaosBucket*>(bucket); }
 };
 

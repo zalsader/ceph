@@ -1838,11 +1838,6 @@ std::unique_ptr<rgw::sal::Object> DaosMultipartUpload::get_meta_obj() {
   return bucket->get_object(rgw_obj_key(get_meta(), string(), mp_ns));
 }
 
-std::unique_ptr<DaosObject> DaosMultipartUpload::get_daos_object() {
-  return std::make_unique<DaosObject>(
-      this->store, rgw_obj_key(get_key(), string(), mp_ns), this->bucket);
-}
-
 int DaosMultipartUpload::init(const DoutPrefixProvider* dpp, optional_yield y,
                               RGWObjectCtx* obj_ctx, ACLOwner& _owner,
                               rgw_placement_rule& dest_placement,
@@ -2244,7 +2239,7 @@ int DaosMultipartUpload::complete(
   encode(attrs, wbl);
 
   // Open object
-  std::unique_ptr<DaosObject> obj = get_daos_object();
+  DaosObject* obj = static_cast<DaosObject*>(target_obj);
   ret = obj->open(dpp, DaosObjectOpen::Create);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to open daos object ("
