@@ -37,6 +37,7 @@
 namespace rgw::sal {
 
 class DaosStore;
+class DaosObject;
 
 struct DaosUserInfo {
   RGWUserInfo info;
@@ -284,6 +285,8 @@ class DaosBucket : public Bucket {
   int open(const DoutPrefixProvider* dpp);
   int close(const DoutPrefixProvider* dpp);
   bool is_open() { return _is_open; }
+  std::unique_ptr<DaosObject> get_part_object(std::string upload_id,
+                                              uint64_t part_num);
 
   friend class DaosStore;
 };
@@ -378,6 +381,15 @@ class DaosOIDCProvider : public RGWOIDCProvider {
 
   void encode(bufferlist& bl) const { RGWOIDCProvider::encode(bl); }
   void decode(bufferlist::const_iterator& bl) { RGWOIDCProvider::decode(bl); }
+};
+
+enum class DaosObjectOpen {
+  // Only lookup the object, do not create
+  Lookup,
+  // Create the object, truncate if exists
+  Create,
+  // Create the object, do not create parent directories, truncate if exists
+  CreateNoDir
 };
 
 class DaosObject : public Object {
@@ -522,8 +534,9 @@ class DaosObject : public Object {
                                   bool must_exist, optional_yield y) override;
 
   bool is_open() { return _is_open; };
-  int open(const DoutPrefixProvider* dpp, bool create);
+  int open(const DoutPrefixProvider* dpp, DaosObjectOpen open_flag);
   int close(const DoutPrefixProvider* dpp);
+  int write(const DoutPrefixProvider* dpp, bufferlist&& data, uint64_t offset);
   DaosBucket* get_daos_bucket() {
     return static_cast<DaosBucket*>(get_bucket());
   }
@@ -580,16 +593,31 @@ class DaosAtomicWriter : public Writer {
 class DaosMultipartWriter : public Writer {
  protected:
   rgw::sal::DaosStore* store;
+  MultipartUpload* upload;
+
+  // Uploaded Object.
+  std::unique_ptr<DaosObject> part_obj;
+  std::string upload_id;
+
+  // Part parameters.
+  const uint64_t part_num;
+  const std::string part_num_str;
+  uint64_t actual_part_size = 0;
 
  public:
   DaosMultipartWriter(const DoutPrefixProvider* dpp, optional_yield y,
-                      MultipartUpload* upload,
+                      MultipartUpload* _upload,
                       std::unique_ptr<rgw::sal::Object> _head_obj,
                       DaosStore* _store, const rgw_user& owner,
                       RGWObjectCtx& obj_ctx,
                       const rgw_placement_rule* ptail_placement_rule,
                       uint64_t _part_num, const std::string& part_num_str)
-      : Writer(dpp, y), store(_store) {}
+      : Writer(dpp, y),
+        store(_store),
+        upload(_upload),
+        upload_id(_upload->get_upload_id()),
+        part_num(_part_num),
+        part_num_str(part_num_str) {}
   ~DaosMultipartWriter() = default;
 
   // prepare to start processing object data
@@ -606,6 +634,8 @@ class DaosMultipartWriter : public Writer {
                        const char* if_nomatch, const std::string* user_data,
                        rgw_zone_set* zones_trace, bool* canceled,
                        optional_yield y) override;
+
+  DaosBucket* get_daos_bucket();
 };
 
 class DaosMultipartPart : public MultipartPart {
@@ -678,7 +708,7 @@ class DaosMultipartUpload : public MultipartUpload {
       std::unique_ptr<rgw::sal::Object> _head_obj, const rgw_user& owner,
       RGWObjectCtx& obj_ctx, const rgw_placement_rule* ptail_placement_rule,
       uint64_t part_num, const std::string& part_num_str) override;
-  int delete_parts(const DoutPrefixProvider* dpp);
+  DaosBucket* get_daos_bucket() { return static_cast<DaosBucket*>(bucket); }
 };
 
 class DaosStore : public Store {
@@ -686,6 +716,7 @@ class DaosStore : public Store {
   std::string luarocks_path;
   DaosZone zone;
   RGWSyncModuleInstanceRef sync_module;
+  std::unique_ptr<DaosBucket> metadata_bucket;
 
  public:
   /** UUID of the pool */
@@ -695,7 +726,7 @@ class DaosStore : public Store {
   /** Metadata bucket handle */
   daos_handle_t meta_coh;
   /** Metadata dfs handle */
-  dfs_t* meta_dfs;
+  dfs_t* meta_dfs = nullptr;
   /** Metadata index directories */
   std::map<std::string, dfs_obj_t*> dirs;
 
@@ -851,7 +882,9 @@ class DaosStore : public Store {
   }
 
   int initialize(void);
-  int read_user(const DoutPrefixProvider* dpp, std::string parent, std::string name, DaosUserInfo* duinfo);
+  int read_user(const DoutPrefixProvider* dpp, std::string parent,
+                std::string name, DaosUserInfo* duinfo);
+  DaosBucket* get_metadata_bucket();
 };
 
 }  // namespace rgw::sal
