@@ -1727,9 +1727,10 @@ int DaosAtomicWriter::process(bufferlist&& data, uint64_t offset) {
   }
 
   // XXX: Combine multiple streams into one as motr does
+  uint64_t data_size =  data.length();
   ret = obj.write(dpp, std::move(data), offset);
   if (ret == 0) {
-    total_data_size += data.length();
+    total_data_size += data_size;
   }
   return ret;
 }
@@ -2439,9 +2440,10 @@ int DaosMultipartWriter::process(bufferlist&& data, uint64_t offset) {
   }
 
   // XXX: Combine multiple streams into one as motr does
+  uint64_t data_size =  data.length();
   ret = part_obj->write(dpp, std::move(data), offset);
   if (ret == 0) {
-    actual_part_size += data.length();
+    actual_part_size += data_size;
   }
   return ret;
 }
