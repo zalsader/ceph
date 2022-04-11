@@ -537,6 +537,7 @@ class DaosObject : public Object {
   int open(const DoutPrefixProvider* dpp, DaosObjectOpen open_flag);
   int close(const DoutPrefixProvider* dpp);
   int write(const DoutPrefixProvider* dpp, bufferlist&& data, uint64_t offset);
+  int read(const DoutPrefixProvider* dpp, bufferlist& data, uint64_t offset, uint64_t& size);
   DaosBucket* get_daos_bucket() {
     return static_cast<DaosBucket*>(get_bucket());
   }

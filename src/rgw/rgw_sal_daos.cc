@@ -1119,7 +1119,7 @@ int DaosObject::get_obj_state(const DoutPrefixProvider* dpp, RGWObjectCtx* rctx,
                      value.data(), &size);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to get xattr of daos object ("
-                      << get_bucket()->get_name() << "/" << get_key().to_str()
+                      << get_bucket()->get_name() << ", " << get_key().to_str()
                       << "): ret=" << ret << dendl;
     return ret;
   }
@@ -1167,7 +1167,7 @@ int DaosObject::set_obj_attrs(const DoutPrefixProvider* dpp, RGWObjectCtx* rctx,
                      value.data(), &size);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to get xattr of daos object ("
-                      << get_bucket()->get_name() << "/" << get_key().to_str()
+                      << get_bucket()->get_name() << ", " << get_key().to_str()
                       << "): ret=" << ret << dendl;
     return ret;
   }
@@ -1195,10 +1195,10 @@ int DaosObject::set_obj_attrs(const DoutPrefixProvider* dpp, RGWObjectCtx* rctx,
                      wbl.c_str(), wbl.length(), 0);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to set xattr of daos object ("
-                      << get_bucket()->get_name() << "/" << get_key().to_str()
+                      << get_bucket()->get_name() << ", " << get_key().to_str()
                       << "): ret=" << ret << dendl;
   }
-  return 0;
+  return ret;
 }
 
 int DaosObject::get_obj_attrs(RGWObjectCtx* rctx, optional_yield y,
@@ -1215,7 +1215,7 @@ int DaosObject::get_obj_attrs(RGWObjectCtx* rctx, optional_yield y,
                      value.data(), &size);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to get xattr of daos object ("
-                      << get_bucket()->get_name() << "/" << get_key().to_str()
+                      << get_bucket()->get_name() << ", " << get_key().to_str()
                       << "): ret=" << ret << dendl;
     return ret;
   }
@@ -1228,7 +1228,7 @@ int DaosObject::get_obj_attrs(RGWObjectCtx* rctx, optional_yield y,
   obj_size = ent.meta.size;
   mtime = ent.meta.mtime;
   decode(attrs, iter);
-  return 0;
+  return ret;
 }
 
 int DaosObject::modify_obj_attrs(RGWObjectCtx* rctx, const char* attr_name,
@@ -1363,10 +1363,6 @@ int DaosObject::DaosReadOp::prepare(optional_yield y,
 
   int ret = source->open(dpp, DaosObjectOpen::Lookup);
   if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: failed to open daos object ("
-                      << source->get_bucket()->get_name() << "/"
-                      << source->get_key().to_str() << "): ret=" << ret
-                      << dendl;
     return ret;
   }
 
@@ -1376,7 +1372,7 @@ int DaosObject::DaosReadOp::prepare(optional_yield y,
                      RGW_DIR_ENTRY_XATTR, value.data(), &size);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to get xattr of daos object ("
-                      << source->get_bucket()->get_name() << "/"
+                      << source->get_bucket()->get_name() << ", "
                       << source->get_key().to_str() << "): ret=" << ret
                       << dendl;
     return ret;
@@ -1428,41 +1424,24 @@ int DaosObject::DaosReadOp::iterate(const DoutPrefixProvider* dpp, int64_t off,
   if (!source->is_open()) {
     ret = source->open(dpp, DaosObjectOpen::Lookup);
     if (ret != 0) {
-      ldpp_dout(dpp, 0) << "ERROR: failed to open daos object ("
-                        << source->get_bucket()->get_name() << "/"
-                        << source->get_key().to_str() << "): ret=" << ret
-                        << dendl;
+      return ret;
     }
-    return ret;
   }
 
   // Calculate size, end is inclusive
   uint64_t size = end - off + 1;
 
-  // Reserve buffers
+  // Reserve buffers and read
   bufferlist bl;
-  d_iov_t iov;
-  d_sg_list_t rsgl;
-  d_iov_set(&iov, bl.append_hole(size).c_str(), size);
-  rsgl.sg_nr = 1;
-  rsgl.sg_iovs = &iov;
-  rsgl.sg_nr_out = 1;
-
-  uint64_t actual;
-  ret = dfs_read(source->get_daos_bucket()->dfs, source->dfs_obj, &rsgl, off,
-                 &actual, nullptr);
+  ret = source->read(dpp, bl, off, size);
   if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: failed to read from daos object ("
-                      << source->get_bucket()->get_name() << "/"
-                      << source->get_key().to_str() << "): ret=" << ret
-                      << dendl;
     return ret;
   }
 
   // Call cb to process returned data.
-  ldpp_dout(dpp, 20) << __func__
-                     << ": call cb to process data, actual=" << actual << dendl;
-  cb->handle_data(bl, off, actual);
+  ldpp_dout(dpp, 20) << __func__ << ": call cb to process data, actual=" << size
+                     << dendl;
+  cb->handle_data(bl, off, size);
   return ret;
 }
 
@@ -1651,6 +1630,10 @@ int DaosObject::open(const DoutPrefixProvider* dpp, DaosObjectOpen open_flag) {
   if (ret == 0 || ret == EEXIST) {
     ret = 0;
     _is_open = true;
+  } else {
+    ldpp_dout(dpp, 0) << "ERROR: failed to open daos object ("
+                      << get_bucket()->get_name() << ", "
+                      << get_key().to_str() << "): ret=" << ret << dendl;
   }
   return ret;
 }
@@ -1679,7 +1662,25 @@ int DaosObject::write(const DoutPrefixProvider* dpp, bufferlist&& data,
   int ret = dfs_write(get_daos_bucket()->dfs, dfs_obj, &wsgl, offset, nullptr);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to write into daos object ("
-                      << get_bucket()->get_name() << "/" << get_key().to_str()
+                      << get_bucket()->get_name() << ", " << get_key().to_str()
+                      << "): ret=" << ret << dendl;
+  }
+  return ret;
+}
+
+int DaosObject::read(const DoutPrefixProvider* dpp, bufferlist& data,
+                     uint64_t offset, uint64_t& size) {
+  d_iov_t iov;
+  d_iov_set(&iov, data.append_hole(size).c_str(), size);
+
+  d_sg_list_t rsgl;
+  rsgl.sg_nr = 1;
+  rsgl.sg_iovs = &iov;
+  rsgl.sg_nr_out = 1;
+  ret = dfs_read(get_daos_bucket()->dfs, dfs_obj, &rsgl, off, &size, nullptr);
+  if (ret != 0) {
+    ldpp_dout(dpp, 0) << "ERROR: failed to read from daos object ("
+                      << get_bucket()->get_name() << ", " << get_key().to_str()
                       << "): ret=" << ret << dendl;
   }
   return ret;
@@ -1701,11 +1702,6 @@ DaosAtomicWriter::DaosAtomicWriter(
 
 int DaosAtomicWriter::prepare(optional_yield y) {
   int ret = obj.open(dpp, DaosObjectOpen::Create);
-  if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: failed to open daos object ("
-                      << obj.get_bucket()->get_name() << "/"
-                      << obj.get_key().to_str() << "): ret=" << ret << dendl;
-  }
   return ret;
 }
 
@@ -1719,15 +1715,12 @@ int DaosAtomicWriter::process(bufferlist&& data, uint64_t offset) {
   if (!obj.is_open()) {
     ret = obj.open(dpp, DaosObjectOpen::Lookup);
     if (ret != 0) {
-      ldpp_dout(dpp, 0) << "ERROR: failed to open daos object ("
-                        << obj.get_bucket()->get_name() << "/"
-                        << obj.get_key().to_str() << "): ret=" << ret << dendl;
+      return ret;
     }
-    return ret;
   }
 
   // XXX: Combine multiple streams into one as motr does
-  uint64_t data_size =  data.length();
+  uint64_t data_size = data.length();
   ret = obj.write(dpp, std::move(data), offset);
   if (ret == 0) {
     total_data_size += data_size;
@@ -1812,7 +1805,7 @@ int DaosAtomicWriter::complete(
                          RGW_DIR_ENTRY_XATTR, bl.c_str(), bl.length(), 0);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to set xattr of daos object ("
-                      << obj.get_bucket()->get_name() << "/"
+                      << obj.get_bucket()->get_name() << ", "
                       << obj.get_key().to_str() << "): ret=" << ret << dendl;
   }
   obj.close(dpp);
@@ -2241,9 +2234,6 @@ int DaosMultipartUpload::complete(
   DaosObject* obj = static_cast<DaosObject*>(target_obj);
   ret = obj->open(dpp, DaosObjectOpen::Create);
   if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: failed to open daos object ("
-                      << obj->get_bucket()->get_name() << "/"
-                      << obj->get_key().to_str() << "): ret=" << ret << dendl;
     dfs_release(multipart_dir);
     return ret;
   }
@@ -2256,32 +2246,16 @@ int DaosMultipartUpload::complete(
         get_daos_bucket()->get_part_object(get_upload_id(), part_num);
     ret = part_obj->open(dpp, DaosObjectOpen::Lookup);
     if (ret != 0) {
-      ldpp_dout(dpp, 0) << "ERROR: failed to open daos object ("
-                        << part_obj->get_bucket()->get_name() << "/"
-                        << part_obj->get_key().to_str() << "): ret=" << ret
-                        << dendl;
       obj->close(dpp);
       dfs_release(multipart_dir);
       return ret;
     }
+
+    // Reserve buffers and read
     uint64_t size = part->get_size();
-
-    // Reserve buffers
     bufferlist bl;
-    d_iov_t iov;
-    d_sg_list_t rsgl;
-    d_iov_set(&iov, bl.append_hole(size).c_str(), size);
-    rsgl.sg_nr = 1;
-    rsgl.sg_iovs = &iov;
-    rsgl.sg_nr_out = 1;
-
-    ret = dfs_read(part_obj->get_daos_bucket()->dfs, part_obj->dfs_obj, &rsgl,
-                   0, &size, nullptr);
+    ret = part_obj->read(dpp, bl, 0, size);
     if (ret != 0) {
-      ldpp_dout(dpp, 0) << "ERROR: failed to read from daos object ("
-                        << part_obj->get_bucket()->get_name() << "/"
-                        << part_obj->get_key().to_str() << "): ret=" << ret
-                        << dendl;
       part_obj->close(dpp);
       obj->close(dpp);
       dfs_release(multipart_dir);
@@ -2404,14 +2378,8 @@ int DaosMultipartWriter::prepare(optional_yield y) {
   part_obj = get_daos_bucket()->get_part_object(upload_id, part_num);
   // XXX: we should just create the file, and not the whole path
   int ret = part_obj->open(dpp, DaosObjectOpen::CreateNoDir);
-  if (ret != 0) {
-    if (ret == -ENOENT) {
-      ret = -ERR_NO_SUCH_UPLOAD;
-    }
-    ldpp_dout(dpp, 0) << "ERROR: failed to open daos object ("
-                      << part_obj->get_bucket()->get_name() << "/"
-                      << part_obj->get_key().to_str() << "): ret=" << ret
-                      << dendl;
+  if (ret == -ENOENT) {
+    ret = -ERR_NO_SUCH_UPLOAD;
   }
   return ret;
 }
@@ -2431,16 +2399,12 @@ int DaosMultipartWriter::process(bufferlist&& data, uint64_t offset) {
   if (!part_obj->is_open()) {
     ret = part_obj->open(dpp, DaosObjectOpen::Lookup);
     if (ret != 0) {
-      ldpp_dout(dpp, 0) << "ERROR: failed to open daos object ("
-                        << part_obj->get_bucket()->get_name() << "/"
-                        << part_obj->get_key().to_str() << "): ret=" << ret
-                        << dendl;
+      return ret;
     }
-    return ret;
   }
 
   // XXX: Combine multiple streams into one as motr does
-  uint64_t data_size =  data.length();
+  uint64_t data_size = data.length();
   ret = part_obj->write(dpp, std::move(data), offset);
   if (ret == 0) {
     actual_part_size += data_size;
