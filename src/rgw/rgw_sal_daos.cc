@@ -645,7 +645,7 @@ int DaosBucket::check_index(
 }
 
 int DaosBucket::rebuild_index(const DoutPrefixProvider* dpp) {
-  /* there is no index table in dbstore. Not applicable */
+  /* there is no index table in DAOS. Not applicable */
   return 0;
 }
 
@@ -656,7 +656,7 @@ int DaosBucket::set_tag_timeout(const DoutPrefixProvider* dpp,
 }
 
 int DaosBucket::purge_instance(const DoutPrefixProvider* dpp) {
-  /* XXX: CHECK: for dbstore only single instance supported.
+  /* XXX: CHECK: for DAOS only single instance supported.
    * Remove all the objects for that instance? Anything extra needed?
    */
   return 0;
@@ -1398,7 +1398,57 @@ int DaosObject::DaosReadOp::prepare(optional_yield y,
   ldpp_dout(dpp, 20) << __func__ << ": object's size: " << ent.meta.size
                      << dendl;
 
-  return ret;
+  *params.lastmod = ent.meta.mtime;
+
+  if (params.mod_ptr || params.unmod_ptr) {
+    // Convert all times go GMT to make them compatible
+    obj_time_weight src_weight;
+    src_weight.init(*params.lastmod, params.mod_zone_id, params.mod_pg_ver);
+    src_weight.high_precision = params.high_precision_time;
+
+    obj_time_weight dest_weight;
+    dest_weight.high_precision = params.high_precision_time;
+
+    // Check if-modified-since condition
+    if (params.mod_ptr && !params.if_nomatch) {
+      dest_weight.init(*params.mod_ptr, params.mod_zone_id, params.mod_pg_ver);
+      ldpp_dout(dpp, 10) << "If-Modified-Since: " << dest_weight << " & "
+                         << "Last-Modified: " << src_weight << dendl;
+      if (!(dest_weight < src_weight)) {
+        return -ERR_NOT_MODIFIED;
+      }
+    }
+
+    // Check if-unmodified-since condition
+    if (params.unmod_ptr && !params.if_match) {
+      dest_weight.init(*params.unmod_ptr, params.mod_zone_id,
+                       params.mod_pg_ver);
+      ldpp_dout(dpp, 10) << "If-UnModified-Since: " << dest_weight << " & "
+                         << "Last-Modified: " << src_weight << dendl;
+      if (dest_weight < src_weight) {
+        return -ERR_PRECONDITION_FAILED;
+      }
+    }
+  }
+  // Check if-match condition
+  if (params.if_match) {
+    string if_match_str = rgw_string_unquote(params.if_match);
+    ldpp_dout(dpp, 10) << "ETag: " << etag << " & "
+                       << "If-Match: " << if_match_str << dendl;
+    if (if_match_str.compare(etag) != 0) {
+      return -ERR_PRECONDITION_FAILED;
+    }
+  }
+  // Check if-none-match condition
+  if (params.if_nomatch) {
+    string if_nomatch_str = rgw_string_unquote(params.if_nomatch);
+    ldpp_dout(dpp, 10) << "ETag: " << etag << " & "
+                       << "If-NoMatch: " << if_nomatch_str << dendl;
+    if (if_nomatch_str.compare(etag) == 0) {
+      return -ERR_NOT_MODIFIED;
+    }
+  }
+  return 0;
 }
 
 int DaosObject::DaosReadOp::read(int64_t off, int64_t end, bufferlist& bl,
@@ -1632,8 +1682,8 @@ int DaosObject::open(const DoutPrefixProvider* dpp, DaosObjectOpen open_flag) {
     _is_open = true;
   } else {
     ldpp_dout(dpp, 0) << "ERROR: failed to open daos object ("
-                      << get_bucket()->get_name() << ", "
-                      << get_key().to_str() << "): ret=" << ret << dendl;
+                      << get_bucket()->get_name() << ", " << get_key().to_str()
+                      << "): ret=" << ret << dendl;
   }
   return ret;
 }
@@ -1677,7 +1727,7 @@ int DaosObject::read(const DoutPrefixProvider* dpp, bufferlist& data,
   rsgl.sg_nr = 1;
   rsgl.sg_iovs = &iov;
   rsgl.sg_nr_out = 1;
-  ret = dfs_read(get_daos_bucket()->dfs, dfs_obj, &rsgl, off, &size, nullptr);
+  ret = dfs_read(get_daos_bucket()->dfs, dfs_obj, &rsgl, offset, &size, nullptr);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to read from daos object ("
                       << get_bucket()->get_name() << ", " << get_key().to_str()
