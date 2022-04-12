@@ -374,7 +374,99 @@ int DaosUser::store_user(const DoutPrefixProvider* dpp, optional_yield y,
   return 0;
 }
 
+/*
+ * Tested DaosUser::remove_user with the following command lines:
+ *
+ * bin/radosgw-admin user create --uid johndoe --display-name "John Doe" --email johndoe@mail.com --no-mon-config
+ * bin/radosgw-admin user create --uid janedoe --display-name "Jane Doe" --email janedoe@mail.com --no-mon-config
+ * bin/radosgw-admin user create --uid joeuser --display-name "Joe User" --email joeuser@mail.com --no-mon-config
+ * bin/radosgw-admin user create --uid dgwuser --display-name "Dgw User" --email dgwuser@mail.com --no-mon-config
+ * bin/radosgw-admin user rm --uid johndoe
+ * bin/radosgw-admin user rm --uid janedoe
+ * bin/radosgw-admin user rm --uid joeuser
+ * bin/radosgw-admin user rm --uid dgwuser
+ */
 int DaosUser::remove_user(const DoutPrefixProvider* dpp, optional_yield y) {
+  const string name = info.user_id.to_str();
+
+  // the expectation is that the object version needs to be passed in as a method arg
+  //
+  // struct DaosUserInfo duinfo;
+  // int ret = store->read_user(dpp, USERS_DIR, name, &duinfo);
+  // obj_version obj_ver = duinfo.user_version;
+
+  // // Check if the user already exists
+  // if (ret == 0 && obj_ver.ver) {
+  //   // already exists.
+
+  //   if (objv_tracker.read_version.ver != obj_ver.ver) {
+  //     // Object version mismatch.. return ECANCELED
+  //     ret = -ECANCELED;
+  //     ldpp_dout(dpp, 0) << "User Read version mismatch read_version=" << objv_tracker.read_version.ver
+  //                       << " obj_ver=" << obj_ver.ver
+  //                       << dendl;
+  //     return ret;
+  //   }
+  //   obj_ver.ver++;
+  // } else {
+  //   obj_ver.ver = 1;
+  //   obj_ver.tag = "UserTAG";
+  // }
+
+  // Open user file
+  dfs_obj_t* user_obj;
+  mode_t mode = DEFFILEMODE;
+  int ret = dfs_open(store->meta_dfs, store->dirs[USERS_DIR], name.c_str(),
+                 S_IFREG | mode, O_RDWR, 0, 0, nullptr,
+                 &user_obj);
+  if (ret != 0) {
+    ldpp_dout(dpp, 0) << "ERROR: failed to open user file, name=" << name
+                      << " ret=" << ret << dendl;
+    return ret;
+  }
+
+  // make sure each access_key is removed
+  for (auto it : info.access_keys) {
+    if (dfs_access(store->meta_dfs, store->dirs[ACCESS_KEYS_DIR], it.first.c_str(), W_OK) == 0) {
+      ret = dfs_remove(store->meta_dfs, store->dirs[ACCESS_KEYS_DIR], it.first.c_str(), true, nullptr);
+      if (ret != 0) {
+        ldpp_dout(dpp, 0) << "ERROR: failed to remove access_keys file=" << it.first.c_str()
+                          << " ret=" << ret << dendl;
+        return ret;
+      }
+    }
+  }
+
+// email should be removed if it exists
+  const string& email = info.user_email;
+  if (email.length() > 0) {
+    if (dfs_access(store->meta_dfs, store->dirs[EMAILS_DIR], email.c_str(), W_OK) == 0) {
+      ret = dfs_remove(store->meta_dfs, store->dirs[EMAILS_DIR], email.c_str(), true, nullptr);
+      if (ret != 0) {
+        ldpp_dout(dpp, 0) << "ERROR: failed to remove email file, email=" << email
+                          << " ret=" << ret << dendl;
+        return ret;
+      }
+    }
+  }
+
+  // and remove the user object
+  if (dfs_access(store->meta_dfs, store->dirs[USERS_DIR], name.c_str(), W_OK) == 0) {
+    ret = dfs_remove(store->meta_dfs, store->dirs[USERS_DIR], name.c_str(), true, nullptr);
+    if (ret != 0) {
+      ldpp_dout(dpp, 0) << "ERROR: failed to remove user file, name=" << name
+                        << " ret=" << ret << dendl;
+      return ret;
+    }
+  }
+
+  // Close file
+  ret = dfs_release(user_obj);
+  if (ret != 0) {
+    ldpp_dout(dpp, 0) << "ERROR: dfs_release failed, user name=" << name
+                      << " ret=" << ret << dendl;
+    return ret;
+  }
   return 0;
 }
 
