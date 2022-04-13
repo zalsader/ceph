@@ -389,28 +389,18 @@ int DaosUser::store_user(const DoutPrefixProvider* dpp, optional_yield y,
 int DaosUser::remove_user(const DoutPrefixProvider* dpp, optional_yield y) {
   const string name = info.user_id.to_str();
 
-  // the expectation is that the object version needs to be passed in as a method arg
+  // TODO: the expectation is that the object version needs to be passed in as a method arg
+  // see int DB::remove_user(const DoutPrefixProvider *dpp, RGWUserInfo& uinfo, RGWObjVersionTracker *pobjv)
   //
-  // struct DaosUserInfo duinfo;
-  // int ret = store->read_user(dpp, USERS_DIR, name, &duinfo);
-  // obj_version obj_ver = duinfo.user_version;
+  // if (!ret && objv_tracker.read_version.ver) {
+  //   /* already exists. */
 
-  // // Check if the user already exists
-  // if (ret == 0 && obj_ver.ver) {
-  //   // already exists.
-
-  //   if (objv_tracker.read_version.ver != obj_ver.ver) {
-  //     // Object version mismatch.. return ECANCELED
+  //   if (pobjv && (pobjv->read_version.ver != objv_tracker.read_version.ver)) {
+  //     /* Object version mismatch.. return ECANCELED */
   //     ret = -ECANCELED;
-  //     ldpp_dout(dpp, 0) << "User Read version mismatch read_version=" << objv_tracker.read_version.ver
-  //                       << " obj_ver=" << obj_ver.ver
-  //                       << dendl;
+  //     ldpp_dout(dpp, 0)<<"User Read version mismatch err:(" <<ret<<") " << dendl;
   //     return ret;
   //   }
-  //   obj_ver.ver++;
-  // } else {
-  //   obj_ver.ver = 1;
-  //   obj_ver.tag = "UserTAG";
   // }
 
   // Open user file
