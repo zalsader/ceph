@@ -383,15 +383,6 @@ class DaosOIDCProvider : public RGWOIDCProvider {
   void decode(bufferlist::const_iterator& bl) { RGWOIDCProvider::decode(bl); }
 };
 
-enum class DaosObjectOpen {
-  // Only lookup the object, do not create
-  Lookup,
-  // Create the object, truncate if exists
-  Create,
-  // Create the object, do not create parent directories, truncate if exists
-  CreateNoDir
-};
-
 class DaosObject : public Object {
  private:
   DaosStore* store;
@@ -534,11 +525,21 @@ class DaosObject : public Object {
                                   bool must_exist, optional_yield y) override;
 
   bool is_open() { return _is_open; };
-  int open(const DoutPrefixProvider* dpp, DaosObjectOpen open_flag);
+  // Only lookup the object, do not create
+  int lookup(const DoutPrefixProvider* dpp);
+  // Create the object, truncate if exists
+  int create(const DoutPrefixProvider* dpp, const bool create_parents = true);
+  // Release the daos resources
   int close(const DoutPrefixProvider* dpp);
+  // Write to object starting from offset
   int write(const DoutPrefixProvider* dpp, bufferlist&& data, uint64_t offset);
-  int read(const DoutPrefixProvider* dpp, bufferlist& data, uint64_t offset, uint64_t& size);
-  int mark_as_latest(const DoutPrefixProvider *dpp)
+  // Read size bytes from object starting from offset
+  int read(const DoutPrefixProvider* dpp, bufferlist& data, uint64_t offset,
+           uint64_t& size);
+  // Marks this DAOS object as being the latest version and unmarks all other
+  // versions as latest
+  int mark_as_latest(const DoutPrefixProvider* dpp);
+  // get_bucket casted as DaosBucket*
   DaosBucket* get_daos_bucket() {
     return static_cast<DaosBucket*>(get_bucket());
   }

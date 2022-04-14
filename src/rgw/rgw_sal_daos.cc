@@ -1177,7 +1177,7 @@ int DaosObject::get_obj_state(const DoutPrefixProvider* dpp, RGWObjectCtx* rctx,
   *_state = state;
 
   // Get object's metadata (those stored in rgw_bucket_dir_entry)
-  int ret = open(dpp, DaosObjectOpen::Lookup);
+  int ret = lookup(dpp);
   vector<uint8_t> value(DFS_MAX_XATTR_LEN);
   size_t size = value.size();
   ret = dfs_getxattr(get_daos_bucket()->dfs, dfs_obj, RGW_DIR_ENTRY_XATTR,
@@ -1225,7 +1225,7 @@ int DaosObject::set_obj_attrs(const DoutPrefixProvider* dpp, RGWObjectCtx* rctx,
   // TODO handle target_obj
 
   // Get object's metadata (those stored in rgw_bucket_dir_entry)
-  int ret = open(dpp, DaosObjectOpen::Lookup);
+  int ret = lookup(dpp);
   vector<uint8_t> value(DFS_MAX_XATTR_LEN);
   size_t size = value.size();
   ret = dfs_getxattr(get_daos_bucket()->dfs, dfs_obj, RGW_DIR_ENTRY_XATTR,
@@ -1273,7 +1273,7 @@ int DaosObject::get_obj_attrs(RGWObjectCtx* rctx, optional_yield y,
   // TODO handle target_obj
 
   // Get object's metadata (those stored in rgw_bucket_dir_entry)
-  int ret = open(dpp, DaosObjectOpen::Lookup);
+  int ret = lookup(dpp);
   vector<uint8_t> value(DFS_MAX_XATTR_LEN);
   size_t size = value.size();
   ret = dfs_getxattr(get_daos_bucket()->dfs, dfs_obj, RGW_DIR_ENTRY_XATTR,
@@ -1426,7 +1426,7 @@ int DaosObject::DaosReadOp::prepare(optional_yield y,
                      << ": bucket=" << source->get_bucket()->get_name()
                      << dendl;
 
-  int ret = source->open(dpp, DaosObjectOpen::Lookup);
+  int ret = source->lookup(dpp);
   if (ret != 0) {
     return ret;
   }
@@ -1487,7 +1487,7 @@ int DaosObject::DaosReadOp::iterate(const DoutPrefixProvider* dpp, int64_t off,
   ldpp_dout(dpp, 20) << __func__ << ": off=" << off << " end=" << end << dendl;
   int ret = 0;
   if (!source->is_open()) {
-    ret = source->open(dpp, DaosObjectOpen::Lookup);
+    ret = source->lookup(dpp);
     if (ret != 0) {
       return ret;
     }
@@ -1623,76 +1623,101 @@ int DaosObject::swift_versioning_copy(RGWObjectCtx* obj_ctx,
   return 0;
 }
 
-int DaosObject::open(const DoutPrefixProvider* dpp, DaosObjectOpen open_flag) {
+int DaosObject::lookup(const DoutPrefixProvider* dpp,
+                       DaosObjectOpen open_flag) {
   if (is_open()) {
     return 0;
   }
 
   int ret = 0;
-  std::string path = get_key().to_str();
   DaosBucket* daos_bucket = get_daos_bucket();
   ret = daos_bucket->open(dpp);
   if (ret != 0) {
     return ret;
   }
 
-  // TODO: perhaps cache open file handles
-  if (open_flag == DaosObjectOpen::Lookup) {
-    // TODO handle [latest]
-    if (path.front() != '/') path = "/" + path;
-    ret = dfs_lookup(daos_bucket->dfs, path.c_str(), O_RDWR, &dfs_obj, nullptr,
-                     nullptr);
-    ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup path=" << path << " ret=" << ret
-                       << dendl;
+  // TODO: cache open file handles
+  // TODO: handle [latest]
+  std::string path = get_key().to_str();
+  if (path.front() != '/') path = "/" + path;
+  ret = dfs_lookup(daos_bucket->dfs, path.c_str(), O_RDWR, &dfs_obj, nullptr,
+                   nullptr);
+  ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup path=" << path << " ret=" << ret
+                     << dendl;
+
+  if (ret == 0) {
+    _is_open = true;
   } else {
-    dfs_obj_t* parent = nullptr;
-    std::string file_name = path;
+    ldpp_dout(dpp, 0) << "ERROR: failed to open daos object ("
+                      << get_bucket()->get_name() << ", " << get_key().to_str()
+                      << "): ret=" << ret << dendl;
+  }
+  return ret;
+}
 
-    size_t file_start = path.rfind("/");
-    mode_t mode = DEFFILEMODE;
+int DaosObject::create(const DoutPrefixProvider* dpp,
+                       const bool create_parents) {
+  if (is_open()) {
+    return 0;
+  }
 
-    if (file_start != std::string::npos) {
-      // Recursively create parent directories
-      std::string parent_path = path.substr(0, file_start);
-      file_name = path.substr(file_start + 1);
-      vector<string> dirs;
-      boost::split(dirs, parent_path, boost::is_any_of("/"));
-      dfs_obj_t* dir_obj;
+  int ret = 0;
+  DaosBucket* daos_bucket = get_daos_bucket();
+  ret = daos_bucket->open(dpp);
+  if (ret != 0) {
+    return ret;
+  }
 
-      for (const auto& dir : dirs) {
-        if (open_flag != DaosObjectOpen::CreateNoDir) {
-          ret = dfs_mkdir(daos_bucket->dfs, parent, dir.c_str(), mode, 0);
-          ldpp_dout(dpp, 20)
-              << "DEBUG: dfs_mkdir dir=" << dir << " ret=" << ret << dendl;
-          if (ret != 0 && ret != EEXIST) {
-            return ret;
-          }
-        }
-        ret = dfs_lookup_rel(daos_bucket->dfs, parent, dir.c_str(), O_RDWR,
-                             &dir_obj, nullptr, nullptr);
-        ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel dir=" << dir
-                           << " ret=" << ret << dendl;
-        if (ret != 0) {
+  // TODO: cache open file handles
+  std::string path = get_key().to_str();
+  dfs_obj_t* parent = nullptr;
+  std::string file_name = path;
+
+  size_t file_start = path.rfind("/");
+  mode_t mode = DEFFILEMODE;
+
+  if (file_start != std::string::npos) {
+    // Recursively create parent directories
+    std::string parent_path = path.substr(0, file_start);
+    file_name = path.substr(file_start + 1);
+    vector<string> dirs;
+    boost::split(dirs, parent_path, boost::is_any_of("/"));
+    dfs_obj_t* dir_obj;
+
+    for (const auto& dir : dirs) {
+      if (create_parents) {
+        ret = dfs_mkdir(daos_bucket->dfs, parent, dir.c_str(), mode, 0);
+        ldpp_dout(dpp, 20) << "DEBUG: dfs_mkdir dir=" << dir << " ret=" << ret
+                           << dendl;
+        if (ret != 0 && ret != EEXIST) {
           return ret;
         }
-        if (parent) {
-          ret = dfs_release(parent);
-          ldpp_dout(dpp, 20) << "DEBUG: dfs_release ret=" << ret << dendl;
-        }
-        parent = dir_obj;
       }
-    }
-
-    // Finally create the file
-    ret = dfs_open(daos_bucket->dfs, parent, file_name.c_str(), S_IFREG | mode,
-                   O_RDWR | O_CREAT | O_TRUNC, 0, 0, nullptr, &dfs_obj);
-    ldpp_dout(dpp, 20) << "DEBUG: dfs_open file_name=" << file_name
-                       << " ret=" << ret << dendl;
-    if (parent) {
-      ret = dfs_release(parent);
-      ldpp_dout(dpp, 20) << "DEBUG: dfs_release ret=" << ret << dendl;
+      ret = dfs_lookup_rel(daos_bucket->dfs, parent, dir.c_str(), O_RDWR,
+                           &dir_obj, nullptr, nullptr);
+      ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel dir=" << dir
+                         << " ret=" << ret << dendl;
+      if (ret != 0) {
+        return ret;
+      }
+      if (parent) {
+        ret = dfs_release(parent);
+        ldpp_dout(dpp, 20) << "DEBUG: dfs_release ret=" << ret << dendl;
+      }
+      parent = dir_obj;
     }
   }
+
+  // Finally create the file
+  ret = dfs_open(daos_bucket->dfs, parent, file_name.c_str(), S_IFREG | mode,
+                 O_RDWR | O_CREAT | O_TRUNC, 0, 0, nullptr, &dfs_obj);
+  ldpp_dout(dpp, 20) << "DEBUG: dfs_open file_name=" << file_name
+                     << " ret=" << ret << dendl;
+  if (parent) {
+    ret = dfs_release(parent);
+    ldpp_dout(dpp, 20) << "DEBUG: dfs_release ret=" << ret << dendl;
+  }
+
   if (ret == 0 || ret == EEXIST) {
     ret = 0;
     _is_open = true;
@@ -1779,7 +1804,7 @@ DaosAtomicWriter::DaosAtomicWriter(
       obj(_store, _head_obj->get_key(), _head_obj->get_bucket()) {}
 
 int DaosAtomicWriter::prepare(optional_yield y) {
-  int ret = obj.open(dpp, DaosObjectOpen::Create);
+  int ret = obj.create(dpp);
   return ret;
 }
 
@@ -1791,7 +1816,7 @@ int DaosAtomicWriter::process(bufferlist&& data, uint64_t offset) {
 
   int ret = 0;
   if (!obj.is_open()) {
-    ret = obj.open(dpp, DaosObjectOpen::Lookup);
+    ret = obj.lookup(dpp);
     if (ret != 0) {
       return ret;
     }
@@ -2297,7 +2322,7 @@ int DaosMultipartUpload::complete(
 
   // Open object
   DaosObject* obj = static_cast<DaosObject*>(target_obj);
-  ret = obj->open(dpp, DaosObjectOpen::Create);
+  ret = obj->create(dpp);
   if (ret != 0) {
     dfs_release(multipart_dir);
     return ret;
@@ -2309,7 +2334,7 @@ int DaosMultipartUpload::complete(
     // TODO DRY
     std::unique_ptr<DaosObject> part_obj =
         get_daos_bucket()->get_part_object(get_upload_id(), part_num);
-    ret = part_obj->open(dpp, DaosObjectOpen::Lookup);
+    ret = part_obj->lookup(dpp);
     if (ret != 0) {
       obj->close(dpp);
       dfs_release(multipart_dir);
@@ -2442,7 +2467,7 @@ int DaosMultipartWriter::prepare(optional_yield y) {
 
   part_obj = get_daos_bucket()->get_part_object(upload_id, part_num);
   // XXX: we should just create the file, and not the whole path
-  int ret = part_obj->open(dpp, DaosObjectOpen::CreateNoDir);
+  int ret = part_obj->create(dpp, false);
   if (ret == -ENOENT) {
     ret = -ERR_NO_SUCH_UPLOAD;
   }
@@ -2462,7 +2487,7 @@ int DaosMultipartWriter::process(bufferlist&& data, uint64_t offset) {
 
   int ret = 0;
   if (!part_obj->is_open()) {
-    ret = part_obj->open(dpp, DaosObjectOpen::Lookup);
+    ret = part_obj->lookup(dpp);
     if (ret != 0) {
       return ret;
     }
