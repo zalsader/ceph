@@ -386,41 +386,18 @@ int DaosUser::store_user(const DoutPrefixProvider* dpp, optional_yield y,
   return 0;
 }
 
-/*
- * Tested DaosUser::remove_user with the following command lines:
- *
- * bin/radosgw-admin user create --uid johndoe --display-name "John Doe" --email johndoe@mail.com --no-mon-config
- * bin/radosgw-admin user create --uid janedoe --display-name "Jane Doe" --email janedoe@mail.com --no-mon-config
- * bin/radosgw-admin user create --uid joeuser --display-name "Joe User" --email joeuser@mail.com --no-mon-config
- * bin/radosgw-admin user create --uid dgwuser --display-name "Dgw User" --email dgwuser@mail.com --no-mon-config
- * bin/radosgw-admin user rm --uid johndoe
- * bin/radosgw-admin user rm --uid janedoe
- * bin/radosgw-admin user rm --uid joeuser
- * bin/radosgw-admin user rm --uid dgwuser
- */
 int DaosUser::remove_user(const DoutPrefixProvider* dpp, optional_yield y) {
   const string name = info.user_id.to_str();
 
-  // TODO: the expectation is that the object version needs to be passed in as a method arg
-  // see int DB::remove_user(const DoutPrefixProvider *dpp, RGWUserInfo& uinfo, RGWObjVersionTracker *pobjv)
-  //
-  // if (!ret && objv_tracker.read_version.ver) {
-  //   /* already exists. */
-
-  //   if (pobjv && (pobjv->read_version.ver != objv_tracker.read_version.ver)) {
-  //     /* Object version mismatch.. return ECANCELED */
-  //     ret = -ECANCELED;
-  //     ldpp_dout(dpp, 0)<<"User Read version mismatch err:(" <<ret<<") " << dendl;
-  //     return ret;
-  //   }
-  // }
+  // TODO: the expectation is that the object version needs to be passed in as a
+  // method arg see int DB::remove_user(const DoutPrefixProvider *dpp,
+  // RGWUserInfo& uinfo, RGWObjVersionTracker *pobjv)
 
   // Open user file
   dfs_obj_t* user_obj;
   mode_t mode = DEFFILEMODE;
   int ret = dfs_open(store->meta_dfs, store->dirs[USERS_DIR], name.c_str(),
-                 S_IFREG | mode, O_RDWR, 0, 0, nullptr,
-                 &user_obj);
+                     S_IFREG | mode, O_RDWR, 0, 0, nullptr, &user_obj);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to open user file, name=" << name
                       << " ret=" << ret << dendl;
@@ -429,32 +406,38 @@ int DaosUser::remove_user(const DoutPrefixProvider* dpp, optional_yield y) {
 
   // make sure each access_key is removed
   for (auto it : info.access_keys) {
-    if (dfs_access(store->meta_dfs, store->dirs[ACCESS_KEYS_DIR], it.first.c_str(), W_OK) == 0) {
-      ret = dfs_remove(store->meta_dfs, store->dirs[ACCESS_KEYS_DIR], it.first.c_str(), true, nullptr);
+    if (dfs_access(store->meta_dfs, store->dirs[ACCESS_KEYS_DIR],
+                   it.first.c_str(), W_OK) == 0) {
+      ret = dfs_remove(store->meta_dfs, store->dirs[ACCESS_KEYS_DIR],
+                       it.first.c_str(), true, nullptr);
       if (ret != 0) {
-        ldpp_dout(dpp, 0) << "ERROR: failed to remove access_keys file=" << it.first.c_str()
-                          << " ret=" << ret << dendl;
+        ldpp_dout(dpp, 0) << "ERROR: failed to remove access_keys file="
+                          << it.first.c_str() << " ret=" << ret << dendl;
         return ret;
       }
     }
   }
 
-// email should be removed if it exists
+  // email should be removed if it exists
   const string& email = info.user_email;
   if (email.length() > 0) {
-    if (dfs_access(store->meta_dfs, store->dirs[EMAILS_DIR], email.c_str(), W_OK) == 0) {
-      ret = dfs_remove(store->meta_dfs, store->dirs[EMAILS_DIR], email.c_str(), true, nullptr);
+    if (dfs_access(store->meta_dfs, store->dirs[EMAILS_DIR], email.c_str(),
+                   W_OK) == 0) {
+      ret = dfs_remove(store->meta_dfs, store->dirs[EMAILS_DIR], email.c_str(),
+                       true, nullptr);
       if (ret != 0) {
-        ldpp_dout(dpp, 0) << "ERROR: failed to remove email file, email=" << email
-                          << " ret=" << ret << dendl;
+        ldpp_dout(dpp, 0) << "ERROR: failed to remove email file, email="
+                          << email << " ret=" << ret << dendl;
         return ret;
       }
     }
   }
 
   // and remove the user object
-  if (dfs_access(store->meta_dfs, store->dirs[USERS_DIR], name.c_str(), W_OK) == 0) {
-    ret = dfs_remove(store->meta_dfs, store->dirs[USERS_DIR], name.c_str(), true, nullptr);
+  if (dfs_access(store->meta_dfs, store->dirs[USERS_DIR], name.c_str(), W_OK) ==
+      0) {
+    ret = dfs_remove(store->meta_dfs, store->dirs[USERS_DIR], name.c_str(),
+                     true, nullptr);
     if (ret != 0) {
       ldpp_dout(dpp, 0) << "ERROR: failed to remove user file, name=" << name
                         << " ret=" << ret << dendl;
@@ -1655,6 +1638,7 @@ int DaosObject::open(const DoutPrefixProvider* dpp, DaosObjectOpen open_flag) {
 
   // TODO: perhaps cache open file handles
   if (open_flag == DaosObjectOpen::Lookup) {
+    // TODO handle [latest]
     if (path.front() != '/') path = "/" + path;
     ret = dfs_lookup(daos_bucket->dfs, path.c_str(), O_RDWR, &dfs_obj, nullptr,
                      nullptr);
@@ -1759,13 +1743,25 @@ int DaosObject::read(const DoutPrefixProvider* dpp, bufferlist& data,
   rsgl.sg_nr = 1;
   rsgl.sg_iovs = &iov;
   rsgl.sg_nr_out = 1;
-  int ret = dfs_read(get_daos_bucket()->dfs, dfs_obj, &rsgl, offset, &size, nullptr);
+  int ret =
+      dfs_read(get_daos_bucket()->dfs, dfs_obj, &rsgl, offset, &size, nullptr);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to read from daos object ("
                       << get_bucket()->get_name() << ", " << get_key().to_str()
                       << "): ret=" << ret << dendl;
   }
   return ret;
+}
+
+int DaosObject::mark_as_latest(const DoutPrefixProvider* dpp) {
+  // 1. Get latest version so far = [latest], if it doesn't exist get [null].
+  // 2. If it exists, mark as not latest.
+  // 3. Get or create the link [latest], make it link to the current latest
+  // version.
+  // 4. Update an xattr with a list to all the version ids, ordered by creation
+  // TODO handle deletion
+  // TODO understand race conditions
+  return 0;
 }
 
 DaosAtomicWriter::DaosAtomicWriter(
@@ -1818,6 +1814,7 @@ int DaosAtomicWriter::complete(
     optional_yield y) {
   bufferlist bl;
   rgw_bucket_dir_entry ent;
+  int ret;
 
   // Set rgw_bucet_dir_entry. Some of the members of this structure may not
   // apply to daos.
@@ -1860,31 +1857,16 @@ int DaosAtomicWriter::complete(
   }
   encode(attrs, bl);
 
-  // TODO implement versioning
-  /* if (is_versioned) {
-    // get the list of all versioned objects with the same key and
-    // unset their FLAG_CURRENT later, if do_idx_op_by_name() is successful.
-    // Note: without distributed lock on the index - it is possible that 2
-    // CURRENT entries would appear in the bucket. For example, consider the
-    // following scenario when two clients are trying to add the new object
-    // version concurrently:
-    //   client 1: reads all the CURRENT entries
-    //   client 2: updates the index and sets the new CURRENT
-    //   client 1: updates the index and sets the new CURRENT
-    // At the step (1) client 1 would not see the new current record from step (2),
-    // so it won't update it. As a result, two CURRENT version entries will appear
-    // in the bucket.
-    // TODO: update the current version (unset the flag) and insert the new current
-    // version can be launched in one motr op. This requires change at do_idx_op()
-    // and do_idx_op_by_name().
-    int rc = obj.update_version_entries(dpp);
-    if (rc < 0)
-      return rc;
- } */
+  if (is_versioned) {
+    ret = obj.mark_as_latest(dpp);
+    if (ret != 0) {
+      return ret;
+    }
+  }
 
   // Add rgw_bucket_dir_entry into object xattr
-  int ret = dfs_setxattr(obj.get_daos_bucket()->dfs, obj.dfs_obj,
-                         RGW_DIR_ENTRY_XATTR, bl.c_str(), bl.length(), 0);
+  ret = dfs_setxattr(obj.get_daos_bucket()->dfs, obj.dfs_obj,
+                     RGW_DIR_ENTRY_XATTR, bl.c_str(), bl.length(), 0);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to set xattr of daos object ("
                       << obj.get_bucket()->get_name() << ", "
@@ -2261,6 +2243,7 @@ int DaosMultipartUpload::complete(
   // Different from rgw_sal_rados.cc starts here
   // TODO reduce redundant code
   // TODO handle errors
+  // TODO handle versioning
   // Read the object's multipart info
   dfs_obj_t* multipart_dir;
   dfs_obj_t* upload_dir;
