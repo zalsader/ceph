@@ -21,8 +21,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 
-#include <boost/algorithm/string.hpp>
-#include <sstream>
+#include <filesystem>
 #include <system_error>
 
 #include "common/Clock.h"
@@ -38,6 +37,8 @@ using std::map;
 using std::set;
 using std::string;
 using std::vector;
+
+namespace fs = std::filesystem;
 
 namespace rgw::sal {
 
@@ -56,6 +57,17 @@ using ::ceph::encode;
 
 static const std::string METADATA_DIRS[] = {USERS_DIR, EMAILS_DIR,
                                             ACCESS_KEYS_DIR, MULTIPART_DIR};
+
+/**
+ * Combines the vector to return a path
+ */
+fs::path make_path(std::vector<std::string>&& components) {
+  fs::path p;
+  for (auto comp : components) {
+    p /= comp;
+  }
+  return p;
+}
 
 int DaosUser::list_buckets(const DoutPrefixProvider* dpp, const string& marker,
                            const string& end_marker, uint64_t max,
@@ -338,9 +350,7 @@ int DaosUser::store_user(const DoutPrefixProvider* dpp, optional_yield y,
     objv_tracker.write_version = obj_ver;
   }
 
-  std::ostringstream user_path_build;
-  user_path_build << "../" << USERS_DIR << "/" << name;
-  std::string user_path = user_path_build.str();
+  fs::path user_path = make_path({"..", USERS_DIR, name});
 
   // Store access key in access key index
   if (!info.access_keys.empty()) {
@@ -514,11 +524,10 @@ int DaosBucket::close(const DoutPrefixProvider* dpp) {
 std::unique_ptr<DaosObject> DaosBucket::get_part_object(std::string upload_id,
                                                         uint64_t part_num) {
   // XXX: create a util for path build
-  std::ostringstream part_path_build;
-  part_path_build << MULTIPART_DIR << "/" << get_name() << "/" << upload_id
-                  << "/" << part_num;
+  fs::path part_path = make_path(
+      {MULTIPART_DIR, get_name(), upload_id, std::to_string(part_num)});
   rgw_obj_key k;
-  k.name = part_path_build.str();
+  k.name = part_path.str();
   return std::make_unique<DaosObject>(store, k, store->get_metadata_bucket());
 }
 
@@ -1669,40 +1678,41 @@ int DaosObject::create(const DoutPrefixProvider* dpp,
   }
 
   // TODO: cache open file handles
-  std::string path = get_key().to_str();
   dfs_obj_t* parent = nullptr;
-  std::string file_name = path;
-
-  size_t file_start = path.rfind("/");
+  fs::path path = get_key().to_str();
+  fs::path file_name = path.filename();
+  std::string parent_path = path.parent_path();
   mode_t mode = DEFFILEMODE;
 
-  if (file_start != std::string::npos) {
-    // Recursively create parent directories
-    std::string parent_path = path.substr(0, file_start);
-    file_name = path.substr(file_start + 1);
+  if (!parent_path.empty()) {
+    // Recursively open parent directories
     vector<string> dirs;
-    boost::split(dirs, parent_path, boost::is_any_of("/"));
     dfs_obj_t* dir_obj;
 
-    for (const auto& dir : dirs) {
+    for (const auto& dir : parent_path) {
       if (create_parents) {
+        // Create directory
         ret = dfs_mkdir(daos_bucket->dfs, parent, dir.c_str(), mode, 0);
         ldpp_dout(dpp, 20) << "DEBUG: dfs_mkdir dir=" << dir << " ret=" << ret
                            << dendl;
         if (ret != 0 && ret != EEXIST) {
+          if (parent) {
+            dfs_release(parent);
+          }
           return ret;
         }
       }
+
+      // Open directory
       ret = dfs_lookup_rel(daos_bucket->dfs, parent, dir.c_str(), O_RDWR,
                            &dir_obj, nullptr, nullptr);
       ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel dir=" << dir
                          << " ret=" << ret << dendl;
+      if (parent) {
+        dfs_release(parent);
+      }
       if (ret != 0) {
         return ret;
-      }
-      if (parent) {
-        ret = dfs_release(parent);
-        ldpp_dout(dpp, 20) << "DEBUG: dfs_release ret=" << ret << dendl;
       }
       parent = dir_obj;
     }
