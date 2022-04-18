@@ -1542,6 +1542,7 @@ DaosObject::DaosDeleteOp::DaosDeleteOp(DaosObject* _source, RGWObjectCtx* _rctx)
 // backend process the params.
 // 2. Delete an object when its versioning is turned on.
 // 3. Handle empty directories
+// 4. Fail when file doesn't exist
 int DaosObject::DaosDeleteOp::delete_obj(const DoutPrefixProvider* dpp,
                                          optional_yield y) {
   ldpp_dout(dpp, 20) << "DaosDeleteOp::delete_obj "
@@ -2068,7 +2069,7 @@ int DaosMultipartUpload::list_parts(const DoutPrefixProvider* dpp,
     // The entry is a regular file, read the xattr and add to objs
     vector<uint8_t> value(DFS_MAX_XATTR_LEN);
     size_t size = value.size();
-    dfs_getxattr(store->meta_dfs, part_obj, RGW_PART_XATTR, value.data(),
+    ret = dfs_getxattr(store->meta_dfs, part_obj, RGW_PART_XATTR, value.data(),
                  &size);
     ldpp_dout(dpp, 20) << "DEBUG: dfs_getxattr entry=" << part_name
                        << " xattr=" << RGW_PART_XATTR << dendl;
