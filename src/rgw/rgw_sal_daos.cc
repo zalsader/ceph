@@ -2279,7 +2279,6 @@ int DaosMultipartUpload::complete(
   // Different from rgw_sal_rados.cc starts here
   // TODO reduce redundant code
   // TODO handle errors
-  // TODO handle versioning
   // Read the object's multipart info
   dfs_obj_t* multipart_dir;
   dfs_obj_t* upload_dir;
@@ -2326,6 +2325,10 @@ int DaosMultipartUpload::complete(
                      << dendl;
   ent.meta.category = RGWObjCategory::Main;
   ent.meta.mtime = ceph::real_clock::now();
+  bool is_versioned = ent.key.have_instance();
+  if (is_versioned)
+    ent.flags =
+        rgw_bucket_dir_entry::FLAG_VER | rgw_bucket_dir_entry::FLAG_CURRENT;
   ent.meta.etag = etag;
   bufferlist wbl;
   ent.encode(wbl);
@@ -2372,6 +2375,14 @@ int DaosMultipartUpload::complete(
   // Set attributes
   ret = dfs_setxattr(obj->get_daos_bucket()->dfs, obj->dfs_obj,
                      RGW_DIR_ENTRY_XATTR, wbl.c_str(), wbl.length(), 0);
+
+  if (is_versioned) {
+    ret = obj->mark_as_latest(dpp);
+    if (ret != 0) {
+      return ret;
+    }
+  }
+
   obj->close(dpp);
 
   // Remove upload from bucket multipart index
