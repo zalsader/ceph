@@ -837,8 +837,8 @@ int DaosBucket::list(const DoutPrefixProvider* dpp, ListParams& params, int max,
 
     dfs_obj_t* entry_obj;
     mode_t mode;
-    ret =
-        dfs_lookup_rel(dfs, dir_obj, name, O_RDWR, &entry_obj, &mode, nullptr);
+    ret = dfs_lookup_rel(dfs, dir_obj, name, O_RDWR | O_NOFOLLOW, &entry_obj,
+                         &mode, nullptr);
     ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel i=" << i << " entry=" << name
                        << " ret=" << ret << dendl;
     if (ret != 0) {
@@ -1606,7 +1606,7 @@ int DaosObject::lookup(const DoutPrefixProvider* dpp, mode_t* mode) {
                      << dendl;
 
   if (ret != 0) {
-    size_t suffix_start = path.rfind( LATEST_INSTANCE_SUFFIX );
+    size_t suffix_start = path.rfind(LATEST_INSTANCE_SUFFIX);
     if (suffix_start != std::string::npos) {
       // If we are trying to access the latest version, try accessing key with
       // null instance since it is likely that the bucket did not have
@@ -1621,6 +1621,10 @@ int DaosObject::lookup(const DoutPrefixProvider* dpp, mode_t* mode) {
 
   if (ret == 0) {
     _is_open = true;
+  } else if (ret == ENOENT) {
+    ldpp_dout(dpp, 20) << "DEBUG: daos object (" << get_bucket()->get_name()
+                       << ", " << get_key().to_str()
+                       << ") does not exist: ret=" << ret << dendl;
   } else {
     ldpp_dout(dpp, 0) << "ERROR: failed to open daos object ("
                       << get_bucket()->get_name() << ", " << get_key().to_str()
@@ -1644,7 +1648,7 @@ int DaosObject::create(const DoutPrefixProvider* dpp, const bool create_parents,
 
   // Disallow creating a file with the instance = latest, since it is supposed
   // to be a link, not a writeable file
-  size_t suffix_pos = path.string().rfind( LATEST_INSTANCE_SUFFIX );
+  size_t suffix_pos = path.string().rfind(LATEST_INSTANCE_SUFFIX);
   if (suffix_pos != std::string::npos && link_to.empty()) {
     ldpp_dout(dpp, 0) << "ERROR: creating an object that ends with "
                       << LATEST_INSTANCE_SUFFIX
@@ -1788,7 +1792,7 @@ int DaosObject::get_dir_entry_attrs(const DoutPrefixProvider* dpp,
   vector<uint8_t> value(DFS_MAX_XATTR_LEN);
   size_t size = value.size();
   ret = dfs_getxattr(get_daos_bucket()->dfs, dfs_obj, RGW_DIR_ENTRY_XATTR,
-                         value.data(), &size);
+                     value.data(), &size);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to get dirent of daos object ("
                       << get_bucket()->get_name() << ", " << get_key().to_str()
@@ -1853,7 +1857,7 @@ int DaosObject::set_dir_entry_attrs(const DoutPrefixProvider* dpp,
 
   // Write rgw_bucket_dir_entry into object xattr
   ret = dfs_setxattr(get_daos_bucket()->dfs, dfs_obj, RGW_DIR_ENTRY_XATTR,
-                         wbl.c_str(), wbl.length(), 0);
+                     wbl.c_str(), wbl.length(), 0);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to set dirent of daos object ("
                       << get_bucket()->get_name() << ", " << get_key().to_str()
@@ -1871,20 +1875,27 @@ int DaosObject::mark_as_latest(const DoutPrefixProvider* dpp,
   std::unique_ptr<DaosObject> latest_object = std::make_unique<DaosObject>(
       store, rgw_obj_key(key.name, LATEST_INSTANCE), get_bucket());
 
-  // Get metadata
-  rgw_bucket_dir_entry latest_ent;
-  Attrs latest_attrs;
-  int ret = get_dir_entry_attrs(dpp, &latest_ent, &latest_attrs);
-  if (ret != 0) {
-    return ret;
-  }
+  ldpp_dout(dpp, 20) << __func__ << ": key=" << get_key().to_str()
+                     << " latest_object_key= "
+                     << latest_object->get_key().to_str() << dendl;
 
-  // Update flags
-  latest_ent.flags = rgw_bucket_dir_entry::FLAG_VER;
-  latest_ent.meta.mtime = set_mtime;
-  ret = set_dir_entry_attrs(dpp, &latest_ent, &latest_attrs);
-  if (ret != 0) {
-    return ret;
+  int ret = latest_object->lookup(dpp);
+  if (ret == 0) {
+    // Get metadata only if file exists
+    rgw_bucket_dir_entry latest_ent;
+    Attrs latest_attrs;
+    ret = latest_object->get_dir_entry_attrs(dpp, &latest_ent, &latest_attrs);
+    if (ret != 0) {
+      return ret;
+    }
+
+    // Update flags
+    latest_ent.flags = rgw_bucket_dir_entry::FLAG_VER;
+    latest_ent.meta.mtime = set_mtime;
+    ret = latest_object->set_dir_entry_attrs(dpp, &latest_ent, &latest_attrs);
+    if (ret != 0) {
+      return ret;
+    }
   }
 
   // Get or create the link [latest], make it link to the current latest
@@ -1892,11 +1903,11 @@ int DaosObject::mark_as_latest(const DoutPrefixProvider* dpp,
   std::unique_ptr<DaosObject> latest_link = std::make_unique<DaosObject>(
       store, rgw_obj_key(key.name, LATEST_INSTANCE), get_bucket());
   fs::path path = get_key().to_str();
-  latest_link->create(dpp, false, path.filename().string());
+  ret = latest_link->create(dpp, false, path.filename().string());
 
   // TODO Update an xattr with a list to all the version ids, ordered by
   // creation to handle deletion
-  return 0;
+  return ret;
 }
 
 DaosAtomicWriter::DaosAtomicWriter(
@@ -1972,8 +1983,7 @@ int DaosAtomicWriter::complete(
     ent.flags =
         rgw_bucket_dir_entry::FLAG_VER | rgw_bucket_dir_entry::FLAG_CURRENT;
   ldpp_dout(dpp, 20) << __func__ << ": key=" << obj.get_key().to_str()
-                     << " etag: " << etag << " user_data=" << user_data
-                     << dendl;
+                     << " etag: " << etag << dendl;
   if (user_data) ent.meta.user_data = *user_data;
 
   RGWBucketInfo& info = obj.get_bucket()->get_info();
