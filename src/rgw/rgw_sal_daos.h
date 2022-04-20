@@ -526,7 +526,7 @@ class DaosObject : public Object {
 
   bool is_open() { return _is_open; };
   // Only lookup the object, do not create
-  int lookup(const DoutPrefixProvider* dpp);
+  int lookup(const DoutPrefixProvider* dpp, mode_t* mode = nullptr);
   // Create the object, truncate if exists
   int create(const DoutPrefixProvider* dpp, const bool create_parents = true);
   // Release the daos resources
@@ -536,9 +536,17 @@ class DaosObject : public Object {
   // Read size bytes from object starting from offset
   int read(const DoutPrefixProvider* dpp, bufferlist& data, uint64_t offset,
            uint64_t& size);
+  // Get the object's dirent and attrs
+  int get_dir_entry_attrs(const DoutPrefixProvider* dpp,
+                          rgw_bucket_dir_entry* ent, Attrs* getattrs = nullptr,
+                          multipart_upload_info* upload_info = nullptr);
+  // Set the object's dirent and attrs
+  int set_dir_entry_attrs(const DoutPrefixProvider* dpp,
+                          rgw_bucket_dir_entry* ent, Attrs* setattrs = nullptr,
+                          multipart_upload_info* upload_info = nullptr);
   // Marks this DAOS object as being the latest version and unmarks all other
   // versions as latest
-  int mark_as_latest(const DoutPrefixProvider* dpp);
+  int mark_as_latest(const DoutPrefixProvider* dpp, ceph::real_time set_mtime);
   // get_bucket casted as DaosBucket*
   DaosBucket* get_daos_bucket() {
     return static_cast<DaosBucket*>(get_bucket());

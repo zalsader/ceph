@@ -856,7 +856,8 @@ int DaosBucket::list(const DoutPrefixProvider* dpp, ListParams& params, int max,
       // The entry is a regular file, read the xattr and add to objs
       vector<uint8_t> value(DFS_MAX_XATTR_LEN);
       size_t size = value.size();
-      dfs_getxattr(dfs, entry_obj, RGW_DIR_ENTRY_XATTR, value.data(), &size);
+      ret = dfs_getxattr(dfs, entry_obj, RGW_DIR_ENTRY_XATTR, value.data(),
+                         &size);
       ldpp_dout(dpp, 20) << "DEBUG: dfs_getxattr entry=" << name
                          << " xattr=" << RGW_DIR_ENTRY_XATTR << dendl;
       // Skip if file has no dirent
@@ -960,8 +961,8 @@ int DaosBucket::list_multiparts(
     // Read the xattr
     vector<uint8_t> value(DFS_MAX_XATTR_LEN);
     size_t size = value.size();
-    dfs_getxattr(store->meta_dfs, upload_dir, RGW_DIR_ENTRY_XATTR, value.data(),
-                 &size);
+    ret = dfs_getxattr(store->meta_dfs, upload_dir, RGW_DIR_ENTRY_XATTR,
+                       value.data(), &size);
     ldpp_dout(dpp, 20) << "DEBUG: dfs_getxattr upload_id=" << upload_id
                        << " xattr=" << RGW_DIR_ENTRY_XATTR << dendl;
 
@@ -1188,23 +1189,11 @@ int DaosObject::get_obj_state(const DoutPrefixProvider* dpp, RGWObjectCtx* rctx,
   *_state = state;
 
   // Get object's metadata (those stored in rgw_bucket_dir_entry)
-  int ret = lookup(dpp);
-  vector<uint8_t> value(DFS_MAX_XATTR_LEN);
-  size_t size = value.size();
-  ret = dfs_getxattr(get_daos_bucket()->dfs, dfs_obj, RGW_DIR_ENTRY_XATTR,
-                     value.data(), &size);
+  rgw_bucket_dir_entry ent;
+  ret = get_dir_entry_attrs(dpp, &ent);
   if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: failed to get xattr of daos object ("
-                      << get_bucket()->get_name() << ", " << get_key().to_str()
-                      << "): ret=" << ret << dendl;
     return ret;
   }
-
-  bufferlist bl;
-  rgw_bucket_dir_entry ent;
-  bl.append(reinterpret_cast<char*>(value.data()), size);
-  auto iter = bl.cbegin();
-  ent.decode(iter);
 
   // Set object state.
   state->obj = get_obj();
@@ -1234,25 +1223,12 @@ int DaosObject::set_obj_attrs(const DoutPrefixProvider* dpp, RGWObjectCtx* rctx,
                               optional_yield y, rgw_obj* target_obj) {
   ldpp_dout(dpp, 20) << "DEBUG: DaosObject::set_obj_attrs()" << dendl;
   // TODO handle target_obj
-
   // Get object's metadata (those stored in rgw_bucket_dir_entry)
-  int ret = lookup(dpp);
-  vector<uint8_t> value(DFS_MAX_XATTR_LEN);
-  size_t size = value.size();
-  ret = dfs_getxattr(get_daos_bucket()->dfs, dfs_obj, RGW_DIR_ENTRY_XATTR,
-                     value.data(), &size);
+  rgw_bucket_dir_entry ent;
+  ret = get_dir_entry_attrs(dpp, &ent);
   if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: failed to get xattr of daos object ("
-                      << get_bucket()->get_name() << ", " << get_key().to_str()
-                      << "): ret=" << ret << dendl;
     return ret;
   }
-
-  bufferlist rbl;
-  rgw_bucket_dir_entry ent;
-  rbl.append(reinterpret_cast<char*>(value.data()), size);
-  auto iter = rbl.cbegin();
-  ent.decode(iter);
 
   // Update object metadata
   Attrs updateattrs = setattrs ? attrs : *setattrs;
@@ -1262,18 +1238,7 @@ int DaosObject::set_obj_attrs(const DoutPrefixProvider* dpp, RGWObjectCtx* rctx,
     }
   }
 
-  bufferlist wbl;
-  ent.encode(wbl);
-  encode(updateattrs, wbl);
-
-  // Write rgw_bucket_dir_entry into object xattr
-  ret = dfs_setxattr(get_daos_bucket()->dfs, dfs_obj, RGW_DIR_ENTRY_XATTR,
-                     wbl.c_str(), wbl.length(), 0);
-  if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: failed to set xattr of daos object ("
-                      << get_bucket()->get_name() << ", " << get_key().to_str()
-                      << "): ret=" << ret << dendl;
-  }
+  ret = set_dir_entry_attrs(dpp, &ent, &updateattrs);
   return ret;
 }
 
@@ -1282,42 +1247,33 @@ int DaosObject::get_obj_attrs(RGWObjectCtx* rctx, optional_yield y,
                               rgw_obj* target_obj) {
   ldpp_dout(dpp, 20) << "DEBUG: DaosObject::get_obj_attrs()" << dendl;
   // TODO handle target_obj
-
   // Get object's metadata (those stored in rgw_bucket_dir_entry)
-  int ret = lookup(dpp);
-  vector<uint8_t> value(DFS_MAX_XATTR_LEN);
-  size_t size = value.size();
-  ret = dfs_getxattr(get_daos_bucket()->dfs, dfs_obj, RGW_DIR_ENTRY_XATTR,
-                     value.data(), &size);
+  rgw_bucket_dir_entry ent;
+  ret = get_dir_entry_attrs(dpp, &ent, &attrs);
   if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: failed to get xattr of daos object ("
-                      << get_bucket()->get_name() << ", " << get_key().to_str()
-                      << "): ret=" << ret << dendl;
     return ret;
   }
 
-  bufferlist bl;
-  rgw_bucket_dir_entry ent;
-  bl.append(reinterpret_cast<char*>(value.data()), size);
-  auto iter = bl.cbegin();
-  ent.decode(iter);
   obj_size = ent.meta.size;
   mtime = ent.meta.mtime;
-  decode(attrs, iter);
   return ret;
 }
 
 int DaosObject::modify_obj_attrs(RGWObjectCtx* rctx, const char* attr_name,
                                  bufferlist& attr_val, optional_yield y,
                                  const DoutPrefixProvider* dpp) {
-  rgw_obj target = get_obj();
-  int r = get_obj_attrs(rctx, y, dpp, &target);
-  if (r < 0) {
-    return r;
+  // Get object's metadata (those stored in rgw_bucket_dir_entry)
+  rgw_bucket_dir_entry ent;
+  ret = get_dir_entry_attrs(dpp, &ent, &attrs);
+  if (ret != 0) {
+    return ret;
   }
-  set_atomic(rctx);
+
+  // Update object attrs
   attrs[attr_name] = attr_val;
-  return set_obj_attrs(dpp, rctx, &attrs, nullptr, y, &target);
+
+  ret = set_dir_entry_attrs(dpp, &ent, &attrs);
+  return ret
 }
 
 int DaosObject::delete_obj_attrs(const DoutPrefixProvider* dpp,
@@ -1443,28 +1399,8 @@ int DaosObject::DaosReadOp::prepare(optional_yield y,
     source->set_instance(LATEST_INSTANCE);
   }
 
-  int ret = source->lookup(dpp);
-  if (ret != 0) {
-    return ret;
-  }
-
-  vector<uint8_t> value(DFS_MAX_XATTR_LEN);
-  size_t size = value.size();
-  ret = dfs_getxattr(source->get_daos_bucket()->dfs, source->dfs_obj,
-                     RGW_DIR_ENTRY_XATTR, value.data(), &size);
-  if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: failed to get xattr of daos object ("
-                      << source->get_bucket()->get_name() << ", "
-                      << source->get_key().to_str() << "): ret=" << ret
-                      << dendl;
-    return ret;
-  }
-
-  bufferlist bl;
   rgw_bucket_dir_entry ent;
-  bl.append(reinterpret_cast<char*>(value.data()), size);
-  auto iter = bl.cbegin();
-  ent.decode(iter);
+  ret = source->get_dir_entry_attrs(dpp, &ent);
 
   // Set source object's attrs. The attrs is key/value map and is used
   // in send_response_data() to set attributes, including etag.
@@ -1502,12 +1438,9 @@ int DaosObject::DaosReadOp::iterate(const DoutPrefixProvider* dpp, int64_t off,
                                     int64_t end, RGWGetDataCB* cb,
                                     optional_yield y) {
   ldpp_dout(dpp, 20) << __func__ << ": off=" << off << " end=" << end << dendl;
-  int ret = 0;
-  if (!source->is_open()) {
-    ret = source->lookup(dpp);
-    if (ret != 0) {
-      return ret;
-    }
+  int ret = source->lookup(dpp);
+  if (ret != 0) {
+    return ret;
   }
 
   // Calculate size, end is inclusive
@@ -1530,8 +1463,19 @@ int DaosObject::DaosReadOp::iterate(const DoutPrefixProvider* dpp, int64_t off,
 int DaosObject::DaosReadOp::get_attr(const DoutPrefixProvider* dpp,
                                      const char* name, bufferlist& dest,
                                      optional_yield y) {
-  // return 0;
-  return -ENODATA;
+  Attrs attrs;
+  ret = source->get_dir_entry_attrs(dpp, nullptr, &attrs);
+  if (!ret) {
+    return -ENODATA;
+  }
+
+  auto search = attrs.find(name);
+  if (search == attrs.end()) {
+    return -ENODATA;
+  }
+
+  dest = search->second;
+  return 0;
 }
 
 std::unique_ptr<Object::DeleteOp> DaosObject::get_delete_op(RGWObjectCtx* ctx) {
@@ -1641,8 +1585,7 @@ int DaosObject::swift_versioning_copy(RGWObjectCtx* obj_ctx,
   return 0;
 }
 
-int DaosObject::lookup(const DoutPrefixProvider* dpp,
-                       DaosObjectOpen open_flag) {
+int DaosObject::lookup(const DoutPrefixProvider* dpp, mode_t* mode) {
   if (is_open()) {
     return 0;
   }
@@ -1657,7 +1600,7 @@ int DaosObject::lookup(const DoutPrefixProvider* dpp,
   // TODO: cache open file handles
   std::string path = get_key().to_str();
   if (path.front() != '/') path = "/" + path;
-  ret = dfs_lookup(daos_bucket->dfs, path.c_str(), O_RDWR, &dfs_obj, nullptr,
+  ret = dfs_lookup(daos_bucket->dfs, path.c_str(), O_RDWR, &dfs_obj, mode,
                    nullptr);
   ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup path=" << path << " ret=" << ret
                      << dendl;
@@ -1669,8 +1612,8 @@ int DaosObject::lookup(const DoutPrefixProvider* dpp,
       // null instance since it is likely that the bucket did not have
       // versioning before
       path = path.substr(0, suffix_start);
-      ret = dfs_lookup(daos_bucket->dfs, path.c_str(), O_RDWR, &dfs_obj,
-                       nullptr, nullptr);
+      ret = dfs_lookup(daos_bucket->dfs, path.c_str(), O_RDWR, &dfs_obj, mode,
+                       nullptr);
       ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup path=" << path << " ret=" << ret
                          << dendl;
     }
@@ -1818,14 +1761,107 @@ int DaosObject::read(const DoutPrefixProvider* dpp, bufferlist& data,
   return ret;
 }
 
-int DaosObject::mark_as_latest(const DoutPrefixProvider* dpp) {
-  // 1. Get latest version so far = [latest], if it doesn't exist get [null].
-  // 2. If it exists, mark as not latest.
-  // 3. Get or create the link [latest], make it link to the current latest
-  // version.
-  // 4. Update an xattr with a list to all the version ids, ordered by creation
+// Get the object's dirent and attrs
+int DaosObject::get_dir_entry_attrs(const DoutPrefixProvider* dpp,
+                                    rgw_bucket_dir_entry* ent, Attrs* getattrs,
+                                    multipart_upload_info* upload_info) {
+  int ret = lookup(dpp);
+  if (ret != 0) {
+    return ret;
+  }
+
+  vector<uint8_t> value(DFS_MAX_XATTR_LEN);
+  size_t size = value.size();
+  int ret = dfs_getxattr(get_daos_bucket()->dfs, dfs_obj, RGW_DIR_ENTRY_XATTR,
+                         value.data(), &size);
+  if (ret != 0) {
+    ldpp_dout(dpp, 0) << "ERROR: failed to get dirent of daos object ("
+                      << get_bucket()->get_name() << ", " << get_key().to_str()
+                      << "): ret=" << ret << dendl;
+    return ret;
+  }
+
+  rgw_bucket_dir_entry dummy_ent;
+  if (!ent) {
+    // if ent is not passed, use a dummy ent
+    ent = &dummy_ent;
+  }
+
+  Attrs dummy_attrs;
+  if (!getattrs) {
+    // if ent is not passed, use a dummy ent
+    getattrs = &dummy_attrs
+  }
+
+  bufferlist bl;
+  bl.append(reinterpret_cast<char*>(value.data()), size);
+  auto iter = bl.cbegin();
+  ent->decode(iter);
+  decode(*getattrs, iter);
+  if (upload_info) {
+    decode(*upload_info, iter)
+  }
+
+  return ret;
+}
+// Set the object's dirent and attrs
+int DaosObject::set_dir_entry_attrs(const DoutPrefixProvider* dpp,
+                                    rgw_bucket_dir_entry* ent, Attrs* setattrs,
+                                    multipart_upload_info* upload_info) {
+  int ret = lookup(dpp);
+  if (ret != 0) {
+    return ret;
+  }
+
+  // Set defaults
+  rgw_bucket_dir_entry dummy_ent;
+  if (!ent) {
+    // if ent is not passed, return an error
+    return -EINVAL;
+  }
+
+  if (!setattrs) {
+    // if setattrs is not passed, use object attrs
+    setattrs = &attrs
+  }
+
+  multipart_upload_info dummy_upload_info if (!upload_info) {
+    // if upload_info is not passed, use dummy
+    upload_info = &dummy_upload_info;
+  }
+
+  bufferlist wbl;
+  ent->encode(wbl);
+  encode(*setattrs, wbl);
+  encode(*upload_info, wbl);
+
+  // Write rgw_bucket_dir_entry into object xattr
+  int ret = dfs_setxattr(get_daos_bucket()->dfs, dfs_obj, RGW_DIR_ENTRY_XATTR,
+                         wbl.c_str(), wbl.length(), 0);
+  if (ret != 0) {
+    ldpp_dout(dpp, 0) << "ERROR: failed to set dirent of daos object ("
+                      << get_bucket()->get_name() << ", " << get_key().to_str()
+                      << "): ret=" << ret << dendl;
+  }
+  return ret;
+}
+
+int DaosObject::mark_as_latest(const DoutPrefixProvider* dpp,
+                               ceph::real_time set_mtime) {
   // TODO handle deletion
   // TODO understand race conditions
+  // Get latest version so far
+  std::unique_ptr<DaosObject> latest_object = std::make_unique<DaosObject>(
+      get_bucket(), rgw_obj_key(key.name, LATEST_INSTANCE));
+
+  int ret = latest_object->lookup(dpp);
+  if (ret != 0) {
+    // the version exists, mark as not latest.
+  }
+
+  // Get or create the link [latest], make it link to the current latest
+  // version.
+  // Update an xattr with a list to all the version ids, ordered by creation
   return 0;
 }
 
@@ -1905,7 +1941,6 @@ int DaosAtomicWriter::complete(
                      << " etag: " << etag << " user_data=" << user_data
                      << dendl;
   if (user_data) ent.meta.user_data = *user_data;
-  ent.encode(bl);
 
   RGWBucketInfo& info = obj.get_bucket()->get_info();
   if (info.obj_lock_enabled() && info.obj_lock.has_rule()) {
@@ -1920,23 +1955,16 @@ int DaosAtomicWriter::complete(
       attrs[RGW_ATTR_OBJECT_RETENTION] = retention_bl;
     }
   }
-  encode(attrs, bl);
+
+  ret = obj.set_dir_entry_attrs(dpp, &ent, &attrs);
 
   if (is_versioned) {
-    ret = obj.mark_as_latest(dpp);
+    ret = obj.mark_as_latest(dpp, set_mtime);
     if (ret != 0) {
       return ret;
     }
   }
 
-  // Add rgw_bucket_dir_entry into object xattr
-  ret = dfs_setxattr(obj.get_daos_bucket()->dfs, obj.dfs_obj,
-                     RGW_DIR_ENTRY_XATTR, bl.c_str(), bl.length(), 0);
-  if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: failed to set xattr of daos object ("
-                      << obj.get_bucket()->get_name() << ", "
-                      << obj.get_key().to_str() << "): ret=" << ret << dendl;
-  }
   obj.close(dpp);
   return ret;
 }
@@ -2337,7 +2365,6 @@ int DaosMultipartUpload::complete(
                      << " xattr=" << RGW_DIR_ENTRY_XATTR << dendl;
   dfs_release(upload_dir);
 
-  multipart_upload_info upload_info;
   rgw_bucket_dir_entry ent;
   bufferlist bl;
   bl.append(reinterpret_cast<char*>(value.data()), size);
@@ -2359,9 +2386,6 @@ int DaosMultipartUpload::complete(
     ent.flags =
         rgw_bucket_dir_entry::FLAG_VER | rgw_bucket_dir_entry::FLAG_CURRENT;
   ent.meta.etag = etag;
-  bufferlist wbl;
-  ent.encode(wbl);
-  encode(attrs, wbl);
 
   // Open object
   DaosObject* obj = static_cast<DaosObject*>(target_obj);
@@ -2402,11 +2426,10 @@ int DaosMultipartUpload::complete(
   }
 
   // Set attributes
-  ret = dfs_setxattr(obj->get_daos_bucket()->dfs, obj->dfs_obj,
-                     RGW_DIR_ENTRY_XATTR, wbl.c_str(), wbl.length(), 0);
+  ret = obj.set_dir_entry_attrs(dpp, &ent, &attrs);
 
   if (is_versioned) {
-    ret = obj->mark_as_latest(dpp);
+    ret = obj->mark_as_latest(dpp, ent.meta.mtime);
     if (ret != 0) {
       return ret;
     }
