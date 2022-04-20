@@ -529,7 +529,7 @@ std::unique_ptr<DaosObject> DaosBucket::get_part_object(std::string upload_id,
   fs::path part_path = make_path(
       {MULTIPART_DIR, get_name(), upload_id, std::to_string(part_num)});
   rgw_obj_key k;
-  k.name = part_path.str();
+  k.name = part_path.string();
   return std::make_unique<DaosObject>(store, k, store->get_metadata_bucket());
 }
 
@@ -1190,7 +1190,7 @@ int DaosObject::get_obj_state(const DoutPrefixProvider* dpp, RGWObjectCtx* rctx,
 
   // Get object's metadata (those stored in rgw_bucket_dir_entry)
   rgw_bucket_dir_entry ent;
-  ret = get_dir_entry_attrs(dpp, &ent);
+  int ret = get_dir_entry_attrs(dpp, &ent);
   if (ret != 0) {
     return ret;
   }
@@ -1225,7 +1225,7 @@ int DaosObject::set_obj_attrs(const DoutPrefixProvider* dpp, RGWObjectCtx* rctx,
   // TODO handle target_obj
   // Get object's metadata (those stored in rgw_bucket_dir_entry)
   rgw_bucket_dir_entry ent;
-  ret = get_dir_entry_attrs(dpp, &ent);
+  int ret = get_dir_entry_attrs(dpp, &ent);
   if (ret != 0) {
     return ret;
   }
@@ -1249,7 +1249,7 @@ int DaosObject::get_obj_attrs(RGWObjectCtx* rctx, optional_yield y,
   // TODO handle target_obj
   // Get object's metadata (those stored in rgw_bucket_dir_entry)
   rgw_bucket_dir_entry ent;
-  ret = get_dir_entry_attrs(dpp, &ent, &attrs);
+  int ret = get_dir_entry_attrs(dpp, &ent, &attrs);
   if (ret != 0) {
     return ret;
   }
@@ -1264,7 +1264,7 @@ int DaosObject::modify_obj_attrs(RGWObjectCtx* rctx, const char* attr_name,
                                  const DoutPrefixProvider* dpp) {
   // Get object's metadata (those stored in rgw_bucket_dir_entry)
   rgw_bucket_dir_entry ent;
-  ret = get_dir_entry_attrs(dpp, &ent, &attrs);
+  int ret = get_dir_entry_attrs(dpp, &ent, &attrs);
   if (ret != 0) {
     return ret;
   }
@@ -1273,7 +1273,7 @@ int DaosObject::modify_obj_attrs(RGWObjectCtx* rctx, const char* attr_name,
   attrs[attr_name] = attr_val;
 
   ret = set_dir_entry_attrs(dpp, &ent, &attrs);
-  return ret
+  return ret;
 }
 
 int DaosObject::delete_obj_attrs(const DoutPrefixProvider* dpp,
@@ -1400,7 +1400,7 @@ int DaosObject::DaosReadOp::prepare(optional_yield y,
   }
 
   rgw_bucket_dir_entry ent;
-  ret = source->get_dir_entry_attrs(dpp, &ent);
+  int ret = source->get_dir_entry_attrs(dpp, &ent);
 
   // Set source object's attrs. The attrs is key/value map and is used
   // in send_response_data() to set attributes, including etag.
@@ -1464,7 +1464,7 @@ int DaosObject::DaosReadOp::get_attr(const DoutPrefixProvider* dpp,
                                      const char* name, bufferlist& dest,
                                      optional_yield y) {
   Attrs attrs;
-  ret = source->get_dir_entry_attrs(dpp, nullptr, &attrs);
+  int ret = source->get_dir_entry_attrs(dpp, nullptr, &attrs);
   if (!ret) {
     return -ENODATA;
   }
@@ -1606,7 +1606,7 @@ int DaosObject::lookup(const DoutPrefixProvider* dpp, mode_t* mode) {
                      << dendl;
 
   if (ret != 0) {
-    size_t suffix_start = path.rfind(LATEST_INSTANCE_SUFFIX);
+    size_t suffix_start = path.rfind( LATEST_INSTANCE_SUFFIX );
     if (suffix_start != std::string::npos) {
       // If we are trying to access the latest version, try accessing key with
       // null instance since it is likely that the bucket did not have
@@ -1644,11 +1644,11 @@ int DaosObject::create(const DoutPrefixProvider* dpp, const bool create_parents,
 
   // Disallow creating a file with the instance = latest, since it is supposed
   // to be a link, not a writeable file
-  if (path.string().rfind(LATEST_INSTANCE_SUFFIX) != std::string::npos &&
-      link_to.empty()) {
+  size_t suffix_pos = path.string().rfind( LATEST_INSTANCE_SUFFIX );
+  if (suffix_pos != std::string::npos && link_to.empty()) {
     ldpp_dout(dpp, 0) << "ERROR: creating an object that ends with "
                       << LATEST_INSTANCE_SUFFIX
-                      << " is not allowed unless it is a link";
+                      << " is not allowed unless it is a link" << dendl;
     return -EINVAL;
   }
 
@@ -1694,7 +1694,7 @@ int DaosObject::create(const DoutPrefixProvider* dpp, const bool create_parents,
   }
 
   // Create links if requested
-  char* link_to_c = nullptr;
+  const char* link_to_c = nullptr;
   if (!link_to.empty()) {
     mode |= S_IFLNK;
     link_to_c = link_to.c_str();
@@ -1787,7 +1787,7 @@ int DaosObject::get_dir_entry_attrs(const DoutPrefixProvider* dpp,
 
   vector<uint8_t> value(DFS_MAX_XATTR_LEN);
   size_t size = value.size();
-  int ret = dfs_getxattr(get_daos_bucket()->dfs, dfs_obj, RGW_DIR_ENTRY_XATTR,
+  ret = dfs_getxattr(get_daos_bucket()->dfs, dfs_obj, RGW_DIR_ENTRY_XATTR,
                          value.data(), &size);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to get dirent of daos object ("
@@ -1805,7 +1805,7 @@ int DaosObject::get_dir_entry_attrs(const DoutPrefixProvider* dpp,
   Attrs dummy_attrs;
   if (!getattrs) {
     // if ent is not passed, use a dummy ent
-    getattrs = &dummy_attrs
+    getattrs = &dummy_attrs;
   }
 
   bufferlist bl;
@@ -1814,7 +1814,7 @@ int DaosObject::get_dir_entry_attrs(const DoutPrefixProvider* dpp,
   ent->decode(iter);
   decode(*getattrs, iter);
   if (upload_info) {
-    decode(*upload_info, iter)
+    decode(*upload_info, iter);
   }
 
   return ret;
@@ -1837,10 +1837,11 @@ int DaosObject::set_dir_entry_attrs(const DoutPrefixProvider* dpp,
 
   if (!setattrs) {
     // if setattrs is not passed, use object attrs
-    setattrs = &attrs
+    setattrs = &attrs;
   }
 
-  multipart_upload_info dummy_upload_info if (!upload_info) {
+  multipart_upload_info dummy_upload_info;
+  if (!upload_info) {
     // if upload_info is not passed, use dummy
     upload_info = &dummy_upload_info;
   }
@@ -1851,7 +1852,7 @@ int DaosObject::set_dir_entry_attrs(const DoutPrefixProvider* dpp,
   encode(*upload_info, wbl);
 
   // Write rgw_bucket_dir_entry into object xattr
-  int ret = dfs_setxattr(get_daos_bucket()->dfs, dfs_obj, RGW_DIR_ENTRY_XATTR,
+  ret = dfs_setxattr(get_daos_bucket()->dfs, dfs_obj, RGW_DIR_ENTRY_XATTR,
                          wbl.c_str(), wbl.length(), 0);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to set dirent of daos object ("
@@ -1868,20 +1869,20 @@ int DaosObject::mark_as_latest(const DoutPrefixProvider* dpp,
 
   // Get latest version so far
   std::unique_ptr<DaosObject> latest_object = std::make_unique<DaosObject>(
-      get_bucket(), rgw_obj_key(key.name, LATEST_INSTANCE));
+      store, rgw_obj_key(key.name, LATEST_INSTANCE), get_bucket());
 
   // Get metadata
   rgw_bucket_dir_entry latest_ent;
   Attrs latest_attrs;
-  ret = get_dir_entry_attrs(dpp, &ent, &latest_attrs);
+  int ret = get_dir_entry_attrs(dpp, &latest_ent, &latest_attrs);
   if (ret != 0) {
     return ret;
   }
 
   // Update flags
   latest_ent.flags = rgw_bucket_dir_entry::FLAG_VER;
-  latest_ent.mtime = set_mtime;
-  ret = set_dir_entry_attrs(dpp, &ent, &latest_attrs);
+  latest_ent.meta.mtime = set_mtime;
+  ret = set_dir_entry_attrs(dpp, &latest_ent, &latest_attrs);
   if (ret != 0) {
     return ret;
   }
@@ -1889,7 +1890,7 @@ int DaosObject::mark_as_latest(const DoutPrefixProvider* dpp,
   // Get or create the link [latest], make it link to the current latest
   // version.
   std::unique_ptr<DaosObject> latest_link = std::make_unique<DaosObject>(
-      get_bucket(), rgw_obj_key(key.name, LATEST_INSTANCE));
+      store, rgw_obj_key(key.name, LATEST_INSTANCE), get_bucket());
   fs::path path = get_key().to_str();
   latest_link->create(dpp, false, path.filename().string());
 
@@ -2459,7 +2460,7 @@ int DaosMultipartUpload::complete(
   }
 
   // Set attributes
-  ret = obj.set_dir_entry_attrs(dpp, &ent, &attrs);
+  ret = obj->set_dir_entry_attrs(dpp, &ent, &attrs);
 
   if (is_versioned) {
     ret = obj->mark_as_latest(dpp, ent.meta.mtime);

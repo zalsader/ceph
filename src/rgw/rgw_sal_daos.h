@@ -529,7 +529,7 @@ class DaosObject : public Object {
   int lookup(const DoutPrefixProvider* dpp, mode_t* mode = nullptr);
   // Create the object, truncate if exists
   int create(const DoutPrefixProvider* dpp, const bool create_parents = true,
-             const string link_to = "");
+             const std::string link_to = "");
   // Release the daos resources
   int close(const DoutPrefixProvider* dpp);
   // Write to object starting from offset
