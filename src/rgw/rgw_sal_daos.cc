@@ -1437,6 +1437,12 @@ int DaosObject::DaosReadOp::prepare(optional_yield y,
                      << ": bucket=" << source->get_bucket()->get_name()
                      << dendl;
 
+  if (source->get_bucket()->versioned() && !source->have_instance()) {
+    // If the bucket is versioned and no version is specified, get the latest
+    // version
+    source->set_instance(LATEST_INSTANCE);
+  }
+
   int ret = source->lookup(dpp);
   if (ret != 0) {
     return ret;
@@ -1891,7 +1897,7 @@ int DaosAtomicWriter::complete(
   ent.meta.owner = owner.to_str();
   ent.meta.owner_display_name =
       obj.get_bucket()->get_owner()->get_display_name();
-  bool is_versioned = obj.get_key().have_instance();
+  bool is_versioned = obj.have_instance();
   if (is_versioned)
     ent.flags =
         rgw_bucket_dir_entry::FLAG_VER | rgw_bucket_dir_entry::FLAG_CURRENT;
@@ -2348,7 +2354,7 @@ int DaosMultipartUpload::complete(
                      << dendl;
   ent.meta.category = RGWObjCategory::Main;
   ent.meta.mtime = ceph::real_clock::now();
-  bool is_versioned = ent.key.have_instance();
+  bool is_versioned = target_obj->have_instance();
   if (is_versioned)
     ent.flags =
         rgw_bucket_dir_entry::FLAG_VER | rgw_bucket_dir_entry::FLAG_CURRENT;
