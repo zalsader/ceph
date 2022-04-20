@@ -1629,8 +1629,8 @@ int DaosObject::lookup(const DoutPrefixProvider* dpp, mode_t* mode) {
   return ret;
 }
 
-int DaosObject::create(const DoutPrefixProvider* dpp,
-                       const bool create_parents) {
+int DaosObject::create(const DoutPrefixProvider* dpp, const bool create_parents,
+                       const string link_to) {
   if (is_open()) {
     return 0;
   }
@@ -1644,9 +1644,11 @@ int DaosObject::create(const DoutPrefixProvider* dpp,
 
   // Disallow creating a file with the instance = latest, since it is supposed
   // to be a link, not a writeable file
-  if (path.string().rfind(LATEST_INSTANCE_SUFFIX) != std::string::npos) {
+  if (path.string().rfind(LATEST_INSTANCE_SUFFIX) != std::string::npos &&
+      link_to.empty()) {
     ldpp_dout(dpp, 0) << "ERROR: creating an object that ends with "
-                      << LATEST_INSTANCE_SUFFIX << " is not allowed";
+                      << LATEST_INSTANCE_SUFFIX
+                      << " is not allowed unless it is a link";
     return -EINVAL;
   }
 
@@ -1691,9 +1693,22 @@ int DaosObject::create(const DoutPrefixProvider* dpp,
     }
   }
 
+  // Create links if requested
+  char* link_to_c = nullptr;
+  if (!link_to.empty()) {
+    mode |= S_IFLNK;
+    link_to_c = link_to.c_str();
+
+    // Remove any existing symlinks since O_TRUNC is not handled
+    ret =
+        dfs_remove(daos_bucket->dfs, parent, file_name.c_str(), false, nullptr);
+  } else {
+    mode |= S_IFREG;
+  }
+
   // Finally create the file
-  ret = dfs_open(daos_bucket->dfs, parent, file_name.c_str(), S_IFREG | mode,
-                 O_RDWR | O_CREAT | O_TRUNC, 0, 0, nullptr, &dfs_obj);
+  ret = dfs_open(daos_bucket->dfs, parent, file_name.c_str(), mode,
+                 O_RDWR | O_CREAT | O_TRUNC, 0, 0, link_to_c, &dfs_obj);
   ldpp_dout(dpp, 20) << "DEBUG: dfs_open file_name=" << file_name
                      << " ret=" << ret << dendl;
   if (parent) {
@@ -1850,18 +1865,36 @@ int DaosObject::mark_as_latest(const DoutPrefixProvider* dpp,
                                ceph::real_time set_mtime) {
   // TODO handle deletion
   // TODO understand race conditions
+
   // Get latest version so far
   std::unique_ptr<DaosObject> latest_object = std::make_unique<DaosObject>(
       get_bucket(), rgw_obj_key(key.name, LATEST_INSTANCE));
 
-  int ret = latest_object->lookup(dpp);
+  // Get metadata
+  rgw_bucket_dir_entry latest_ent;
+  Attrs latest_attrs;
+  ret = get_dir_entry_attrs(dpp, &ent, &latest_attrs);
   if (ret != 0) {
-    // the version exists, mark as not latest.
+    return ret;
+  }
+
+  // Update flags
+  latest_ent.flags = rgw_bucket_dir_entry::FLAG_VER;
+  latest_ent.mtime = set_mtime;
+  ret = set_dir_entry_attrs(dpp, &ent, &latest_attrs);
+  if (ret != 0) {
+    return ret;
   }
 
   // Get or create the link [latest], make it link to the current latest
   // version.
-  // Update an xattr with a list to all the version ids, ordered by creation
+  std::unique_ptr<DaosObject> latest_link = std::make_unique<DaosObject>(
+      get_bucket(), rgw_obj_key(key.name, LATEST_INSTANCE));
+  fs::path path = get_key().to_str();
+  latest_link->create(dpp, false, path.filename().string());
+
+  // TODO Update an xattr with a list to all the version ids, ordered by
+  // creation to handle deletion
   return 0;
 }
 

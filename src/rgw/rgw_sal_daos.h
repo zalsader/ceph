@@ -528,7 +528,8 @@ class DaosObject : public Object {
   // Only lookup the object, do not create
   int lookup(const DoutPrefixProvider* dpp, mode_t* mode = nullptr);
   // Create the object, truncate if exists
-  int create(const DoutPrefixProvider* dpp, const bool create_parents = true);
+  int create(const DoutPrefixProvider* dpp, const bool create_parents = true,
+             const string link_to = "");
   // Release the daos resources
   int close(const DoutPrefixProvider* dpp);
   // Write to object starting from offset
