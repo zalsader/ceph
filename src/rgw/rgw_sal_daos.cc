@@ -54,6 +54,8 @@ using ::ceph::encode;
 #define ACCESS_KEYS_DIR "access_keys"
 #define MULTIPART_DIR "multipart"
 #define MULTIPART_MAX_PARTS 10000
+#define LATEST_INSTANCE "latest"
+#define LATEST_INSTANCE_SUFFIX "[latest]"
 
 static const std::string METADATA_DIRS[] = {USERS_DIR, EMAILS_DIR,
                                             ACCESS_KEYS_DIR, MULTIPART_DIR};
@@ -1647,13 +1649,26 @@ int DaosObject::lookup(const DoutPrefixProvider* dpp,
   }
 
   // TODO: cache open file handles
-  // TODO: handle [latest]
   std::string path = get_key().to_str();
   if (path.front() != '/') path = "/" + path;
   ret = dfs_lookup(daos_bucket->dfs, path.c_str(), O_RDWR, &dfs_obj, nullptr,
                    nullptr);
   ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup path=" << path << " ret=" << ret
                      << dendl;
+
+  if (ret != 0) {
+    size_t suffix_start = path.rfind(LATEST_INSTANCE_SUFFIX);
+    if (suffix_start != std::string::npos) {
+      // If we are trying to access the latest version, try accessing key with
+      // null instance since it is likely that the bucket did not have
+      // versioning before
+      path = path.substr(0, suffix_start);
+      ret = dfs_lookup(daos_bucket->dfs, path.c_str(), O_RDWR, &dfs_obj,
+                       nullptr, nullptr);
+      ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup path=" << path << " ret=" << ret
+                         << dendl;
+    }
+  }
 
   if (ret == 0) {
     _is_open = true;
@@ -1671,19 +1686,27 @@ int DaosObject::create(const DoutPrefixProvider* dpp,
     return 0;
   }
 
+  // TODO: cache open file handles
+  dfs_obj_t* parent = nullptr;
+  fs::path path = get_key().to_str();
+  fs::path file_name = path.filename();
+  fs::path parent_path = path.parent_path();
+  mode_t mode = DEFFILEMODE;
+
+  // Disallow creating a file with the instance = latest, since it is supposed
+  // to be a link, not a writeable file
+  if (path.string().rfind(LATEST_INSTANCE_SUFFIX) != std::string::npos) {
+    ldpp_dout(dpp, 0) << "ERROR: creating an object that ends with "
+                      << LATEST_INSTANCE_SUFFIX << " is not allowed";
+    return -EINVAL;
+  }
+
   int ret = 0;
   DaosBucket* daos_bucket = get_daos_bucket();
   ret = daos_bucket->open(dpp);
   if (ret != 0) {
     return ret;
   }
-
-  // TODO: cache open file handles
-  dfs_obj_t* parent = nullptr;
-  fs::path path = get_key().to_str();
-  fs::path file_name = path.filename();
-  std::string parent_path = path.parent_path();
-  mode_t mode = DEFFILEMODE;
 
   if (!parent_path.empty()) {
     // Recursively open parent directories
@@ -2070,7 +2093,7 @@ int DaosMultipartUpload::list_parts(const DoutPrefixProvider* dpp,
     vector<uint8_t> value(DFS_MAX_XATTR_LEN);
     size_t size = value.size();
     ret = dfs_getxattr(store->meta_dfs, part_obj, RGW_PART_XATTR, value.data(),
-                 &size);
+                       &size);
     ldpp_dout(dpp, 20) << "DEBUG: dfs_getxattr entry=" << part_name
                        << " xattr=" << RGW_PART_XATTR << dendl;
     // Skip if the part has no info
