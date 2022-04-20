@@ -970,7 +970,7 @@ int DaosBucket::list_multiparts(
     if (ret != 0) {
       ldpp_dout(dpp, 0) << "ERROR: no dirent, skipping upload_id=" << upload_id
                         << dendl;
-      dfs_release(upload_dir);
+      ret = dfs_release(upload_dir);
       continue;
     }
 
@@ -2178,7 +2178,7 @@ int DaosMultipartUpload::list_parts(const DoutPrefixProvider* dpp,
     if (ret != 0) {
       ldpp_dout(dpp, 0) << "ERROR: no part info, skipping part=" << part_name
                         << dendl;
-      dfs_release(part_obj);
+      ret = dfs_release(part_obj);
       continue;
     }
 
@@ -2217,8 +2217,8 @@ int DaosMultipartUpload::list_parts(const DoutPrefixProvider* dpp,
     *next_marker = last_num;
   }
 
-  dfs_release(upload_dir);
-  dfs_release(multipart_dir);
+  ret = dfs_release(upload_dir);
+  ret = dfs_release(multipart_dir);
   return ret;
 }
 
