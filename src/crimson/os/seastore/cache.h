@@ -9,15 +9,16 @@
 
 #include "include/buffer.h"
 
-#include "crimson/os/seastore/logging.h"
-#include "crimson/os/seastore/seastore_types.h"
-#include "crimson/os/seastore/transaction.h"
-#include "crimson/os/seastore/segment_manager.h"
 #include "crimson/common/errorator.h"
 #include "crimson/os/seastore/cached_extent.h"
-#include "crimson/os/seastore/root_block.h"
-#include "crimson/os/seastore/segment_cleaner.h"
+#include "crimson/os/seastore/extent_placement_manager.h"
+#include "crimson/os/seastore/logging.h"
 #include "crimson/os/seastore/random_block_manager.h"
+#include "crimson/os/seastore/root_block.h"
+#include "crimson/os/seastore/seastore_types.h"
+#include "crimson/os/seastore/segment_cleaner.h"
+#include "crimson/os/seastore/segment_manager.h"
+#include "crimson/os/seastore/transaction.h"
 
 namespace crimson::os::seastore {
 
@@ -99,7 +100,7 @@ public:
     crimson::ct_error::input_output_error>;
   using base_iertr = trans_iertr<base_ertr>;
 
-  Cache(ExtentReader &reader);
+  Cache(ExtentPlacementManager &epm);
   ~Cache();
 
   /// Creates empty transaction by source
@@ -190,12 +191,13 @@ public:
     LOG_PREFIX(Cache::get_extent);
     auto cached = query_cache(offset, p_metric_key);
     if (!cached) {
-      SUBDEBUG(seastore_cache,
-          "{} {}~{} is absent, reading ...", T::TYPE, offset, length);
       auto ret = CachedExtent::make_cached_extent_ref<T>(
         alloc_cache_buf(length));
       ret->set_paddr(offset);
       ret->state = CachedExtent::extent_state_t::CLEAN_PENDING;
+      SUBDEBUG(seastore_cache,
+          "{} {}~{} is absent, add extent and reading ... -- {}",
+          T::TYPE, offset, length, *ret);
       add_extent(ret);
       extent_init_func(*ret);
       return read_extent<T>(
@@ -204,13 +206,13 @@ public:
 
     // extent PRESENT in cache
     if (cached->get_type() == extent_types_t::RETIRED_PLACEHOLDER) {
-      SUBDEBUG(seastore_cache,
-          "{} {}~{} is absent(placeholder), reading ...",
-          T::TYPE, offset, length);
       auto ret = CachedExtent::make_cached_extent_ref<T>(
         alloc_cache_buf(length));
       ret->set_paddr(offset);
       ret->state = CachedExtent::extent_state_t::CLEAN_PENDING;
+      SUBDEBUG(seastore_cache,
+          "{} {}~{} is absent(placeholder), reading ... -- {}",
+          T::TYPE, offset, length, *ret);
       extents.replace(*ret, *cached);
 
       // replace placeholder in transactions
@@ -489,38 +491,22 @@ public:
    */
   template <typename T>
   TCachedExtentRef<T> alloc_new_extent(
-    Transaction &t,       ///< [in, out] current transaction
-    seastore_off_t length, ///< [in] length
-    bool delayed = false  ///< [in] whether the paddr allocation of extent is delayed
+    Transaction &t,         ///< [in, out] current transaction
+    seastore_off_t length,  ///< [in] length
+    placement_hint_t hint = placement_hint_t::HOT
   ) {
     LOG_PREFIX(Cache::alloc_new_extent);
-    SUBDEBUGT(seastore_cache, "allocate {} {}B, delay={}",
-              t, T::TYPE, length, delayed);
-    auto ret = CachedExtent::make_cached_extent_ref<T>(
-      alloc_cache_buf(length));
-    t.add_fresh_extent(ret, delayed);
+    SUBTRACET(seastore_cache, "allocate {} {}B, hint={}",
+              t, T::TYPE, length, hint);
+    auto result = epm.alloc_new_extent(t, T::TYPE, length, hint);
+    auto ret = CachedExtent::make_cached_extent_ref<T>(std::move(result.bp));
+    ret->set_paddr(result.paddr);
+    ret->hint = hint;
+    t.add_fresh_extent(ret);
     ret->state = CachedExtent::extent_state_t::INITIAL_WRITE_PENDING;
+    SUBDEBUGT(seastore_cache, "allocated {} {}B extent at {}, hint={} -- {}",
+              t, T::TYPE, length, result.paddr, hint, *ret);
     return ret;
-  }
-
-  void mark_delayed_extent_inline(
-    Transaction& t,
-    LogicalCachedExtentRef& ref
-  ) {
-    LOG_PREFIX(Cache::mark_delayed_extent_inline);
-    SUBDEBUGT(seastore_cache, "-- {}", t, *ref);
-    t.mark_delayed_extent_inline(ref);
-  }
-
-  void mark_delayed_extent_ool(
-    Transaction& t,
-    LogicalCachedExtentRef& ref,
-    paddr_t final_addr
-  ) {
-    LOG_PREFIX(Cache::mark_delayed_extent_ool);
-    SUBDEBUGT(seastore_cache, "final_addr={} -- {}",
-              t, final_addr, *ref);
-    t.mark_delayed_extent_ool(ref, final_addr);
   }
 
   /**
@@ -532,7 +518,7 @@ public:
     Transaction &t,       ///< [in, out] current transaction
     extent_types_t type,  ///< [in] type tag
     seastore_off_t length, ///< [in] length
-    bool delayed = false  ///< [in] whether delay addr allocation
+    placement_hint_t hint = placement_hint_t::HOT
     );
 
   /**
@@ -558,7 +544,8 @@ public:
    * Construct the record for Journal from transaction.
    */
   record_t prepare_record(
-    Transaction &t ///< [in, out] current transaction
+    Transaction &t, ///< [in, out] current transaction
+    SegmentProvider *cleaner
   );
 
   /**
@@ -611,7 +598,8 @@ public:
   replay_delta_ret replay_delta(
     journal_seq_t seq,
     paddr_t record_block_base,
-    const delta_info_t &delta);
+    const delta_info_t &delta,
+    seastar::lowres_system_clock::time_point& last_modified);
 
   /**
    * init_cached_extents
@@ -634,7 +622,7 @@ public:
         extents.size(),
         extents.get_bytes(),
         dirty.size(),
-        get_oldest_dirty_from().value_or(journal_seq_t{}));
+        get_oldest_dirty_from().value_or(JOURNAL_SEQ_NULL));
 
     // journal replay should has been finished at this point,
     // Cache::root should have been inserted to the dirty list
@@ -656,7 +644,7 @@ public:
         return f(t, e
         ).si_then([this, FNAME, &t, e](bool is_alive) {
           if (!is_alive) {
-            SUBDEBUGT(seastore_cache, "extent is not alive, remove -- {}", t, *e);
+            SUBDEBUGT(seastore_cache, "extent is not alive, remove extent -- {}", t, *e);
             remove_extent(e);
           } else {
             SUBDEBUGT(seastore_cache, "extent is alive -- {}", t, *e);
@@ -675,7 +663,7 @@ public:
           extents.size(),
           extents.get_bytes(),
           dirty.size(),
-          get_oldest_dirty_from().value_or(journal_seq_t{}));
+          get_oldest_dirty_from().value_or(JOURNAL_SEQ_NULL));
     });
   }
 
@@ -739,7 +727,7 @@ public:
       return std::nullopt;
     } else {
       auto oldest = dirty.begin()->get_dirty_from();
-      if (oldest == journal_seq_t()) {
+      if (oldest == JOURNAL_SEQ_NULL) {
 	return std::nullopt;
       } else {
 	return oldest;
@@ -751,7 +739,7 @@ public:
   void dump_contents();
 
 private:
-  ExtentReader &reader;	   	   ///< ref to extent reader
+  ExtentPlacementManager& epm;
   RootBlockRef root;               ///< ref to current root
   ExtentIndex extents;             ///< set of live extents
 
@@ -885,7 +873,6 @@ private:
     counter_by_extent_t<io_stat_t> fresh_ool_by_ext;
     uint64_t num_trans = 0; // the number of inline records
     uint64_t num_ool_records = 0;
-    uint64_t ool_record_padding_bytes = 0;
     uint64_t ool_record_metadata_bytes = 0;
     uint64_t ool_record_data_bytes = 0;
     uint64_t inline_record_metadata_bytes = 0; // metadata exclude the delta bytes
@@ -1032,7 +1019,7 @@ private:
   ) {
     assert(extent->state == CachedExtent::extent_state_t::CLEAN_PENDING);
     extent->set_io_wait();
-    return reader.read(
+    return epm.read(
       extent->get_paddr(),
       extent->get_length(),
       extent->get_bptr()

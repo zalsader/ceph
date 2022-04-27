@@ -150,6 +150,7 @@ short=0
 ec=0
 cephadm=0
 parallel=true
+restart=1
 hitset=""
 overwrite_conf=0
 cephx=1 #turn cephx on by default
@@ -244,6 +245,7 @@ options:
 	--inc-osd: append some more osds into existing vcluster
 	--cephadm: enable cephadm orchestrator with ~/.ssh/id_rsa[.pub]
 	--no-parallel: dont start all OSDs in parallel
+	--no-restart: dont restart process when using ceph-run
 	--jaeger: use jaegertracing for tracing
 	--seastore-devs: comma-separated list of blockdevs to use for seastore
 	--seastore-secondary-des: comma-separated list of secondary blockdevs to use for seastore
@@ -351,6 +353,9 @@ case $1 in
         ;;
     --no-parallel)
         parallel=false
+        ;;
+    --no-restart)
+        restart=0
         ;;
     --valgrind)
         [ -z "$2" ] && usage_exit
@@ -575,10 +580,15 @@ run() {
     else
         if [ "$nodaemon" -eq 0 ]; then
             prun "$@"
-        elif [ "$redirect" -eq 0 ]; then
-            prunb ${CEPH_ROOT}/src/ceph-run "$@" -f
         else
-            ( prunb ${CEPH_ROOT}/src/ceph-run "$@" -f ) >$CEPH_OUT_DIR/$type.$num.stdout 2>&1
+            if [ "$restart" -eq 0 ]; then
+                set -- '--no-restart' "$@"
+            fi
+            if [ "$redirect" -eq 0 ]; then
+                prunb ${CEPH_ROOT}/src/ceph-run "$@" -f
+            else
+                ( prunb ${CEPH_ROOT}/src/ceph-run "$@" -f ) >$CEPH_OUT_DIR/$type.$num.stdout 2>&1
+            fi
         fi
     fi
 }
@@ -683,6 +693,7 @@ prepare_conf() {
         debug asok assert abort = true
         $(format_conf "${msgr_conf}")
         $(format_conf "${extra_conf}")
+        $AUTOSCALER_OPTS
 EOF
     if [ "$lockdep" -eq 1 ] ; then
         wconf <<EOF
@@ -991,7 +1002,8 @@ EOF
             echo "{\"cephx_secret\": \"$OSD_SECRET\"}" > $CEPH_DEV_DIR/osd$osd/new.json
             ceph_adm osd new $uuid -i $CEPH_DEV_DIR/osd$osd/new.json
             rm $CEPH_DEV_DIR/osd$osd/new.json
-            prun $SUDO $CEPH_BIN/$ceph_osd $extra_osd_args -i $osd $ARGS --mkfs --key $OSD_SECRET --osd-uuid $uuid $extra_seastar_args
+            prun $SUDO $CEPH_BIN/$ceph_osd $extra_osd_args -i $osd $ARGS --mkfs --key $OSD_SECRET --osd-uuid $uuid $extra_seastar_args \
+                2>&1 | tee $CEPH_OUT_DIR/osd-mkfs.$osd.log
 
             local key_fn=$CEPH_DEV_DIR/osd$osd/keyring
             cat > $key_fn<<EOF
@@ -1301,6 +1313,12 @@ else
         debug auth = 20
         debug mgrc = 20
         debug ms = 1'
+fi
+
+# Crimson doesn't support PG merge/split yet.
+if [ "$ceph_osd" == "crimson-osd" ]; then
+    AUTOSCALER_OPTS='
+        osd_pool_default_pg_autoscale_mode = off'
 fi
 
 if [ -n "$MON_ADDR" ]; then
@@ -1747,8 +1765,11 @@ echo ""
     echo "export PYTHONPATH=$PYBIND:$CYTHON_PYTHONPATH:$CEPH_PYTHON_COMMON\$PYTHONPATH"
     echo "export LD_LIBRARY_PATH=$CEPH_LIB:\$LD_LIBRARY_PATH"
     echo "export PATH=$CEPH_DIR/bin:\$PATH"
-    echo "export CEPH_CONF=$conf_fn"
-    echo "export CEPH_KEYRING=$keyring_fn"
+
+    if [ "$CEPH_DIR" != "$PWD" ]; then
+        echo "export CEPH_CONF=$conf_fn"
+        echo "export CEPH_KEYRING=$keyring_fn"
+    fi
 
     if [ -n "$CEPHFS_SHELL" ]; then
         echo "alias cephfs-shell=$CEPHFS_SHELL"

@@ -2965,6 +2965,19 @@ void Monitor::log_health(
   }
 }
 
+void Monitor::update_pending_metadata()
+{
+  Metadata metadata;
+  collect_metadata(&metadata);
+  size_t version_size = mon_metadata[rank]["ceph_version_short"].size();
+  const std::string current_version = mon_metadata[rank]["ceph_version_short"];
+  const std::string pending_version = metadata["ceph_version_short"];
+
+  if (current_version.compare(0, version_size, pending_version) < 0) {
+    mgr_client.update_daemon_metadata("mon", name, metadata);
+  }
+}
+
 void Monitor::get_cluster_status(stringstream &ss, Formatter *f,
 				 MonSession *session)
 {
@@ -3424,7 +3437,15 @@ void Monitor::handle_command(MonOpRequestRef op)
 
   // validate user's permissions for requested command
   map<string,string> param_str_map;
-  _generate_command_map(cmdmap, param_str_map);
+
+  // Catch bad_cmd_get exception if _generate_command_map() throws it
+  try {
+    _generate_command_map(cmdmap, param_str_map);
+  }
+  catch(bad_cmd_get& e) {
+    reply_command(op, -EINVAL, e.what(), 0);
+  }
+
   if (!_allowed_command(session, service, prefix, cmdmap,
                         param_str_map, mon_cmd)) {
     dout(1) << __func__ << " access denied" << dendl;
@@ -3656,7 +3677,16 @@ void Monitor::handle_command(MonOpRequestRef op)
     rs = "";
     r = 0;
   } else if (prefix == "report") {
-
+    // some of the report data is only known by leader, e.g. osdmap_clean_epochs
+    if (!is_leader() && !is_peon()) {
+      dout(10) << " waiting for quorum" << dendl;
+      waitfor_quorum.push_back(new C_RetryMessage(this, op));
+      return;
+    }
+    if (!is_leader()) {
+      forward_request_leader(op);
+      return;
+    }
     // this must be formatted, in its current form
     if (!f)
       f.reset(Formatter::create("json-pretty"));

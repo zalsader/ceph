@@ -750,14 +750,25 @@ PG::do_osd_ops(
   }
   return do_osd_ops_execute<MURef<MOSDOpReply>>(
     seastar::make_lw_shared<OpsExecuter>(
-      Ref<PG>{this}, std::move(obc), op_info, *m),
+      Ref<PG>{this}, obc, op_info, *m),
     m->ops,
     op_info,
-    [this, m, rvec = op_info.allows_returnvec()] {
+    [this, m, obc, may_write = op_info.may_write(),
+     may_read = op_info.may_read(), rvec = op_info.allows_returnvec()] {
       // TODO: should stop at the first op which returns a negative retval,
       //       cmpext uses it for returning the index of first unmatched byte
       int result = m->ops.empty() ? 0 : m->ops.back().rval.code;
-      if (result > 0 && !rvec) {
+      if (may_read && result >= 0) {
+        for (auto &osdop : m->ops) {
+          if (osdop.rval < 0 && !(osdop.op.flags & CEPH_OSD_OP_FLAG_FAILOK)) {
+            result = osdop.rval.code;
+            break;
+          }
+        }
+      } else if (result > 0 && may_write && !rvec) {
+        result = 0;
+      } else if (result < 0 && (m->ops.empty() ?
+        0 : m->ops.back().op.flags & CEPH_OSD_OP_FLAG_FAILOK)) {
         result = 0;
       }
       auto reply = crimson::make_message<MOSDOpReply>(m.get(),
@@ -770,12 +781,23 @@ PG::do_osd_ops(
         "do_osd_ops: {} - object {} sending reply",
         *m,
         m->get_hobj());
+      if (obc->obs.exists) {
+        reply->set_reply_versions(peering_state.get_info().last_update,
+          obc->obs.oi.user_version);
+      } else {
+        reply->set_reply_versions(peering_state.get_info().last_update,
+          peering_state.get_info().last_user_version);
+      }
       return do_osd_ops_iertr::make_ready_future<MURef<MOSDOpReply>>(
         std::move(reply));
     },
     [m, this] (const std::error_code& e) {
       auto reply = crimson::make_message<MOSDOpReply>(
         m.get(), -e.value(), get_osdmap_epoch(), 0, false);
+      if (m->ops.empty() ? 0 :
+        m->ops.back().op.flags & CEPH_OSD_OP_FLAG_FAILOK) {
+        reply->set_result(0);
+      }
       reply->set_enoent_reply_versions(
         peering_state.get_info().last_update,
         peering_state.get_info().last_user_version);
@@ -788,17 +810,20 @@ PG::do_osd_ops(
   ObjectContextRef obc,
   std::vector<OSDOp>& ops,
   const OpInfo &op_info,
-  const do_osd_ops_params_t& msg_params,
+  const do_osd_ops_params_t &&msg_params,
   do_osd_ops_success_func_t success_func,
   do_osd_ops_failure_func_t failure_func)
 {
-  return do_osd_ops_execute<void>(
-    seastar::make_lw_shared<OpsExecuter>(
-      Ref<PG>{this}, std::move(obc), op_info, msg_params),
-    ops,
-    std::as_const(op_info),
-    std::move(success_func),
-    std::move(failure_func));
+  return seastar::do_with(std::move(msg_params), [=, &ops, &op_info]
+    (auto &msg_params) {
+    return do_osd_ops_execute<void>(
+      seastar::make_lw_shared<OpsExecuter>(
+        Ref<PG>{this}, std::move(obc), op_info, msg_params),
+      ops,
+      std::as_const(op_info),
+      std::move(success_func),
+      std::move(failure_func));
+  });
 }
 
 PG::interruptible_future<MURef<MOSDOpReply>> PG::do_pg_ops(Ref<MOSDOp> m)
@@ -816,6 +841,9 @@ PG::interruptible_future<MURef<MOSDOpReply>> PG::do_pg_ops(Ref<MOSDOp> m)
     auto reply = crimson::make_message<MOSDOpReply>(m.get(), 0, get_osdmap_epoch(),
                                            CEPH_OSD_FLAG_ACK | CEPH_OSD_FLAG_ONDISK,
                                            false);
+    reply->claim_op_out_data(m->ops);
+    reply->set_reply_versions(peering_state.get_info().last_update,
+      peering_state.get_info().last_user_version);
     return seastar::make_ready_future<MURef<MOSDOpReply>>(std::move(reply));
   }).handle_exception_type_interruptible([=](const crimson::osd::error& e) {
     auto reply = crimson::make_message<MOSDOpReply>(

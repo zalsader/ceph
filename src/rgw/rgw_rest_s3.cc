@@ -936,9 +936,9 @@ struct ReplicationConfiguration {
       set<rgw_zone_id> ids;
 
       for (auto& name : zone_names) {
-        rgw_zone_id id;
-        if (static_cast<rgw::sal::RadosStore*>(store)->svc()->zone->find_zone_id_by_name(name, &id)) {
-          ids.insert(std::move(id));
+	rgw_zone_id id;
+	if (static_cast<rgw::sal::RadosStore*>(store)->svc()->zone->find_zone_id_by_name(name, &id)) {
+	  ids.insert(std::move(id));
         }
       }
 
@@ -950,10 +950,10 @@ struct ReplicationConfiguration {
       vector<string> names;
 
       for (auto& id : zone_ids) {
-        RGWZone *zone;
-        if (static_cast<rgw::sal::RadosStore*>(store)->svc()->zone->find_zone(id, &zone)) {
-          names.emplace_back(zone->name);
-        }
+	RGWZone *zone;
+	if (static_cast<rgw::sal::RadosStore*>(store)->svc()->zone->find_zone(id, &zone)) {
+	  names.emplace_back(zone->name);
+	}
       }
 
       return names;
@@ -1900,12 +1900,12 @@ void RGWGetBucketLocation_ObjStore_S3::send_response()
   end_header(s, this);
   dump_start(s);
 
-  RGWZoneGroup zonegroup;
+  std::unique_ptr<rgw::sal::ZoneGroup> zonegroup;
   string api_name;
 
-  int ret = store->get_zone()->get_zonegroup(s->bucket->get_info().zonegroup, zonegroup);
+  int ret = store->get_zone()->get_zonegroup(s->bucket->get_info().zonegroup, &zonegroup);
   if (ret >= 0) {
-    api_name = zonegroup.api_name;
+    api_name = zonegroup->get_api_name();
   } else  {
     if (s->bucket->get_info().zonegroup != "default") {
       api_name = s->bucket->get_info().zonegroup;
@@ -2586,7 +2586,7 @@ int RGWPutObj_ObjStore_S3::get_encrypt_filter(
 				  multipart_upload_id);
     std::unique_ptr<rgw::sal::Object> obj = upload->get_meta_obj();
     obj->set_in_extra_data(true);
-    res = obj->get_obj_attrs(s->obj_ctx, s->yield, this);
+    res = obj->get_obj_attrs(s->yield, this);
     if (res == 0) {
       std::unique_ptr<BlockCrypt> block_crypt;
       /* We are adding to existing object.
@@ -2725,7 +2725,7 @@ int RGWPostObj_ObjStore_S3::get_params(optional_yield y)
 
   if (! storage_class.empty()) {
     s->dest_placement.storage_class = storage_class;
-    if (!store->get_zone()->get_params().valid_placement(s->dest_placement)) {
+    if (!store->valid_placement(s->dest_placement)) {
       ldpp_dout(this, 0) << "NOTICE: invalid dest placement: " << s->dest_placement.to_str() << dendl;
       err_msg = "The storage class you specified is not valid";
       return -EINVAL;
@@ -3233,10 +3233,10 @@ int RGWCopyObj_ObjStore_S3::get_params(optional_yield y)
     obj_legal_hold = new RGWObjectLegalHold(obj_legal_hold_str);
   }
 
-  if_mod = s->info.env->get("HTTP_X_AMZ_COPY_IF_MODIFIED_SINCE");
-  if_unmod = s->info.env->get("HTTP_X_AMZ_COPY_IF_UNMODIFIED_SINCE");
-  if_match = s->info.env->get("HTTP_X_AMZ_COPY_IF_MATCH");
-  if_nomatch = s->info.env->get("HTTP_X_AMZ_COPY_IF_NONE_MATCH");
+  if_mod = s->info.env->get("HTTP_X_AMZ_COPY_SOURCE_IF_MODIFIED_SINCE");
+  if_unmod = s->info.env->get("HTTP_X_AMZ_COPY_SOURCE_IF_UNMODIFIED_SINCE");
+  if_match = s->info.env->get("HTTP_X_AMZ_COPY_SOURCE_IF_MATCH");
+  if_nomatch = s->info.env->get("HTTP_X_AMZ_COPY_SOURCE_IF_NONE_MATCH");
 
   src_tenant_name = s->src_tenant_name;
   src_bucket_name = s->src_bucket_name;
@@ -4024,7 +4024,7 @@ void RGWGetObjLayout_ObjStore_S3::send_response()
   }
 
   f.open_object_section("result");
-  s->object->dump_obj_layout(this, s->yield, &f, s->obj_ctx);
+  s->object->dump_obj_layout(this, s->yield, &f);
   f.close_section();
   rgw_flush_formatter(s, &f);
 }
@@ -4947,12 +4947,11 @@ bool RGWHandler_REST_S3Website::web_dir() const {
 
   std::unique_ptr<rgw::sal::Object> obj = s->bucket->get_object(rgw_obj_key(subdir_name));
 
-  RGWObjectCtx& obj_ctx = *static_cast<RGWObjectCtx *>(s->obj_ctx);
-  obj->set_atomic(&obj_ctx);
-  obj->set_prefetch_data(&obj_ctx);
+  obj->set_atomic();
+  obj->set_prefetch_data();
 
   RGWObjState* state = nullptr;
-  if (obj->get_obj_state(s, &obj_ctx, &state, s->yield) < 0) {
+  if (obj->get_obj_state(s, &state, s->yield) < 0) {
     return false;
   }
   if (! state->exists) {

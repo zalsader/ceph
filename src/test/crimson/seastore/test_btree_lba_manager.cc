@@ -28,8 +28,9 @@ struct btree_test_base :
   public seastar_test_suite_t, SegmentProvider {
 
   segment_manager::EphemeralSegmentManagerRef segment_manager;
-  ExtentReaderRef scanner;
+  SegmentManagerGroupRef sms;
   JournalRef journal;
+  ExtentPlacementManagerRef epm;
   CacheRef cache;
 
   size_t block_size;
@@ -38,27 +39,50 @@ struct btree_test_base :
 
   segment_id_t next;
 
+  std::map<segment_id_t, segment_seq_t> segment_seqs;
+  std::map<segment_id_t, segment_type_t> segment_types;
+
+  mutable segment_info_t tmp_info;
+
   btree_test_base() = default;
+
+  /*
+   * SegmentProvider interfaces
+   */
+  journal_seq_t get_journal_tail_target() const final { return journal_seq_t{}; }
+
+  const segment_info_t& get_seg_info(segment_id_t id) const final {
+    tmp_info = {};
+    tmp_info.seq = segment_seqs.at(id);
+    tmp_info.type = segment_types.at(id);
+    return tmp_info;
+  }
+
+  segment_id_t allocate_segment(
+    segment_seq_t seq,
+    segment_type_t type
+  ) final {
+    auto ret = next;
+    next = segment_id_t{
+      segment_manager->get_device_id(),
+      next.device_segment_id() + 1};
+    segment_seqs[ret] = seq;
+    segment_types[ret] = type;
+    return ret;
+  }
+
+  void close_segment(segment_id_t) final {}
+
+  void update_journal_tail_committed(journal_seq_t committed) final {}
 
   void update_segment_avail_bytes(paddr_t offset) final {}
 
-  get_segment_ret get_segment(device_id_t id) final {
-    auto ret = next;
-    next = segment_id_t{
-      next.device_id(),
-      next.device_segment_id() + 1};
-    return get_segment_ret(
-      get_segment_ertr::ready_future_marker{},
-      ret);
-  }
-
-  journal_seq_t get_journal_tail_target() const final { return journal_seq_t{}; }
-  void update_journal_tail_committed(journal_seq_t committed) final {}
+  SegmentManagerGroup* get_segment_manager_group() final { return sms.get(); }
 
   virtual void complete_commit(Transaction &t) {}
   seastar::future<> submit_transaction(TransactionRef t)
   {
-    auto record = cache->prepare_record(*t);
+    auto record = cache->prepare_record(*t, this);
     return journal->submit_record(std::move(record), t->get_handle()).safe_then(
       [this, t=std::move(t)](auto submit_result) mutable {
 	cache->complete_commit(
@@ -72,20 +96,26 @@ struct btree_test_base :
   virtual LBAManager::mkfs_ret test_structure_setup(Transaction &t) = 0;
   seastar::future<> set_up_fut() final {
     segment_manager = segment_manager::create_test_ephemeral();
-    scanner.reset(new ExtentReader());
-    journal.reset(new Journal(*segment_manager, *scanner));
-    cache.reset(new Cache(*scanner));
-
-    block_size = segment_manager->get_block_size();
-    next = segment_id_t{segment_manager->get_device_id(), 0};
-    scanner->add_segment_manager(segment_manager.get());
-    journal->set_segment_provider(this);
-    journal->set_write_pipeline(&pipeline);
-
     return segment_manager->init(
     ).safe_then([this] {
-      return journal->open_for_write();
-    }).safe_then([this](auto addr) {
+      return segment_manager->mkfs(
+        segment_manager::get_ephemeral_device_config(0, 1));
+    }).safe_then([this] {
+      sms.reset(new SegmentManagerGroup());
+      journal = journal::make_segmented(*this);
+      epm.reset(new ExtentPlacementManager());
+      cache.reset(new Cache(*epm));
+
+      block_size = segment_manager->get_block_size();
+      next = segment_id_t{segment_manager->get_device_id(), 0};
+      sms->add_segment_manager(segment_manager.get());
+      epm->add_device(segment_manager.get(), true);
+      journal->set_write_pipeline(&pipeline);
+
+      return journal->open_for_write().discard_result();
+    }).safe_then([this] {
+      return epm->open();
+    }).safe_then([this] {
       return seastar::do_with(
 	cache->create_transaction(
             Transaction::src_t::MUTATE, "test_set_up_fut", false),
@@ -113,10 +143,13 @@ struct btree_test_base :
     ).safe_then([this] {
       return journal->close();
     }).safe_then([this] {
+      return epm->close();
+    }).safe_then([this] {
       test_structure_reset();
       segment_manager.reset();
-      scanner.reset();
+      sms.reset();
       journal.reset();
+      epm.reset();
       cache.reset();
     }).handle_error(
       crimson::ct_error::all_same_way([] {
@@ -130,7 +163,7 @@ struct lba_btree_test : btree_test_base {
   std::map<laddr_t, lba_map_val_t> check;
 
   auto get_op_context(Transaction &t) {
-    return op_context_t{*cache, t};
+    return op_context_t<laddr_t>{*cache, t};
   }
 
   LBAManager::mkfs_ret test_structure_setup(Transaction &t) final {
@@ -286,7 +319,7 @@ struct btree_lba_manager_test : btree_test_base {
   }
 
   LBAManager::mkfs_ret test_structure_setup(Transaction &t) final {
-    lba_manager.reset(new BtreeLBAManager(*segment_manager, *cache));
+    lba_manager.reset(new BtreeLBAManager(*cache));
     return lba_manager->mkfs(t);
   }
 
@@ -365,11 +398,11 @@ struct btree_lba_manager_test : btree_test_base {
       }).unsafe_get0();
     logger().debug("alloc'd: {}", *ret);
     EXPECT_EQ(len, ret->get_length());
-    auto [b, e] = get_overlap(t, ret->get_laddr(), len);
+    auto [b, e] = get_overlap(t, ret->get_key(), len);
     EXPECT_EQ(b, e);
     t.mappings.emplace(
       std::make_pair(
-	ret->get_laddr(),
+	ret->get_key(),
 	test_extent_t{
 	  ret->get_paddr(),
 	  ret->get_length(),
@@ -463,7 +496,7 @@ struct btree_lba_manager_test : btree_test_base {
       EXPECT_EQ(ret_list.size(), 1);
       auto &ret = *ret_list.begin();
       EXPECT_EQ(i.second.addr, ret->get_paddr());
-      EXPECT_EQ(laddr, ret->get_laddr());
+      EXPECT_EQ(laddr, ret->get_key());
       EXPECT_EQ(len, ret->get_length());
 
       auto ret_pin = with_trans_intr(
@@ -473,7 +506,7 @@ struct btree_lba_manager_test : btree_test_base {
 	    t, laddr);
 	}).unsafe_get0();
       EXPECT_EQ(i.second.addr, ret_pin->get_paddr());
-      EXPECT_EQ(laddr, ret_pin->get_laddr());
+      EXPECT_EQ(laddr, ret_pin->get_key());
       EXPECT_EQ(len, ret_pin->get_length());
     }
     with_trans_intr(
@@ -543,8 +576,8 @@ TEST_F(btree_lba_manager_test, force_split_merge)
 	  check_mappings(t);
 	  check_mappings();
 	}
-	incref_mapping(t, ret->get_laddr());
-	decref_mapping(t, ret->get_laddr());
+	incref_mapping(t, ret->get_key());
+	decref_mapping(t, ret->get_key());
       }
       logger().debug("submitting transaction");
       submit_test_transaction(std::move(t));

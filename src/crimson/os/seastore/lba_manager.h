@@ -19,7 +19,6 @@
 
 #include "crimson/os/seastore/cache.h"
 #include "crimson/os/seastore/seastore_types.h"
-#include "crimson/os/seastore/segment_manager.h"
 
 namespace crimson::os::seastore {
 
@@ -143,8 +142,7 @@ public:
   /**
    * Calls f for each mapped space usage
    */
-  using scan_mapped_space_iertr = base_iertr::extend_ertr<
-    SegmentManager::read_ertr>;
+  using scan_mapped_space_iertr = base_iertr;
   using scan_mapped_space_ret = scan_mapped_space_iertr::future<>;
   using scan_mapped_space_func_t = std::function<
     void(paddr_t, extent_len_t)>;
@@ -164,17 +162,30 @@ public:
     CachedExtentRef extent) = 0;
 
   /**
-   * delayed_update_mapping
+   * update_mapping
    *
-   * update lba mapping for delayed allocated extents
+   * update lba mapping for a delayed allocated extent
    */
-  using update_le_mapping_iertr = base_iertr;
-  using update_le_mapping_ret = base_iertr::future<>;
-  virtual update_le_mapping_ret update_mapping(
+  using update_mapping_iertr = base_iertr;
+  using update_mapping_ret = base_iertr::future<>;
+  virtual update_mapping_ret update_mapping(
     Transaction& t,
     laddr_t laddr,
     paddr_t prev_addr,
     paddr_t paddr) = 0;
+
+  /**
+   * update_mappings
+   *
+   * update lba mappings for delayed allocated extents
+   */
+  using update_mappings_iertr = update_mapping_iertr;
+  using update_mappings_ret = update_mapping_ret;
+  update_mappings_ret update_mappings(
+    Transaction& t,
+    const std::list<LogicalCachedExtentRef>& extents,
+    const std::vector<paddr_t>& original_paddrs);
+
   /**
    * get_physical_extent_if_live
    *
@@ -202,9 +213,7 @@ using LBAManagerRef = std::unique_ptr<LBAManager>;
 
 class Cache;
 namespace lba_manager {
-LBAManagerRef create_lba_manager(
-  SegmentManager &segment_manager,
-  Cache &cache);
+LBAManagerRef create_lba_manager(Cache &cache);
 }
 
 }

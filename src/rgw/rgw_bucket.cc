@@ -55,7 +55,8 @@
 #define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_rgw
 
-#define BUCKET_TAG_TIMEOUT 30
+// seconds for timeout during RGWBucket::check_object_index
+constexpr uint64_t BUCKET_TAG_QUICK_TIMEOUT = 30;
 
 using namespace std;
 
@@ -156,37 +157,6 @@ void rgw_parse_url_bucket(const string &bucket, const string& auth_tenant,
     tenant_name = auth_tenant;
     bucket_name = bucket;
   }
-}
-
-int rgw_bucket_parse_bucket_instance(const string& bucket_instance, string *bucket_name, string *bucket_id, int *shard_id)
-{
-  auto pos = bucket_instance.rfind(':');
-  if (pos == string::npos) {
-    return -EINVAL;
-  }
-
-  string first = bucket_instance.substr(0, pos);
-  string second = bucket_instance.substr(pos + 1);
-
-  pos = first.find(':');
-
-  if (pos == string::npos) {
-    *shard_id = -1;
-    *bucket_name = first;
-    *bucket_id = second;
-    return 0;
-  }
-
-  *bucket_name = first.substr(0, pos);
-  *bucket_id = first.substr(pos + 1);
-
-  string err;
-  *shard_id = strict_strtol(second.c_str(), 10, &err);
-  if (!err.empty()) {
-    return -EINVAL;
-  }
-
-  return 0;
 }
 
 // parse key in format: [tenant/]name:instance[:shard_id]
@@ -315,15 +285,13 @@ bool rgw_bucket_object_check_filter(const std::string& oid)
 
 int rgw_remove_object(const DoutPrefixProvider *dpp, rgw::sal::Store* store, rgw::sal::Bucket* bucket, rgw_obj_key& key)
 {
-  RGWObjectCtx rctx(store);
-
   if (key.instance.empty()) {
     key.instance = "null";
   }
 
   std::unique_ptr<rgw::sal::Object> object = bucket->get_object(key);
 
-  return object->delete_object(dpp, &rctx, null_yield);
+  return object->delete_object(dpp, null_yield);
 }
 
 static void set_err_msg(std::string *sink, std::string msg)
@@ -603,7 +571,8 @@ int RGWBucket::check_object_index(const DoutPrefixProvider *dpp,
     return -EINVAL;
   }
 
-  bucket->set_tag_timeout(dpp, BUCKET_TAG_TIMEOUT);
+  // use a quicker/shorter tag timeout during this process
+  bucket->set_tag_timeout(dpp, BUCKET_TAG_QUICK_TIMEOUT);
 
   rgw::sal::Bucket::ListResults results;
   results.is_truncated = true;
@@ -629,6 +598,7 @@ int RGWBucket::check_object_index(const DoutPrefixProvider *dpp,
 
   formatter->close_section();
 
+  // restore normal tag timeout for bucket
   bucket->set_tag_timeout(dpp, 0);
 
   return 0;
@@ -723,8 +693,7 @@ int rgw_object_get_attr(const DoutPrefixProvider *dpp,
 			rgw::sal::Store* store, rgw::sal::Object* obj,
 			const char* attr_name, bufferlist& out_bl, optional_yield y)
 {
-  RGWObjectCtx obj_ctx(store);
-  std::unique_ptr<rgw::sal::Object::ReadOp> rop = obj->get_read_op(&obj_ctx);
+  std::unique_ptr<rgw::sal::Object::ReadOp> rop = obj->get_read_op();
 
   return rop->get_attr(dpp, attr_name, out_bl, y);
 }
@@ -2893,7 +2862,6 @@ int RGWBucketCtl::chown(rgw::sal::Store* store, rgw::sal::Bucket* bucket,
                         const rgw_user& user_id, const std::string& display_name,
                         const std::string& marker, optional_yield y, const DoutPrefixProvider *dpp)
 {
-  RGWObjectCtx obj_ctx(store);
   map<string, bool> common_prefixes;
 
   rgw::sal::Bucket::ListParams params;
@@ -2909,6 +2877,7 @@ int RGWBucketCtl::chown(rgw::sal::Store* store, rgw::sal::Bucket* bucket,
   //Loop through objects and update object acls to point to bucket owner
 
   do {
+    RGWObjectCtx obj_ctx(store);
     results.objs.clear();
     int ret = bucket->list(dpp, params, max_entries, results, y);
     if (ret < 0) {
@@ -2922,7 +2891,7 @@ int RGWBucketCtl::chown(rgw::sal::Store* store, rgw::sal::Bucket* bucket,
     for (const auto& obj : results.objs) {
       std::unique_ptr<rgw::sal::Object> r_obj = bucket->get_object(obj.key);
 
-      ret = r_obj->get_obj_attrs(&obj_ctx, y, dpp);
+      ret = r_obj->get_obj_attrs(y, dpp);
       if (ret < 0){
         ldpp_dout(dpp, 0) << "ERROR: failed to read object " << obj.key.name << cpp_strerror(-ret) << dendl;
         continue;
@@ -2963,10 +2932,10 @@ int RGWBucketCtl::chown(rgw::sal::Store* store, rgw::sal::Bucket* bucket,
         bl.clear();
         encode(policy, bl);
 
-	r_obj->set_atomic(&obj_ctx);
+	r_obj->set_atomic();
 	map<string, bufferlist> attrs;
 	attrs[RGW_ATTR_ACL] = bl;
-	ret = r_obj->set_obj_attrs(dpp, &obj_ctx, &attrs, nullptr, y);
+	ret = r_obj->set_obj_attrs(dpp, &attrs, nullptr, y);
         if (ret < 0) {
           ldpp_dout(dpp, 0) << "ERROR: modify attr failed " << cpp_strerror(-ret) << dendl;
           return ret;

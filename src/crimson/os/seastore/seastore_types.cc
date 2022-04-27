@@ -24,68 +24,117 @@ std::ostream& operator<<(std::ostream& out, const seastore_meta_t& meta)
   return out << meta.seastore_id;
 }
 
-std::ostream &segment_to_stream(std::ostream &out, const segment_id_t &t)
+std::ostream &operator<<(std::ostream &out, const device_id_printer_t &id)
 {
-  if (t == NULL_SEG_ID)
+  auto _id = id.id;
+  if (_id == DEVICE_ID_NULL) {
+    return out << "DEVICE_ID_NULL";
+  } else if (_id == DEVICE_ID_RECORD_RELATIVE) {
+    return out << "DEVICE_ID_RR";
+  } else if (_id == DEVICE_ID_BLOCK_RELATIVE) {
+    return out << "DEVICE_ID_BR";
+  } else if (_id == DEVICE_ID_DELAYED) {
+    return out << "DEVICE_ID_DELAYED";
+  } else if (_id == DEVICE_ID_FAKE) {
+    return out << "DEVICE_ID_FAKE";
+  } else if (_id == DEVICE_ID_ZERO) {
+    return out << "DEVICE_ID_ZERO";
+  } else {
+    return out << (unsigned)_id;
+  }
+}
+
+std::ostream &operator<<(std::ostream &out, const segment_id_t &segment)
+{
+  if (segment == NULL_SEG_ID) {
     return out << "NULL_SEG";
-  else if (t == FAKE_SEG_ID)
+  } else if (segment == FAKE_SEG_ID) {
     return out << "FAKE_SEG";
-  else
-    return out << t;
+  } else {
+    return out << "[" << device_id_printer_t{segment.device_id()}
+               << "," << segment.device_segment_id()
+               << "]";
+  }
 }
 
-std::ostream &offset_to_stream(std::ostream &out, const seastore_off_t &t)
+std::ostream &operator<<(std::ostream &out, const seastore_off_printer_t &off)
 {
-  if (t == NULL_SEG_OFF)
+  if (off.off == NULL_SEG_OFF) {
     return out << "NULL_OFF";
-  else
-    return out << t;
+  } else {
+    return out << off.off;
+  }
 }
 
-std::ostream &operator<<(std::ostream &out, const segment_id_t& segment)
+std::ostream& operator<<(std::ostream& out, segment_type_t t)
 {
-  return out << "[" << (uint64_t)segment.device_id() << ","
-    << segment.device_segment_id() << "]";
+  switch(t) {
+  case segment_type_t::JOURNAL:
+    return out << "JOURNAL";
+  case segment_type_t::OOL:
+    return out << "OOL";
+  case segment_type_t::NULL_SEG:
+    return out << "NULL_SEG";
+  default:
+    return out << "INVALID_SEGMENT_TYPE!";
+  }
 }
 
-std::ostream &block_offset_to_stream(std::ostream &out, const block_off_t &t)
+std::ostream& operator<<(std::ostream& out, segment_seq_printer_t seq)
 {
-  return out << t;
+  if (seq.seq == NULL_SEG_SEQ) {
+    return out << "NULL_SEG_SEQ";
+  } else {
+    assert(seq.seq <= MAX_VALID_SEG_SEQ);
+    return out << seq.seq;
+  }
 }
 
 std::ostream &operator<<(std::ostream &out, const paddr_t &rhs)
 {
   out << "paddr_t<";
   if (rhs == P_ADDR_NULL) {
-    out << "NULL_PADDR";
+    out << "NULL";
   } else if (rhs == P_ADDR_MIN) {
-    out << "MIN_PADDR";
-  } else if (rhs.is_block_relative()) {
-    out << "BLOCK_REG";
-  } else if (rhs.is_record_relative()) {
-    out << "RECORD_REG";
-  } else if (rhs.get_device_id() == DEVICE_ID_DELAYED) {
+    out << "MIN";
+  } else if (rhs == P_ADDR_ZERO) {
+    out << "ZERO";
+  } else if (rhs.is_delayed()) {
     out << "DELAYED_TEMP";
+  } else if (rhs.is_block_relative()) {
+    const seg_paddr_t& s = rhs.as_seg_paddr();
+    out << "BLOCK_REG, " << s.get_segment_off();
+  } else if (rhs.is_record_relative()) {
+    const seg_paddr_t& s = rhs.as_seg_paddr();
+    out << "RECORD_REG, " << s.get_segment_off();
   } else if (rhs.get_addr_type() == addr_types_t::SEGMENT) {
     const seg_paddr_t& s = rhs.as_seg_paddr();
-    segment_to_stream(out, s.get_segment_id());
-    out << ", ";
-    offset_to_stream(out, s.get_segment_off());
+    out << s.get_segment_id()
+        << ", "
+        << seastore_off_printer_t{s.get_segment_off()};
   } else if (rhs.get_addr_type() == addr_types_t::RANDOM_BLOCK) {
     const blk_paddr_t& s = rhs.as_blk_paddr();
-    block_offset_to_stream(out, s.get_block_off());
+    out << s.get_block_off();
   } else {
-    out << "INVALID";
+    out << "INVALID!";
   }
   return out << ">";
 }
 
 std::ostream &operator<<(std::ostream &out, const journal_seq_t &seq)
 {
-  return out << "journal_seq_t("
-             << "segment_seq=" << seq.segment_seq
-             << ", offset=" << seq.offset
-             << ")";
+  if (seq == JOURNAL_SEQ_NULL) {
+    return out << "JOURNAL_SEQ_NULL";
+  } else if (seq == JOURNAL_SEQ_MIN) {
+    return out << "JOURNAL_SEQ_MIN";
+  } else if (seq == NO_DELTAS) {
+    return out << "JOURNAL_SEQ_NO_DELTAS";
+  } else {
+    return out << "journal_seq_t("
+               << "segment_seq=" << segment_seq_printer_t{seq.segment_seq}
+               << ", offset=" << seq.offset
+               << ")";
+  }
 }
 
 std::ostream &operator<<(std::ostream &out, extent_types_t t)
@@ -139,16 +188,18 @@ std::ostream &operator<<(std::ostream &out, const paddr_list_t &rhs)
   return out << ']';
 }
 
-std::ostream &operator<<(std::ostream &lhs, const delta_info_t &rhs)
+std::ostream &operator<<(std::ostream &out, const delta_info_t &delta)
 {
-  return lhs << "delta_info_t("
-	     << "type: " << rhs.type
-	     << ", paddr: " << rhs.paddr
-	     << ", laddr: " << rhs.laddr
-	     << ", prev_crc: " << rhs.prev_crc
-	     << ", final_crc: " << rhs.final_crc
-	     << ", length: " << rhs.length
-	     << ", pversion: " << rhs.pversion
+  return out << "delta_info_t("
+	     << "type: " << delta.type
+	     << ", paddr: " << delta.paddr
+	     << ", laddr: " << delta.laddr
+	     << ", prev_crc: " << delta.prev_crc
+	     << ", final_crc: " << delta.final_crc
+	     << ", length: " << delta.length
+	     << ", pversion: " << delta.pversion
+	     << ", ext_seq: " << delta.ext_seq
+	     << ", seg_type: " << delta.seg_type
 	     << ")";
 }
 
@@ -164,11 +215,23 @@ std::ostream &operator<<(std::ostream &out, const extent_info_t &info)
 std::ostream &operator<<(std::ostream &out, const segment_header_t &header)
 {
   return out << "segment_header_t("
-	     << "segment_seq=" << header.journal_segment_seq
+	     << "segment_seq=" << segment_seq_printer_t{header.segment_seq}
 	     << ", segment_id=" << header.physical_segment_id
 	     << ", journal_tail=" << header.journal_tail
 	     << ", segment_nonce=" << header.segment_nonce
-	     << ", out-of-line=" << header.out_of_line
+	     << ", type=" << header.type
+	     << ")";
+}
+
+std::ostream &operator<<(std::ostream &out, const segment_tail_t &tail)
+{
+  return out << "segment_tail_t("
+	     << "segment_seq=" << tail.segment_seq
+	     << ", segment_id=" << tail.physical_segment_id
+	     << ", journal_tail=" << tail.journal_tail
+	     << ", segment_nonce=" << tail.segment_nonce
+	     << ", last_modified=" << tail.last_modified
+	     << ", last_rewritten=" << tail.last_rewritten
 	     << ")";
 }
 
@@ -304,6 +367,8 @@ ceph::bufferlist encode_records(
     record_header_t rheader{
       (extent_len_t)r.deltas.size(),
       (extent_len_t)r.extents.size(),
+      r.commit_time,
+      r.commit_type
     };
     encode(rheader, bl);
   }
@@ -406,8 +471,6 @@ bool validate_records_data(
   return success;
 }
 
-namespace {
-
 std::optional<std::vector<record_header_t>>
 try_decode_record_headers(
     const record_group_header_t& header,
@@ -429,8 +492,6 @@ try_decode_record_headers(
     }
   }
   return record_headers;
-}
-
 }
 
 std::optional<std::vector<record_extent_infos_t> >
@@ -500,7 +561,8 @@ try_decode_deltas(
     result_iter->deltas.resize(r.header.deltas);
     for (auto& i: result_iter->deltas) {
       try {
-        decode(i, bliter);
+        decode(i.second, bliter);
+	i.first = r.header.commit_time;
       } catch (ceph::buffer::error &e) {
         journal_logger().debug(
             "try_decode_deltas: failed, "
@@ -534,7 +596,8 @@ std::ostream& operator<<(std::ostream& out, placement_hint_t h)
 
 bool can_delay_allocation(device_type_t type) {
   // Some types of device may not support delayed allocation, for example PMEM.
-  return type <= device_type_t::RANDOM_BLOCK;
+  return (type >= device_type_t::NONE &&
+          type <= device_type_t::RANDOM_BLOCK);
 }
 
 device_type_t string_to_device_type(std::string type) {
@@ -586,7 +649,7 @@ void scan_valid_records_cursor::emplace_record_group(
     const record_group_header_t& header, ceph::bufferlist&& md_bl)
 {
   auto new_committed_to = header.committed_to;
-  ceph_assert(last_committed == journal_seq_t() ||
+  ceph_assert(last_committed == JOURNAL_SEQ_NULL ||
               last_committed <= new_committed_to);
   last_committed = new_committed_to;
   pending_record_groups.emplace_back(
@@ -594,7 +657,7 @@ void scan_valid_records_cursor::emplace_record_group(
     header,
     std::move(md_bl));
   increment_seq(header.dlength + header.mdlength);
-  ceph_assert(new_committed_to == journal_seq_t() ||
+  ceph_assert(new_committed_to == JOURNAL_SEQ_NULL ||
               new_committed_to < seq);
 }
 

@@ -513,7 +513,7 @@ class CephadmServe:
                                             f"Failed to apply {len(self.mgr.apply_spec_fails)} service(s): {','.join(x[0] for x in self.mgr.apply_spec_fails)}",
                                             len(self.mgr.apply_spec_fails),
                                             warnings)
-
+        self.mgr.update_watched_hosts()
         return r
 
     def _apply_service_config(self, spec: ServiceSpec) -> None:
@@ -697,7 +697,7 @@ class CephadmServe:
                 slot = slot.assign_name(self.mgr.get_unique_name(
                     slot.daemon_type,
                     slot.hostname,
-                    daemons,
+                    [d for d in daemons if d not in daemons_to_remove],
                     prefix=spec.service_id,
                     forcename=slot.name,
                     rank=slot.rank,
@@ -727,18 +727,20 @@ class CephadmServe:
             # create daemons
             daemon_place_fails = []
             for slot in slots_to_add:
-                # first remove daemon on conflicting port?
-                if slot.ports:
+                # first remove daemon with conflicting port or name?
+                if slot.ports or slot.name in [d.name() for d in daemons_to_remove]:
                     for d in daemons_to_remove:
-                        if d.hostname != slot.hostname:
+                        if (
+                            d.hostname != slot.hostname
+                            or not (set(d.ports or []) & set(slot.ports))
+                            or (d.ip and slot.ip and d.ip != slot.ip)
+                            and d.name() != slot.name
+                        ):
                             continue
-                        if not (set(d.ports or []) & set(slot.ports)):
-                            continue
-                        if d.ip and slot.ip and d.ip != slot.ip:
-                            continue
-                        self.log.info(
-                            f'Removing {d.name()} before deploying to {slot} to avoid a port conflict'
-                        )
+                        if d.name() != slot.name:
+                            self.log.info(
+                                f'Removing {d.name()} before deploying to {slot} to avoid a port or conflict'
+                            )
                         # NOTE: we don't check ok-to-stop here to avoid starvation if
                         # there is only 1 gateway.
                         self._remove_daemon(d.name(), d.hostname)
@@ -824,7 +826,7 @@ class CephadmServe:
         finally:
             if self.mgr.use_agent:
                 # can only send ack to agents if we know for sure port they bound to
-                hosts_altered = set([h for h in hosts_altered if (h in self.mgr.cache.agent_ports and h in [
+                hosts_altered = set([h for h in hosts_altered if (h in self.mgr.agent_cache.agent_ports and h in [
                                     h2.hostname for h2 in self.mgr.cache.get_non_draining_hosts()])])
                 self.mgr.agent_helpers._request_agent_acks(hosts_altered, increment=True)
 
@@ -1140,8 +1142,8 @@ class CephadmServe:
                 )
 
                 if daemon_spec.daemon_type == 'agent':
-                    self.mgr.cache.agent_timestamp[daemon_spec.host] = datetime_now()
-                    self.mgr.cache.agent_counter[daemon_spec.host] = 1
+                    self.mgr.agent_cache.agent_timestamp[daemon_spec.host] = datetime_now()
+                    self.mgr.agent_cache.agent_counter[daemon_spec.host] = 1
 
                 # refresh daemon state?  (ceph daemon reconfig does not need it)
                 if not reconfig or daemon_spec.daemon_type not in CEPH_TYPES:
@@ -1155,9 +1157,14 @@ class CephadmServe:
                             self.mgr.requires_post_actions.add(daemon_spec.name())
                     self.mgr.cache.invalidate_host_daemons(daemon_spec.host)
 
-                self.mgr.cache.update_daemon_config_deps(
-                    daemon_spec.host, daemon_spec.name(), daemon_spec.deps, start_time)
-                self.mgr.cache.save_host(daemon_spec.host)
+                if daemon_spec.daemon_type != 'agent':
+                    self.mgr.cache.update_daemon_config_deps(
+                        daemon_spec.host, daemon_spec.name(), daemon_spec.deps, start_time)
+                    self.mgr.cache.save_host(daemon_spec.host)
+                else:
+                    self.mgr.agent_cache.update_agent_config_deps(
+                        daemon_spec.host, daemon_spec.deps, start_time)
+                    self.mgr.agent_cache.save_agent(daemon_spec.host)
                 msg = "{} {} on host '{}'".format(
                     'Reconfigured' if reconfig else 'Deployed', daemon_spec.name(), daemon_spec.host)
                 if not code:
