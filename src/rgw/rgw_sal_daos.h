@@ -291,11 +291,73 @@ class DaosBucket : public Bucket {
   friend class DaosStore;
 };
 
+class DaosPlacementTier : public PlacementTier {
+  DaosStore* store;
+  RGWZoneGroupPlacementTier tier;
+
+ public:
+  DaosPlacementTier(DaosStore* _store, const RGWZoneGroupPlacementTier& _tier)
+      : store(_store), tier(_tier) {}
+  virtual ~DaosPlacementTier() = default;
+
+  virtual const std::string& get_tier_type() { return tier.tier_type; }
+  virtual const std::string& get_storage_class() { return tier.storage_class; }
+  virtual bool retain_head_object() { return tier.retain_head_object; }
+  RGWZoneGroupPlacementTier& get_rt() { return tier; }
+};
+
+class DaosZoneGroup : public ZoneGroup {
+  DaosStore* store;
+  const RGWZoneGroup group;
+  std::string empty;
+
+ public:
+  DaosZoneGroup(DaosStore* _store) : store(_store), group() {}
+  DaosZoneGroup(DaosStore* _store, const RGWZoneGroup& _group)
+      : store(_store), group(_group) {}
+  virtual ~DaosZoneGroup() = default;
+
+  virtual const std::string& get_id() const override { return group.get_id(); };
+  virtual const std::string& get_name() const override {
+    return group.get_name();
+  };
+  virtual int equals(const std::string& other_zonegroup) const override {
+    return group.equals(other_zonegroup);
+  };
+  /** Get the endpoint from zonegroup, or from master zone if not set */
+  virtual const std::string& get_endpoint() const override;
+  virtual bool placement_target_exists(std::string& target) const override;
+  virtual bool is_master_zonegroup() const override {
+    return group.is_master_zonegroup();
+  };
+  virtual const std::string& get_api_name() const override {
+    return group.api_name;
+  };
+  virtual int get_placement_target_names(
+      std::set<std::string>& names) const override;
+  virtual const std::string& get_default_placement_name() const override {
+    return group.default_placement.name;
+  };
+  virtual int get_hostnames(std::list<std::string>& names) const override {
+    names = group.hostnames;
+    return 0;
+  };
+  virtual int get_s3website_hostnames(
+      std::list<std::string>& names) const override {
+    names = group.hostnames_s3website;
+    return 0;
+  };
+  virtual int get_zone_count() const override { return group.zones.size(); }
+  virtual int get_placement_tier(const rgw_placement_rule& rule,
+                                 std::unique_ptr<PlacementTier>* tier);
+  const RGWZoneGroup& get_group() { return group; }
+};
+
 class DaosZone : public Zone {
  protected:
   DaosStore* store;
   RGWRealm* realm{nullptr};
-  RGWZoneGroup* zonegroup{nullptr};
+  DaosZoneGroup zonegroup;
   RGWZone* zone_public_config{
       nullptr}; /* external zone params, e.g., entrypoints, log flags, etc. */
   RGWZoneParams* zone_params{
@@ -304,12 +366,8 @@ class DaosZone : public Zone {
   rgw_zone_id cur_zone_id;
 
  public:
-  DaosZone(DaosStore* _store) : store(_store) {
+  DaosZone(DaosStore* _store) : store(_store), zonegroup(_store) {
     realm = new RGWRealm();
-    zonegroup = new RGWZoneGroup();
-    // TODO: fetch zonegroup params (eg. id) from provisioner config.
-    zonegroup->set_id("0956b174-fe14-4f97-8b50-bb7ec5e1cf62");
-    zonegroup->api_name = "default";
     zone_public_config = new RGWZone();
     zone_params = new RGWZoneParams();
     current_period = new RGWPeriod();
@@ -322,20 +380,39 @@ class DaosZone : public Zone {
     info.storage_classes = sc;
     zone_params->placement_pools["default"] = info;
   }
-  // XXX: clean up memory leaks
+  DaosZone(DaosStore* _store, DaosZoneGroup _zg)
+      : store(_store), zonegroup(_zg) {
+    realm = new RGWRealm();
+    zone_public_config = new RGWZone();
+    zone_params = new RGWZoneParams();
+    current_period = new RGWPeriod();
+    cur_zone_id = rgw_zone_id(zone_params->get_id());
+
+    // XXX: only default and STANDARD supported for now
+    RGWZonePlacementInfo info;
+    RGWZoneStorageClasses sc;
+    sc.set_storage_class("STANDARD", nullptr, nullptr);
+    info.storage_classes = sc;
+    zone_params->placement_pools["default"] = info;
+  }
   ~DaosZone() = default;
 
-  virtual const RGWZoneGroup& get_zonegroup() override;
+  virtual ZoneGroup& get_zonegroup() override;
   virtual int get_zonegroup(const std::string& id,
-                            RGWZoneGroup& zonegroup) override;
-  virtual const RGWZoneParams& get_params() override;
+                            std::unique_ptr<ZoneGroup>* zonegroup) override;
   virtual const rgw_zone_id& get_id() override;
-  virtual const RGWRealm& get_realm() override;
   virtual const std::string& get_name() const override;
   virtual bool is_writeable() override;
   virtual bool get_redirect_endpoint(std::string* endpoint) override;
   virtual bool has_zonegroup_api(const std::string& api) const override;
   virtual const std::string& get_current_period_id() override;
+  virtual const RGWAccessKey& get_system_key() {
+    return zone_params->system_key;
+  }
+  virtual const std::string& get_realm_name() { return realm->get_name(); }
+  virtual const std::string& get_realm_id() { return realm->get_id(); }
+
+  friend class DaosStore;
 };
 
 class DaosLuaScriptManager : public LuaScriptManager {
@@ -486,6 +563,12 @@ class DaosObject : public Object {
                          const real_time& mtime, uint64_t olh_epoch,
                          const DoutPrefixProvider* dpp,
                          optional_yield y) override;
+  virtual int transition_to_cloud(Bucket* bucket, rgw::sal::PlacementTier* tier,
+                                  rgw_bucket_dir_entry& o,
+                                  std::set<std::string>& cloud_targets,
+                                  CephContext* cct, bool update_object,
+                                  const DoutPrefixProvider* dpp,
+                                  optional_yield y) override;
   virtual bool placement_rules_match(rgw_placement_rule& r1,
                                      rgw_placement_rule& r2) override;
   virtual int dump_obj_layout(const DoutPrefixProvider* dpp, optional_yield y,
@@ -741,7 +824,7 @@ class DaosStore : public Store {
   DaosStore(CephContext* c) : zone(this), cctx(c) {}
   ~DaosStore() = default;
 
-  virtual const char* get_name() const override { return "daos"; }
+  virtual const std::string get_name() const override { return "daos"; }
 
   virtual std::unique_ptr<User> get_user(const rgw_user& u) override;
   virtual std::string get_cluster_id(const DoutPrefixProvider* dpp,
@@ -874,6 +957,9 @@ class DaosStore : public Store {
       std::unique_ptr<rgw::sal::Object> _head_obj, const rgw_user& owner,
       RGWObjectCtx& obj_ctx, const rgw_placement_rule* ptail_placement_rule,
       uint64_t olh_epoch, const std::string& unique_tag) override;
+  virtual const std::string& get_compression_type(
+      const rgw_placement_rule& rule) override;
+  virtual bool valid_placement(const rgw_placement_rule& rule) override;
 
   virtual void finalize(void) override;
 
@@ -887,7 +973,9 @@ class DaosStore : public Store {
     luarocks_path = path;
   }
 
-  int initialize(void);
+  virtual int initialize(CephContext* cct,
+                         const DoutPrefixProvider* dpp) override;
+
   int read_user(const DoutPrefixProvider* dpp, std::string parent,
                 std::string name, DaosUserInfo* duinfo);
   DaosBucket* get_metadata_bucket();

@@ -1061,25 +1061,25 @@ void DaosStore::finalize(void) {
   }
 }
 
-int DaosStore::initialize(void) {
+int DaosStore::initialize(CephContext* cct, const DoutPrefixProvider* dpp) {
   int ret = daos_init();
 
   // DAOS init failed, allow the case where init is already done
   if (ret != 0 && ret != DER_ALREADY) {
-    ldout(cctx, 0) << "ERROR: daos_init() failed: " << ret << dendl;
+    ldout(cct, 0) << "ERROR: daos_init() failed: " << ret << dendl;
     return ret;
   }
 
   // XXX: these params should be taken from config settings and
   // cct somehow?
   const auto& daos_pool = g_conf().get_val<std::string>("daos_pool");
-  ldout(cctx, 20) << "INFO: daos pool: " << daos_pool << dendl;
+  ldout(cct, 20) << "INFO: daos pool: " << daos_pool << dendl;
   daos_pool_info_t pool_info = {};
   ret = daos_pool_connect(daos_pool.c_str(), nullptr, DAOS_PC_RW, &poh,
                           &pool_info, nullptr);
 
   if (ret != 0) {
-    ldout(cctx, 0) << "ERROR: daos_pool_connect() failed: " << ret << dendl;
+    ldout(cct, 0) << "ERROR: daos_pool_connect() failed: " << ret << dendl;
     return ret;
   }
 
@@ -1096,10 +1096,10 @@ int DaosStore::initialize(void) {
     mode_t mode = DEFFILEMODE;
     for (auto& dir : METADATA_DIRS) {
       ret = dfs_mkdir(meta_dfs, nullptr, dir.c_str(), mode, 0);
-      ldout(cctx, 20) << "DEBUG: dfs_mkdir dir=" << dir << " ret=" << ret
-                      << dendl;
+      ldout(cct, 20) << "DEBUG: dfs_mkdir dir=" << dir << " ret=" << ret
+                     << dendl;
       if (ret != 0 && ret != EEXIST) {
-        ldout(cctx, 0) << "ERROR: dfs_mkdir failed! ret=" << ret << dendl;
+        ldout(cct, 0) << "ERROR: dfs_mkdir failed! ret=" << ret << dendl;
         return ret;
       }
     }
@@ -1109,20 +1109,20 @@ int DaosStore::initialize(void) {
                          nullptr);
 
     if (ret != 0) {
-      ldout(cctx, 0) << "ERROR: daos_cont_open failed! ret=" << ret << dendl;
+      ldout(cct, 0) << "ERROR: daos_cont_open failed! ret=" << ret << dendl;
       return ret;
     }
 
     ret = dfs_mount(poh, meta_coh, O_RDWR, &meta_dfs);
 
     if (ret != 0) {
-      ldout(cctx, 0) << "ERROR: dfs_mount failed! ret=" << ret << dendl;
+      ldout(cct, 0) << "ERROR: dfs_mount failed! ret=" << ret << dendl;
       return ret;
     }
 
   } else {
-    ldout(cctx, 0) << "ERROR: dfs_cont_create_with_label failed! ret=" << ret
-                   << dendl;
+    ldout(cct, 0) << "ERROR: dfs_cont_create_with_label failed! ret=" << ret
+                  << dendl;
     return ret;
   }
 
@@ -1136,10 +1136,10 @@ int DaosStore::initialize(void) {
     dirs[dir] = nullptr;
     ret = dfs_lookup_rel(meta_dfs, nullptr, dir.c_str(), O_RDWR, &dirs[dir],
                          nullptr, nullptr);
-    ldout(cctx, 20) << "DEBUG: dfs_lookup_rel dir=" << dir << " ret=" << ret
-                    << dendl;
+    ldout(cct, 20) << "DEBUG: dfs_lookup_rel dir=" << dir << " ret=" << ret
+                   << dendl;
     if (ret != 0) {
-      ldout(cctx, 0) << "ERROR: dfs_lookup_rel failed! ret=" << ret << dendl;
+      ldout(cct, 0) << "ERROR: dfs_lookup_rel failed! ret=" << ret << dendl;
       return ret;
     }
   }
@@ -1147,19 +1147,69 @@ int DaosStore::initialize(void) {
   return 0;
 }
 
-const RGWZoneGroup& DaosZone::get_zonegroup() { return *zonegroup; }
+const std::string& DaosZoneGroup::get_endpoint() const {
+  if (!group.endpoints.empty()) {
+    return group.endpoints.front();
+  } else {
+    // use zonegroup's master zone endpoints
+    auto z = group.zones.find(group.master_zone);
+    if (z != group.zones.end() && !z->second.endpoints.empty()) {
+      return z->second.endpoints.front();
+    }
+  }
+  return empty;
+}
 
-int DaosZone::get_zonegroup(const std::string& id, RGWZoneGroup& zg) {
-  /* XXX: for now only one zonegroup supported */
-  zg = *zonegroup;
+bool DaosZoneGroup::placement_target_exists(std::string& target) const {
+  return !!group.placement_targets.count(target);
+}
+
+int DaosZoneGroup::get_placement_target_names(
+    std::set<std::string>& names) const {
+  for (const auto& target : group.placement_targets) {
+    names.emplace(target.second.name);
+  }
+
   return 0;
 }
 
-const RGWZoneParams& DaosZone::get_params() { return *zone_params; }
+int DaosZoneGroup::get_placement_tier(const rgw_placement_rule& rule,
+                                      std::unique_ptr<PlacementTier>* tier) {
+  std::map<std::string, RGWZoneGroupPlacementTarget>::const_iterator titer;
+  titer = group.placement_targets.find(rule.name);
+  if (titer == group.placement_targets.end()) {
+    return -ENOENT;
+  }
+
+  const auto& target_rule = titer->second;
+  std::map<std::string, RGWZoneGroupPlacementTier>::const_iterator ttier;
+  ttier = target_rule.tier_targets.find(rule.storage_class);
+  if (ttier == target_rule.tier_targets.end()) {
+    // not found
+    return -ENOENT;
+  }
+
+  PlacementTier* t;
+  t = new DaosPlacementTier(store, ttier->second);
+  if (!t) return -ENOMEM;
+
+  tier->reset(t);
+  return 0;
+}
+
+ZoneGroup& DaosZone::get_zonegroup() { return zonegroup; }
+
+int DaosZone::get_zonegroup(const std::string& id,
+                            std::unique_ptr<ZoneGroup>* group) {
+  /* XXX: for now only one zonegroup supported */
+  ZoneGroup* zg;
+  zg = new DaosZoneGroup(store, zonegroup.get_group());
+
+  group->reset(zg);
+  return 0;
+}
 
 const rgw_zone_id& DaosZone::get_id() { return cur_zone_id; }
-
-const RGWRealm& DaosZone::get_realm() { return *realm; }
 
 const std::string& DaosZone::get_name() const {
   return zone_params->get_name();
@@ -1349,6 +1399,13 @@ int DaosObject::transition(RGWObjectCtx& rctx, Bucket* bucket,
                            const rgw_placement_rule& placement_rule,
                            const real_time& mtime, uint64_t olh_epoch,
                            const DoutPrefixProvider* dpp, optional_yield y) {
+  return 0;
+}
+
+int DaosObject::transition_to_cloud(
+    Bucket* bucket, rgw::sal::PlacementTier* tier, rgw_bucket_dir_entry& o,
+    std::set<std::string>& cloud_targets, CephContext* cct, bool update_object,
+    const DoutPrefixProvider* dpp, optional_yield y) {
   return 0;
 }
 
@@ -2709,6 +2766,15 @@ std::unique_ptr<Writer> DaosStore::get_atomic_writer(
       olh_epoch, unique_tag);
 }
 
+const std::string& DaosStore::get_compression_type(
+    const rgw_placement_rule& rule) {
+  return zone.zone_params->get_compression_type(rule);
+}
+
+bool DaosStore::valid_placement(const rgw_placement_rule& rule) {
+  return zone.zone_params->valid_placement(rule);
+}
+
 int DaosStore::read_user(const DoutPrefixProvider* dpp, std::string parent,
                          std::string name, DaosUserInfo* duinfo) {
   // Open file
@@ -2814,7 +2880,7 @@ std::unique_ptr<Object> DaosStore::get_object(const rgw_obj_key& k) {
 int DaosStore::get_bucket(const DoutPrefixProvider* dpp, User* u,
                           const rgw_bucket& b, std::unique_ptr<Bucket>* bucket,
                           optional_yield y) {
-  ldout(cctx, 20) << "DEBUG: get_bucket1: User" << u->get_id() << dendl;
+  ldpp_dout(dpp, 20) << "DEBUG: get_bucket1: User" << u->get_id() << dendl;
   int ret;
   Bucket* bp;
 
@@ -2983,7 +3049,7 @@ void* newDaosStore(CephContext* cct) {
   rgw::sal::DaosStore* store = new rgw::sal::DaosStore(cct);
 
   if (store) {
-    ret = store->initialize();
+    ret = store->initialize(cct, nullptr);
     if (ret != 0) {
       ldout(cct, 0) << "ERROR: store->initialize() failed: " << ret << dendl;
       store->finalize();
