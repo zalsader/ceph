@@ -464,20 +464,15 @@ class DaosObject : public Object {
  private:
   DaosStore* store;
   RGWAccessControlPolicy acls;
-  /* XXX: to be removed. Till Dan's patch comes, a placeholder
-   * for RGWObjState
-   */
-  RGWObjState* state;
   bool _is_open = false;
 
  public:
   struct DaosReadOp : public ReadOp {
    private:
     DaosObject* source;
-    RGWObjectCtx* rctx;
 
    public:
-    DaosReadOp(DaosObject* _source, RGWObjectCtx* _rctx);
+    DaosReadOp(DaosObject* _source);
 
     virtual int prepare(optional_yield y,
                         const DoutPrefixProvider* dpp) override;
@@ -492,10 +487,9 @@ class DaosObject : public Object {
   struct DaosDeleteOp : public DeleteOp {
    private:
     DaosObject* source;
-    RGWObjectCtx* rctx;
 
    public:
-    DaosDeleteOp(DaosObject* _source, RGWObjectCtx* _rctx);
+    DaosDeleteOp(DaosObject* _source);
 
     virtual int delete_obj(const DoutPrefixProvider* dpp,
                            optional_yield y) override;
@@ -506,33 +500,32 @@ class DaosObject : public Object {
   DaosObject() = default;
 
   DaosObject(DaosStore* _st, const rgw_obj_key& _k)
-      : Object(_k), store(_st), acls(), state(NULL) {}
+      : Object(_k), store(_st), acls() {}
   DaosObject(DaosStore* _st, const rgw_obj_key& _k, Bucket* _b)
-      : Object(_k, _b), store(_st), acls(), state(NULL) {}
+      : Object(_k, _b), store(_st), acls() {}
 
   DaosObject(DaosObject& _o) = default;
 
   virtual ~DaosObject();
 
-  virtual int delete_object(const DoutPrefixProvider* dpp,
-                            RGWObjectCtx* obj_ctx, optional_yield y,
+  virtual int delete_object(const DoutPrefixProvider* dpp, optional_yield y,
                             bool prevent_versioning = false) override;
   virtual int delete_obj_aio(const DoutPrefixProvider* dpp, RGWObjState* astate,
                              Completions* aio, bool keep_index_consistent,
                              optional_yield y) override;
   virtual int copy_object(
-      RGWObjectCtx& obj_ctx, User* user, req_info* info,
-      const rgw_zone_id& source_zone, rgw::sal::Object* dest_object,
-      rgw::sal::Bucket* dest_bucket, rgw::sal::Bucket* src_bucket,
-      const rgw_placement_rule& dest_placement, ceph::real_time* src_mtime,
-      ceph::real_time* mtime, const ceph::real_time* mod_ptr,
-      const ceph::real_time* unmod_ptr, bool high_precision_time,
-      const char* if_match, const char* if_nomatch, AttrsMod attrs_mod,
-      bool copy_if_newer, Attrs& attrs, RGWObjCategory category,
-      uint64_t olh_epoch, boost::optional<ceph::real_time> delete_at,
-      std::string* version_id, std::string* tag, std::string* etag,
-      void (*progress_cb)(off_t, void*), void* progress_data,
-      const DoutPrefixProvider* dpp, optional_yield y) override;
+      User* user, req_info* info, const rgw_zone_id& source_zone,
+      rgw::sal::Object* dest_object, rgw::sal::Bucket* dest_bucket,
+      rgw::sal::Bucket* src_bucket, const rgw_placement_rule& dest_placement,
+      ceph::real_time* src_mtime, ceph::real_time* mtime,
+      const ceph::real_time* mod_ptr, const ceph::real_time* unmod_ptr,
+      bool high_precision_time, const char* if_match, const char* if_nomatch,
+      AttrsMod attrs_mod, bool copy_if_newer, Attrs& attrs,
+      RGWObjCategory category, uint64_t olh_epoch,
+      boost::optional<ceph::real_time> delete_at, std::string* version_id,
+      std::string* tag, std::string* etag, void (*progress_cb)(off_t, void*),
+      void* progress_data, const DoutPrefixProvider* dpp,
+      optional_yield y) override;
   virtual RGWAccessControlPolicy& get_acl(void) override { return acls; }
   virtual int set_acl(const RGWAccessControlPolicy& acl) override {
     acls = acl;
@@ -558,7 +551,7 @@ class DaosObject : public Object {
   }
   virtual MPSerializer* get_serializer(const DoutPrefixProvider* dpp,
                                        const std::string& lock_name) override;
-  virtual int transition(RGWObjectCtx& rctx, Bucket* bucket,
+  virtual int transition(Bucket* bucket,
                          const rgw_placement_rule& placement_rule,
                          const real_time& mtime, uint64_t olh_epoch,
                          const DoutPrefixProvider* dpp,
@@ -572,18 +565,17 @@ class DaosObject : public Object {
   virtual bool placement_rules_match(rgw_placement_rule& r1,
                                      rgw_placement_rule& r2) override;
   virtual int dump_obj_layout(const DoutPrefixProvider* dpp, optional_yield y,
-                              Formatter* f, RGWObjectCtx* obj_ctx) override;
+                              Formatter* f ) override;
 
   /* Swift versioning */
-  virtual int swift_versioning_restore(RGWObjectCtx* obj_ctx, bool& restored,
+  virtual int swift_versioning_restore(bool& restored,
                                        const DoutPrefixProvider* dpp) override;
-  virtual int swift_versioning_copy(RGWObjectCtx* obj_ctx,
-                                    const DoutPrefixProvider* dpp,
+  virtual int swift_versioning_copy(const DoutPrefixProvider* dpp,
                                     optional_yield y) override;
 
   /* OPs */
-  virtual std::unique_ptr<ReadOp> get_read_op(RGWObjectCtx*) override;
-  virtual std::unique_ptr<DeleteOp> get_delete_op(RGWObjectCtx*) override;
+  virtual std::unique_ptr<ReadOp> get_read_op() override;
+  virtual std::unique_ptr<DeleteOp> get_delete_op() override;
 
   /* OMAP */
   virtual int omap_get_vals(const DoutPrefixProvider* dpp,
@@ -658,7 +650,6 @@ class DaosAtomicWriter : public Writer {
   DaosAtomicWriter(const DoutPrefixProvider* dpp, optional_yield y,
                    std::unique_ptr<rgw::sal::Object> _head_obj,
                    DaosStore* _store, const rgw_user& _owner,
-                   RGWObjectCtx& obj_ctx,
                    const rgw_placement_rule* _ptail_placement_rule,
                    uint64_t _olh_epoch, const std::string& _unique_tag);
   ~DaosAtomicWriter() = default;
@@ -698,7 +689,6 @@ class DaosMultipartWriter : public Writer {
                       MultipartUpload* _upload,
                       std::unique_ptr<rgw::sal::Object> _head_obj,
                       DaosStore* _store, const rgw_user& owner,
-                      RGWObjectCtx& obj_ctx,
                       const rgw_placement_rule* ptail_placement_rule,
                       uint64_t _part_num, const std::string& part_num_str)
       : Writer(dpp, y),
@@ -772,31 +762,28 @@ class DaosMultipartUpload : public MultipartUpload {
   virtual ceph::real_time& get_mtime() { return mtime; }
   virtual std::unique_ptr<rgw::sal::Object> get_meta_obj() override;
   virtual int init(const DoutPrefixProvider* dpp, optional_yield y,
-                   RGWObjectCtx* obj_ctx, ACLOwner& owner,
-                   rgw_placement_rule& dest_placement,
+                   ACLOwner& owner, rgw_placement_rule& dest_placement,
                    rgw::sal::Attrs& attrs) override;
   virtual int list_parts(const DoutPrefixProvider* dpp, CephContext* cct,
                          int num_parts, int marker, int* next_marker,
                          bool* truncated,
                          bool assume_unsorted = false) override;
-  virtual int abort(const DoutPrefixProvider* dpp, CephContext* cct,
-                    RGWObjectCtx* obj_ctx) override;
+  virtual int abort(const DoutPrefixProvider* dpp, CephContext* cct) override;
   virtual int complete(const DoutPrefixProvider* dpp, optional_yield y,
                        CephContext* cct, std::map<int, std::string>& part_etags,
                        std::list<rgw_obj_index_key>& remove_objs,
                        uint64_t& accounted_size, bool& compressed,
                        RGWCompressionInfo& cs_info, off_t& off,
                        std::string& tag, ACLOwner& owner, uint64_t olh_epoch,
-                       rgw::sal::Object* target_obj,
-                       RGWObjectCtx* obj_ctx) override;
+                       rgw::sal::Object* target_obj) override;
   virtual int get_info(const DoutPrefixProvider* dpp, optional_yield y,
-                       RGWObjectCtx* obj_ctx, rgw_placement_rule** rule,
+                       rgw_placement_rule** rule,
                        rgw::sal::Attrs* attrs = nullptr) override;
   virtual std::unique_ptr<Writer> get_writer(
       const DoutPrefixProvider* dpp, optional_yield y,
       std::unique_ptr<rgw::sal::Object> _head_obj, const rgw_user& owner,
-      RGWObjectCtx& obj_ctx, const rgw_placement_rule* ptail_placement_rule,
-      uint64_t part_num, const std::string& part_num_str) override;
+      const rgw_placement_rule* ptail_placement_rule, uint64_t part_num,
+      const std::string& part_num_str) override;
   DaosBucket* get_daos_bucket() { return static_cast<DaosBucket*>(bucket); }
 };
 
@@ -866,9 +853,9 @@ class DaosStore : public Store {
       const std::string* object_name = nullptr) override;
   virtual std::unique_ptr<Notification> get_notification(
       const DoutPrefixProvider* dpp, rgw::sal::Object* obj,
-      rgw::sal::Object* src_obj, RGWObjectCtx* rctx,
-      rgw::notify::EventType event_type, rgw::sal::Bucket* _bucket,
-      std::string& _user_id, std::string& _user_tenant, std::string& _req_id,
+      rgw::sal::Object* src_obj, rgw::notify::EventType event_type,
+      rgw::sal::Bucket* _bucket, std::string& _user_id,
+      std::string& _user_tenant, std::string& _req_id,
       optional_yield y) override;
   virtual RGWLC* get_rgwlc(void) override { return NULL; }
   virtual RGWCoroutinesManagerRegistry* get_cr_registry() override {
@@ -949,14 +936,14 @@ class DaosStore : public Store {
   virtual std::unique_ptr<Writer> get_append_writer(
       const DoutPrefixProvider* dpp, optional_yield y,
       std::unique_ptr<rgw::sal::Object> _head_obj, const rgw_user& owner,
-      RGWObjectCtx& obj_ctx, const rgw_placement_rule* ptail_placement_rule,
+      const rgw_placement_rule* ptail_placement_rule,
       const std::string& unique_tag, uint64_t position,
       uint64_t* cur_accounted_size) override;
   virtual std::unique_ptr<Writer> get_atomic_writer(
       const DoutPrefixProvider* dpp, optional_yield y,
       std::unique_ptr<rgw::sal::Object> _head_obj, const rgw_user& owner,
-      RGWObjectCtx& obj_ctx, const rgw_placement_rule* ptail_placement_rule,
-      uint64_t olh_epoch, const std::string& unique_tag) override;
+      const rgw_placement_rule* ptail_placement_rule, uint64_t olh_epoch,
+      const std::string& unique_tag) override;
   virtual const std::string& get_compression_type(
       const rgw_placement_rule& rule) override;
   virtual bool valid_placement(const rgw_placement_rule& rule) override;
