@@ -536,17 +536,16 @@ std::unique_ptr<DaosObject> DaosBucket::get_part_object(std::string upload_id,
 int DaosBucket::remove_bucket(const DoutPrefixProvider* dpp,
                               bool delete_children, bool forward_to_master,
                               req_info* req_info, optional_yield y) {
-  int ret;
+  // TODO implement
 
-  ret = load_bucket(dpp, y);
-
-  return ret;
+  return 0;
 }
 
 int DaosBucket::remove_bucket_bypass_gc(int concurrent_max,
                                         bool keep_index_consistent,
                                         optional_yield y,
                                         const DoutPrefixProvider* dpp) {
+  // TODO implement
   return 0;
 }
 
@@ -1182,7 +1181,7 @@ std::unique_ptr<LuaScriptManager> DaosStore::get_lua_script_manager() {
   return std::make_unique<DaosLuaScriptManager>(this);
 }
 
-int DaosObject::get_obj_state(const DoutPrefixProvider* dpp, RGWObjectCtx* rctx,
+int DaosObject::get_obj_state(const DoutPrefixProvider* dpp,
                               RGWObjState** _state, optional_yield y,
                               bool follow_olh) {
   if (state == nullptr) state = new RGWObjState();
@@ -1218,9 +1217,8 @@ DaosObject::~DaosObject() {
   delete state;
 }
 
-int DaosObject::set_obj_attrs(const DoutPrefixProvider* dpp, RGWObjectCtx* rctx,
-                              Attrs* setattrs, Attrs* delattrs,
-                              optional_yield y, rgw_obj* target_obj) {
+int DaosObject::set_obj_attrs(const DoutPrefixProvider* dpp, Attrs* setattrs,
+                              Attrs* delattrs, optional_yield y) {
   ldpp_dout(dpp, 20) << "DEBUG: DaosObject::set_obj_attrs()" << dendl;
   // TODO handle target_obj
   // Get object's metadata (those stored in rgw_bucket_dir_entry)
@@ -1242,8 +1240,7 @@ int DaosObject::set_obj_attrs(const DoutPrefixProvider* dpp, RGWObjectCtx* rctx,
   return ret;
 }
 
-int DaosObject::get_obj_attrs(RGWObjectCtx* rctx, optional_yield y,
-                              const DoutPrefixProvider* dpp,
+int DaosObject::get_obj_attrs(optional_yield y, const DoutPrefixProvider* dpp,
                               rgw_obj* target_obj) {
   ldpp_dout(dpp, 20) << "DEBUG: DaosObject::get_obj_attrs()" << dendl;
   // TODO handle target_obj
@@ -1259,8 +1256,8 @@ int DaosObject::get_obj_attrs(RGWObjectCtx* rctx, optional_yield y,
   return ret;
 }
 
-int DaosObject::modify_obj_attrs(RGWObjectCtx* rctx, const char* attr_name,
-                                 bufferlist& attr_val, optional_yield y,
+int DaosObject::modify_obj_attrs(const char* attr_name, bufferlist& attr_val,
+                                 optional_yield y,
                                  const DoutPrefixProvider* dpp) {
   // Get object's metadata (those stored in rgw_bucket_dir_entry)
   rgw_bucket_dir_entry ent;
@@ -1277,28 +1274,14 @@ int DaosObject::modify_obj_attrs(RGWObjectCtx* rctx, const char* attr_name,
 }
 
 int DaosObject::delete_obj_attrs(const DoutPrefixProvider* dpp,
-                                 RGWObjectCtx* rctx, const char* attr_name,
-                                 optional_yield y) {
+                                 const char* attr_name, optional_yield y) {
   rgw_obj target = get_obj();
   Attrs rmattr;
   bufferlist bl;
 
-  set_atomic(rctx);
   rmattr[attr_name] = bl;
-  return set_obj_attrs(dpp, rctx, nullptr, &rmattr, y, &target);
+  return set_obj_attrs(dpp, nullptr, &rmattr, y, &target);
 }
-
-/* RGWObjectCtx will be moved out of sal */
-/* XXX: Placeholder. Should not be needed later after Dan's patch */
-void DaosObject::set_atomic(RGWObjectCtx* rctx) const { return; }
-
-/* RGWObjectCtx will be moved out of sal */
-/* XXX: Placeholder. Should not be needed later after Dan's patch */
-void DaosObject::set_prefetch_data(RGWObjectCtx* rctx) { return; }
-
-/* RGWObjectCtx will be moved out of sal */
-/* XXX: Placeholder. Should not be needed later after Dan's patch */
-void DaosObject::set_compressed(RGWObjectCtx* rctx) { return; }
 
 bool DaosObject::is_expired() {
   auto iter = attrs.find(RGW_ATTR_DELETE_AT);
@@ -1929,6 +1912,8 @@ int DaosAtomicWriter::prepare(optional_yield y) {
   return ret;
 }
 
+// TODO: Handle concurrent writes, a unique object id is a possible solution, or
+// use DAOS transactions
 // XXX: Do we need to accumulate writes as motr does?
 int DaosAtomicWriter::process(bufferlist&& data, uint64_t offset) {
   if (data.length() == 0) {

@@ -461,24 +461,18 @@ class DaosObject : public Object {
     acls = acl;
     return 0;
   }
-  virtual void set_atomic(RGWObjectCtx* rctx) const override;
-  virtual void set_prefetch_data(RGWObjectCtx* rctx) override;
-  virtual void set_compressed(RGWObjectCtx* rctx) override;
 
-  virtual int get_obj_state(const DoutPrefixProvider* dpp, RGWObjectCtx* rctx,
-                            RGWObjState** state, optional_yield y,
-                            bool follow_olh = true) override;
-  virtual int set_obj_attrs(const DoutPrefixProvider* dpp, RGWObjectCtx* rctx,
-                            Attrs* setattrs, Attrs* delattrs, optional_yield y,
+  virtual int get_obj_state(const DoutPrefixProvider* dpp, RGWObjState** state,
+                            optional_yield y, bool follow_olh = true) override;
+  virtual int set_obj_attrs(const DoutPrefixProvider* dpp, Attrs* setattrs,
+                            Attrs* delattrs, optional_yield y) override;
+  virtual int get_obj_attrs(optional_yield y, const DoutPrefixProvider* dpp,
                             rgw_obj* target_obj = NULL) override;
-  virtual int get_obj_attrs(RGWObjectCtx* rctx, optional_yield y,
-                            const DoutPrefixProvider* dpp,
-                            rgw_obj* target_obj = NULL) override;
-  virtual int modify_obj_attrs(RGWObjectCtx* rctx, const char* attr_name,
-                               bufferlist& attr_val, optional_yield y,
+  virtual int modify_obj_attrs(const char* attr_name, bufferlist& attr_val,
+                               optional_yield y,
                                const DoutPrefixProvider* dpp) override;
   virtual int delete_obj_attrs(const DoutPrefixProvider* dpp,
-                               RGWObjectCtx* rctx, const char* attr_name,
+                               const char* attr_name,
                                optional_yield y) override;
   virtual bool is_expired() override;
   virtual void gen_rand_obj_instance_name() override;
