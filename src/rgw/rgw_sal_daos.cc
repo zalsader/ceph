@@ -1219,9 +1219,7 @@ bool DaosZone::is_writeable() { return true; }
 
 bool DaosZone::get_redirect_endpoint(std::string* endpoint) { return false; }
 
-bool DaosZone::has_zonegroup_api(const std::string& api) const {
-  return false;
-}
+bool DaosZone::has_zonegroup_api(const std::string& api) const { return false; }
 
 const std::string& DaosZone::get_current_period_id() {
   return current_period->get_id();
@@ -1258,9 +1256,7 @@ int DaosObject::get_obj_state(const DoutPrefixProvider* dpp,
   return 0;
 }
 
-DaosObject::~DaosObject() {
-  close(nullptr);
-}
+DaosObject::~DaosObject() { close(nullptr); }
 
 int DaosObject::set_obj_attrs(const DoutPrefixProvider* dpp, Attrs* setattrs,
                               Attrs* delattrs, optional_yield y) {
@@ -1626,7 +1622,7 @@ int DaosObject::lookup(const DoutPrefixProvider* dpp, mode_t* mode) {
   }
 
   // TODO: cache open file handles
-  std::string path = get_key().to_str();
+  std::string path = get_key().to_str() + temp_suffix;
   if (path.front() != '/') path = "/" + path;
   ret = dfs_lookup(daos_bucket->dfs, path.c_str(), O_RDWR, &dfs_obj, mode,
                    nullptr);
@@ -1667,22 +1663,22 @@ int DaosObject::create(const DoutPrefixProvider* dpp, const bool create_parents,
     return 0;
   }
 
-  // TODO: cache open file handles
-  dfs_obj_t* parent = nullptr;
-  fs::path path = get_key().to_str();
-  fs::path file_name = path.filename();
-  fs::path parent_path = path.parent_path();
-  mode_t mode = DEFFILEMODE;
-
   // Disallow creating a file with the instance = latest, since it is supposed
   // to be a link, not a writeable file
-  size_t suffix_pos = path.string().rfind(LATEST_INSTANCE_SUFFIX);
+  size_t suffix_pos = get_key().to_str().rfind(LATEST_INSTANCE_SUFFIX);
   if (suffix_pos != std::string::npos && link_to.empty()) {
     ldpp_dout(dpp, 0) << "ERROR: creating an object that ends with "
                       << LATEST_INSTANCE_SUFFIX
                       << " is not allowed unless it is a link" << dendl;
     return -EINVAL;
   }
+
+  // TODO: cache open file handles
+  dfs_obj_t* parent = nullptr;
+  fs::path path = get_key().to_str() + temp_suffix;
+  fs::path file_name = path.filename();
+  fs::path parent_path = path.parent_path();
+  mode_t mode = DEFFILEMODE;
 
   int ret = 0;
   DaosBucket* daos_bucket = get_daos_bucket();
@@ -1952,6 +1948,7 @@ DaosAtomicWriter::DaosAtomicWriter(
       obj(_store, _head_obj->get_key(), _head_obj->get_bucket()) {}
 
 int DaosAtomicWriter::prepare(optional_yield y) {
+  obj.generate_temp_suffix();
   int ret = obj.create(dpp);
   return ret;
 }
@@ -2612,7 +2609,7 @@ int DaosMultipartWriter::prepare(optional_yield y) {
                      << part_num_str << dendl;
 
   part_obj = get_daos_bucket()->get_part_object(upload_id, part_num);
-  // XXX: we should just create the file, and not the whole path
+  part_obj->generate_temp_suffix();
   int ret = part_obj->create(dpp, false);
   if (ret == -ENOENT) {
     ret = -ERR_NO_SUCH_UPLOAD;

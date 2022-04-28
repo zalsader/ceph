@@ -465,6 +465,7 @@ class DaosObject : public Object {
   DaosStore* store;
   RGWAccessControlPolicy acls;
   bool _is_open = false;
+  std::string temp_suffix;
 
  public:
   struct DaosReadOp : public ReadOp {
@@ -565,7 +566,7 @@ class DaosObject : public Object {
   virtual bool placement_rules_match(rgw_placement_rule& r1,
                                      rgw_placement_rule& r2) override;
   virtual int dump_obj_layout(const DoutPrefixProvider* dpp, optional_yield y,
-                              Formatter* f ) override;
+                              Formatter* f) override;
 
   /* Swift versioning */
   virtual int swift_versioning_restore(bool& restored,
@@ -594,15 +595,23 @@ class DaosObject : public Object {
                                   bool must_exist, optional_yield y) override;
 
   bool is_open() { return _is_open; };
+  // Fills temp_suffix, to be used in creating a temporary file for writing.
+  // Avoids concurrent writes bug
+  void generate_temp_suffix() {
+    temp_suffix = gen_rand_alphanumeric(store->ctx(), 33) + ".tmp";
+  };
   // Only lookup the object, do not create
   int lookup(const DoutPrefixProvider* dpp, mode_t* mode = nullptr);
   // Create the object, truncate if exists
   int create(const DoutPrefixProvider* dpp, const bool create_parents = true,
              const std::string link_to = "");
-  // Release the daos resources
+  // Release the daos resources and remove temporary files
   int close(const DoutPrefixProvider* dpp);
   // Write to object starting from offset
   int write(const DoutPrefixProvider* dpp, bufferlist&& data, uint64_t offset);
+  // Complete the write operation: rename the file to the correct name and clear
+  // write suffix
+  int complete_write(const DoutPrefixProvider* dpp);
   // Read size bytes from object starting from offset
   int read(const DoutPrefixProvider* dpp, bufferlist& data, uint64_t offset,
            uint64_t& size);
