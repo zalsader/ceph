@@ -465,7 +465,6 @@ class DaosObject : public Object {
   DaosStore* store;
   RGWAccessControlPolicy acls;
   bool _is_open = false;
-  std::string temp_suffix;
 
  public:
   struct DaosReadOp : public ReadOp {
@@ -497,6 +496,7 @@ class DaosObject : public Object {
   };
 
   dfs_obj_t* dfs_obj;
+  std::string temp_suffix;
 
   DaosObject() = default;
 
@@ -595,11 +595,10 @@ class DaosObject : public Object {
                                   bool must_exist, optional_yield y) override;
 
   bool is_open() { return _is_open; };
+  
   // Fills temp_suffix, to be used in creating a temporary file for writing.
   // Avoids concurrent writes bug
-  void generate_temp_suffix() {
-    temp_suffix = gen_rand_alphanumeric(store->ctx(), 33) + ".tmp";
-  };
+  void generate_temp_suffix();
   // Only lookup the object, do not create
   int lookup(const DoutPrefixProvider* dpp, mode_t* mode = nullptr);
   // Create the object, truncate if exists

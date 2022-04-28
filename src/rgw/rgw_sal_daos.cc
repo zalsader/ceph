@@ -859,6 +859,7 @@ int DaosBucket::list(const DoutPrefixProvider* dpp, ListParams& params, int max,
       ldpp_dout(dpp, 20) << "DEBUG: dfs_getxattr entry=" << name
                          << " xattr=" << RGW_DIR_ENTRY_XATTR << dendl;
       // Skip if file has no dirent
+      // TODO skip if name not match
       if (ret != 0) {
         ldpp_dout(dpp, 0) << "ERROR: no dirent, skipping entry=" << name
                           << dendl;
@@ -1536,7 +1537,7 @@ int DaosObject::DaosDeleteOp::delete_obj(const DoutPrefixProvider* dpp,
 
   // Remove the daos object
   dfs_obj_t* parent = nullptr;
-  fs::path path = source->get_key().to_str() + temp_suffix;
+  fs::path path = source->get_key().to_str() + source->temp_suffix;
   fs::path file_name = path.filename();
   fs::path parent_path = path.parent_path();
 
@@ -1606,6 +1607,10 @@ int DaosObject::swift_versioning_copy(const DoutPrefixProvider* dpp,
                                       optional_yield y) {
   return 0;
 }
+
+void DaosObject::generate_temp_suffix() {
+  temp_suffix = "." + gen_rand_alphanumeric(store->ctx(), 33) + ".tmp";
+};
 
 int DaosObject::lookup(const DoutPrefixProvider* dpp, mode_t* mode) {
   if (is_open()) {
@@ -1762,11 +1767,9 @@ int DaosObject::close(const DoutPrefixProvider* dpp) {
 
   // remove the temporary file created by temp_suffix
   if (!temp_suffix.empty()) {
-    ret = delete_obj(dpp, null_yield);
-    if (ret != 0) {
-      ldpp_dout(dpp, 20) << "DEBUG: Failed to detete temp object ret=" << ret
-                         << dendl;
-    }
+    ret = delete_object(dpp, null_yield);
+    ldpp_dout(dpp, 20) << "DEBUG: delete_object with temp_suffix ret=" << ret
+                       << dendl;
   }
 
   ret = dfs_release(dfs_obj);
@@ -1797,7 +1800,7 @@ int DaosObject::write(const DoutPrefixProvider* dpp, bufferlist&& data,
 int DaosObject::complete_write(const DoutPrefixProvider* dpp) {
   // Open bucket
   int ret = 0;
-  DaosBucket* daos_bucket = source->get_daos_bucket();
+  DaosBucket* daos_bucket = get_daos_bucket();
   ret = daos_bucket->open(dpp);
   if (ret != 0) {
     return ret;
@@ -1805,11 +1808,11 @@ int DaosObject::complete_write(const DoutPrefixProvider* dpp) {
 
   // Rename the daos object into the final name
   dfs_obj_t* parent = nullptr;
-  fs::path old_path = source->get_key().to_str() + temp_suffix;
+  fs::path old_path = get_key().to_str() + temp_suffix;
   fs::path old_file_name = old_path.filename();
   fs::path parent_path = old_path.parent_path();
 
-  fs::path new_path = source->get_key().to_str();
+  fs::path new_path = get_key().to_str();
   fs::path new_file_name = new_path.filename();
 
   if (!parent_path.empty()) {
@@ -1830,11 +1833,6 @@ int DaosObject::complete_write(const DoutPrefixProvider* dpp) {
                      << " new_file_name=" << new_file_name << " ret=" << ret
                      << dendl;
 
-  // Update open dfs_object in case of rename
-  if (is_open()) {
-    dfs_update_parent(dfs_obj, parent, new_file_name.c_str());
-  }
-
   // Finalize
   if (parent) {
     dfs_release(parent);
@@ -1842,6 +1840,9 @@ int DaosObject::complete_write(const DoutPrefixProvider* dpp) {
 
   // Clear suffix
   temp_suffix.clear();
+
+  // Close
+  close(dpp);
   return ret;
 }
 
@@ -2087,6 +2088,9 @@ int DaosAtomicWriter::complete(
   }
 
   ret = obj.set_dir_entry_attrs(dpp, &ent, &attrs);
+  if (ret != 0) {
+    return ret;
+  }
 
   if (is_versioned) {
     ret = obj.mark_as_latest(dpp, set_mtime);
@@ -2095,8 +2099,8 @@ int DaosAtomicWriter::complete(
     }
   }
 
-  obj.complete_write(dpp);
-  obj.close(dpp);
+  ret = obj.complete_write(dpp);
+
   return ret;
 }
 
@@ -2262,6 +2266,7 @@ int DaosMultipartUpload::list_parts(const DoutPrefixProvider* dpp,
     ldpp_dout(dpp, 20) << "DEBUG: dfs_getxattr entry=" << part_name
                        << " xattr=" << RGW_PART_XATTR << dendl;
     // Skip if the part has no info
+    // TODO skip if name not match
     if (ret != 0) {
       ldpp_dout(dpp, 0) << "ERROR: no part info, skipping part=" << part_name
                         << dendl;
@@ -2559,6 +2564,9 @@ int DaosMultipartUpload::complete(
 
   // Set attributes
   ret = obj->set_dir_entry_attrs(dpp, &ent, &attrs);
+  if (ret != 0) {
+    return ret;
+  }
 
   if (is_versioned) {
     ret = obj->mark_as_latest(dpp, ent.meta.mtime);
@@ -2567,8 +2575,10 @@ int DaosMultipartUpload::complete(
     }
   }
 
-  obj->complete_write(dpp);
-  obj->close(dpp);
+  ret = obj->complete_write(dpp);
+  if (ret != 0) {
+    return ret;
+  }
 
   // Remove upload from bucket multipart index
   ret = dfs_remove(store->meta_dfs, multipart_dir, get_upload_id().c_str(),
@@ -2749,10 +2759,10 @@ int DaosMultipartWriter::complete(
     if (ret == ENOENT) {
       ret = -ERR_NO_SUCH_UPLOAD;
     }
+    return ret;
   }
 
-  part_obj->complete_write(dpp);
-  part_obj->close(dpp);
+  ret = part_obj->complete_write(dpp);
   return ret;
 }
 
