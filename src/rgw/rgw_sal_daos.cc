@@ -525,7 +525,6 @@ int DaosBucket::close(const DoutPrefixProvider* dpp) {
 
 std::unique_ptr<DaosObject> DaosBucket::get_part_object(std::string upload_id,
                                                         uint64_t part_num) {
-  // XXX: create a util for path build
   fs::path part_path = make_path(
       {MULTIPART_DIR, get_name(), upload_id, std::to_string(part_num)});
   rgw_obj_key k;
@@ -1529,7 +1528,6 @@ int DaosObject::DaosDeleteOp::delete_obj(const DoutPrefixProvider* dpp,
                      << source->get_bucket()->get_name() << dendl;
   // Open bucket
   int ret = 0;
-  std::string path = source->get_key().to_str();
   DaosBucket* daos_bucket = source->get_daos_bucket();
   ret = daos_bucket->open(dpp);
   if (ret != 0) {
@@ -1538,14 +1536,13 @@ int DaosObject::DaosDeleteOp::delete_obj(const DoutPrefixProvider* dpp,
 
   // Remove the daos object
   dfs_obj_t* parent = nullptr;
-  std::string file_name = path;
+  fs::path path = source->get_key().to_str() + temp_suffix;
+  fs::path file_name = path.filename();
+  fs::path parent_path = path.parent_path();
 
-  size_t file_start = path.rfind("/");
-
-  if (file_start != std::string::npos) {
+  if (!parent_path.empty()) {
     // Open parent dir
-    std::string parent_path = "/" + path.substr(0, file_start);
-    file_name = path.substr(file_start + 1);
+    parent_path = fs::path("/") / parent_path;
     ret = dfs_lookup(daos_bucket->dfs, parent_path.c_str(), O_RDWR, &parent,
                      nullptr, nullptr);
     ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup parent_path=" << parent_path
@@ -1563,8 +1560,9 @@ int DaosObject::DaosDeleteOp::delete_obj(const DoutPrefixProvider* dpp,
   // result.version_id = parent_op.result.version_id;
 
   // Finalize
-  dfs_release(parent);
-  daos_bucket->close(dpp);
+  if (parent) {
+    dfs_release(parent);
+  }
   return ret;
 }
 
@@ -1760,7 +1758,18 @@ int DaosObject::close(const DoutPrefixProvider* dpp) {
     return 0;
   }
 
-  int ret = dfs_release(dfs_obj);
+  int ret = 0;
+
+  // remove the temporary file created by temp_suffix
+  if (!temp_suffix.empty()) {
+    ret = delete_obj(dpp, null_yield);
+    if (ret != 0) {
+      ldpp_dout(dpp, 20) << "DEBUG: Failed to detete temp object ret=" << ret
+                         << dendl;
+    }
+  }
+
+  ret = dfs_release(dfs_obj);
   ldpp_dout(dpp, 20) << "DEBUG: dfs_release ret=" << ret << dendl;
 
   if (ret == 0) {
@@ -1782,6 +1791,57 @@ int DaosObject::write(const DoutPrefixProvider* dpp, bufferlist&& data,
                       << get_bucket()->get_name() << ", " << get_key().to_str()
                       << "): ret=" << ret << dendl;
   }
+  return ret;
+}
+
+int DaosObject::complete_write(const DoutPrefixProvider* dpp) {
+  // Open bucket
+  int ret = 0;
+  DaosBucket* daos_bucket = source->get_daos_bucket();
+  ret = daos_bucket->open(dpp);
+  if (ret != 0) {
+    return ret;
+  }
+
+  // Rename the daos object into the final name
+  dfs_obj_t* parent = nullptr;
+  fs::path old_path = source->get_key().to_str() + temp_suffix;
+  fs::path old_file_name = old_path.filename();
+  fs::path parent_path = old_path.parent_path();
+
+  fs::path new_path = source->get_key().to_str();
+  fs::path new_file_name = new_path.filename();
+
+  if (!parent_path.empty()) {
+    // Open parent dir
+    parent_path = fs::path("/") / parent_path;
+    ret = dfs_lookup(daos_bucket->dfs, parent_path.c_str(), O_RDWR, &parent,
+                     nullptr, nullptr);
+    ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup parent_path=" << parent_path
+                       << " ret=" << ret << dendl;
+    if (ret != 0) {
+      return ret;
+    }
+  }
+
+  ret = dfs_move(daos_bucket->dfs, parent, old_file_name.c_str(), parent,
+                 new_file_name.c_str(), nullptr);
+  ldpp_dout(dpp, 20) << "DEBUG: dfs_move old_file_name=" << old_file_name
+                     << " new_file_name=" << new_file_name << " ret=" << ret
+                     << dendl;
+
+  // Update open dfs_object in case of rename
+  if (is_open()) {
+    dfs_update_parent(dfs_obj, parent, new_file_name.c_str());
+  }
+
+  // Finalize
+  if (parent) {
+    dfs_release(parent);
+  }
+
+  // Clear suffix
+  temp_suffix.clear();
   return ret;
 }
 
@@ -2035,6 +2095,7 @@ int DaosAtomicWriter::complete(
     }
   }
 
+  obj.complete_write(dpp);
   obj.close(dpp);
   return ret;
 }
@@ -2459,6 +2520,7 @@ int DaosMultipartUpload::complete(
 
   // Open object
   DaosObject* obj = static_cast<DaosObject*>(target_obj);
+  obj->generate_temp_suffix();
   ret = obj->create(dpp);
   if (ret != 0) {
     dfs_release(multipart_dir);
@@ -2505,6 +2567,7 @@ int DaosMultipartUpload::complete(
     }
   }
 
+  obj->complete_write(dpp);
   obj->close(dpp);
 
   // Remove upload from bucket multipart index
@@ -2688,6 +2751,7 @@ int DaosMultipartWriter::complete(
     }
   }
 
+  part_obj->complete_write(dpp);
   part_obj->close(dpp);
   return ret;
 }
