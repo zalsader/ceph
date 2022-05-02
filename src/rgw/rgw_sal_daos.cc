@@ -1254,6 +1254,7 @@ int DaosObject::get_obj_state(const DoutPrefixProvider* dpp,
                      << dendl;
   etag_bl.append(etag);
   state.attrset[RGW_ATTR_ETAG] = etag_bl;
+  *_state = &state;
 
   return 0;
 }
@@ -2866,7 +2867,12 @@ std::unique_ptr<Object> DaosStore::get_object(const rgw_obj_key& k) {
 int DaosStore::get_bucket(const DoutPrefixProvider* dpp, User* u,
                           const rgw_bucket& b, std::unique_ptr<Bucket>* bucket,
                           optional_yield y) {
-  ldpp_dout(dpp, 20) << "DEBUG: get_bucket1: User" << u->get_id() << dendl;
+  if (u) {
+    ldpp_dout(dpp, 20) << "DEBUG: get_bucket1: User: " << u->get_id() << dendl;
+  }
+  else {
+    ldpp_dout(dpp, 20) << "DEBUG: get_bucket1: User: (nullptr)" << dendl;
+  }
   int ret;
   Bucket* bp;
 
