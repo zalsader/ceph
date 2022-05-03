@@ -185,6 +185,11 @@ class DaosBucket : public Bucket {
 
   DaosBucket(DaosStore* _st) : store(_st), acls() {}
 
+  DaosBucket(const DaosBucket& _daos_bucket) : store(_daos_bucket.store), acls(), coh(DAOS_HDL_INVAL), dfs(nullptr) {
+    //TODO: deep copy all objects
+    //daos_duplicate_handle(_daos_bucket.coh);
+  }
+
   DaosBucket(DaosStore* _st, User* _u) : Bucket(_u), store(_st), acls() {}
 
   DaosBucket(DaosStore* _st, const rgw_bucket& _b)
@@ -267,7 +272,7 @@ class DaosBucket : public Bucket {
                               uint64_t timeout) override;
   virtual int purge_instance(const DoutPrefixProvider* dpp) override;
   virtual std::unique_ptr<Bucket> clone() override {
-    return std::make_unique<DaosBucket>(*this);
+    return std::unique_ptr<DaosBucket>(new DaosBucket(*this));
   }
   virtual std::unique_ptr<MultipartUpload> get_multipart_upload(
       const std::string& oid,
