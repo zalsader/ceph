@@ -2864,15 +2864,19 @@ std::unique_ptr<Object> DaosStore::get_object(const rgw_obj_key& k) {
   return std::make_unique<DaosObject>(this, k);
 }
 
+inline std::ostream& operator<<(std::ostream& out, const rgw_user * u) {
+  std::string s;
+  if (u != nullptr)
+    u->to_str(s);
+  else
+    s = "(nullptr)";
+  return out << s;
+}
+
 int DaosStore::get_bucket(const DoutPrefixProvider* dpp, User* u,
                           const rgw_bucket& b, std::unique_ptr<Bucket>* bucket,
                           optional_yield y) {
-  if (u) {
-    ldpp_dout(dpp, 20) << "DEBUG: get_bucket1: User: " << u->get_id() << dendl;
-  }
-  else {
-    ldpp_dout(dpp, 20) << "DEBUG: get_bucket1: User: (nullptr)" << dendl;
-  }
+  ldpp_dout(dpp, 20) << "DEBUG: get_bucket1: User: " << u << dendl;
   int ret;
   Bucket* bp;
 
