@@ -1236,6 +1236,8 @@ int DaosObject::get_obj_state(const DoutPrefixProvider* dpp,
                               bool follow_olh) {
   // Get object's metadata (those stored in rgw_bucket_dir_entry)
   rgw_bucket_dir_entry ent;
+  *_state = &state;   // state is required even if a failure occurs
+
   int ret = get_dir_entry_attrs(dpp, &ent);
   if (ret != 0) {
     return ret;
@@ -1254,8 +1256,6 @@ int DaosObject::get_obj_state(const DoutPrefixProvider* dpp,
                      << dendl;
   etag_bl.append(etag);
   state.attrset[RGW_ATTR_ETAG] = etag_bl;
-  *_state = &state;
-
   return 0;
 }
 
