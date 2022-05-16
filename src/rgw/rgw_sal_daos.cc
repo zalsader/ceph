@@ -1275,7 +1275,7 @@ int DaosObject::set_obj_attrs(const DoutPrefixProvider* dpp, Attrs* setattrs,
   }
 
   // Update object metadata
-  Attrs updateattrs = setattrs ? attrs : *setattrs;
+  Attrs updateattrs = setattrs == nullptr ? attrs : *setattrs;
   if (delattrs) {
     for (auto const& [attr, attrval] : *delattrs) {
       updateattrs.erase(attr);
