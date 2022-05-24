@@ -1236,6 +1236,8 @@ int DaosObject::get_obj_state(const DoutPrefixProvider* dpp,
                               bool follow_olh) {
   // Get object's metadata (those stored in rgw_bucket_dir_entry)
   rgw_bucket_dir_entry ent;
+  *_state = &state;   // state is required even if a failure occurs
+
   int ret = get_dir_entry_attrs(dpp, &ent);
   if (ret != 0) {
     return ret;
@@ -1254,7 +1256,6 @@ int DaosObject::get_obj_state(const DoutPrefixProvider* dpp,
                      << dendl;
   etag_bl.append(etag);
   state.attrset[RGW_ATTR_ETAG] = etag_bl;
-
   return 0;
 }
 
@@ -1274,7 +1275,7 @@ int DaosObject::set_obj_attrs(const DoutPrefixProvider* dpp, Attrs* setattrs,
   }
 
   // Update object metadata
-  Attrs updateattrs = setattrs ? attrs : *setattrs;
+  Attrs updateattrs = setattrs == nullptr ? attrs : *setattrs;
   if (delattrs) {
     for (auto const& [attr, attrval] : *delattrs) {
       updateattrs.erase(attr);
@@ -2863,10 +2864,19 @@ std::unique_ptr<Object> DaosStore::get_object(const rgw_obj_key& k) {
   return std::make_unique<DaosObject>(this, k);
 }
 
+inline std::ostream& operator<<(std::ostream& out, const rgw_user * u) {
+  std::string s;
+  if (u != nullptr)
+    u->to_str(s);
+  else
+    s = "(nullptr)";
+  return out << s;
+}
+
 int DaosStore::get_bucket(const DoutPrefixProvider* dpp, User* u,
                           const rgw_bucket& b, std::unique_ptr<Bucket>* bucket,
                           optional_yield y) {
-  ldpp_dout(dpp, 20) << "DEBUG: get_bucket1: User" << u->get_id() << dendl;
+  ldpp_dout(dpp, 20) << "DEBUG: get_bucket1: User: " << u << dendl;
   int ret;
   Bucket* bp;
 
