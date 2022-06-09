@@ -273,6 +273,8 @@ endif()
 if(WITH_RADOSGW_DAOS)
   find_package(DAOS REQUIRED)
   target_link_libraries(rgw_common PRIVATE daos dfs uuid duns)
+  target_include_directories(rgw_common PRIVATE ${PC_DAOS_INCLUDEDIR} )
+  link_directories( ${PC_DAOS_LIBRARY_DIRS} )
 endif()
 
 set(rgw_a_srcs

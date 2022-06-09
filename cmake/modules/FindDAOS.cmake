@@ -32,6 +32,9 @@ set(DAOS_INCLUDE_DIRS ${DAOS_INCLUDE_DIR} ${DAOS_FS_INCLUDE_DIR})
 set(DAOS_LIBRARIES ${DAOS_LIBRARY} ${DAOS_FS_LIBRARY} ${DAOS_UNS_LIBRARY})
 
 include(FindPackageHandleStandardArgs)
+include_directories( ${PC_DAOS_INCLUDEDIR} )
+link_directories( ${PC_DAOS_LIBDIR} )
+
 # handle the QUIETLY and REQUIRED arguments and set DAOS_FOUND to TRUE
 # if all listed variables are TRUE
 find_package_handle_standard_args(DAOS DEFAULT_MSG
