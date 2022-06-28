@@ -536,17 +536,18 @@ std::unique_ptr<DaosObject> DaosBucket::get_part_object(std::string upload_id,
 int DaosBucket::remove_bucket(const DoutPrefixProvider* dpp,
                               bool delete_children, bool forward_to_master,
                               req_info* req_info, optional_yield y) {
-  // TODO implement
+  auto poh = store->poh;
 
-  return 0;
+  return daos_cont_destroy(poh, info.bucket.name.c_str(), delete_children, NULL);
 }
 
 int DaosBucket::remove_bucket_bypass_gc(int concurrent_max,
                                         bool keep_index_consistent,
                                         optional_yield y,
                                         const DoutPrefixProvider* dpp) {
-  // TODO implement
-  return 0;
+  auto poh = store->poh;
+
+  return daos_cont_destroy(poh, info.bucket.name.c_str(), true, NULL);
 }
 
 int DaosBucket::put_info(const DoutPrefixProvider* dpp, bool exclusive,
