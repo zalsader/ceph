@@ -16,11 +16,19 @@ find_path(DAOS_FS_INCLUDE_DIR daos_fs.h
   HINTS ${PC_DAOS_INCLUDEDIR} ${PC_DAOS_INCLUDE_DIRS}
   PATHS /usr/local/include /usr/include)
 
+find_path(DAOS_FS_INCLUDE_DIR daos_s3.h
+  HINTS ${PC_DAOS_INCLUDEDIR} ${PC_DAOS_INCLUDE_DIRS}
+  PATHS /usr/local/include /usr/include)
+
 find_library(DAOS_LIBRARY NAMES daos
   HINTS ${PC_DAOS_LIBDIR} ${PC_DAOS_LIBRARY_DIRS}
   PATHS /usr/local/lib64 /usr/local/lib /usr/lib64 /usr/lib)
 
 find_library(DAOS_FS_LIBRARY NAMES dfs
+  HINTS ${PC_DAOS_LIBDIR} ${PC_DAOS_LIBRARY_DIRS}
+  PATHS /usr/local/lib64 /usr/local/lib /usr/lib64 /usr/lib)
+
+find_library(DAOS_FS_LIBRARY NAMES ds3
   HINTS ${PC_DAOS_LIBDIR} ${PC_DAOS_LIBRARY_DIRS}
   PATHS /usr/local/lib64 /usr/local/lib /usr/lib64 /usr/lib)
 

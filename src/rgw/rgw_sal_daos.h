@@ -19,6 +19,7 @@
 
 #include <daos.h>
 #include <daos_fs.h>
+#include <daos_s3.h>
 #include <uuid/uuid.h>
 
 #include <map>
