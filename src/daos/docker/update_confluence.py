@@ -1,0 +1,146 @@
+from bs4 import BeautifulSoup   # pip3 install beautifulsoup4
+import json
+import requests # pip3 install requests
+import base64
+from requests.auth import HTTPBasicAuth
+import copy
+import csv
+import sys
+
+# https://developer.atlassian.com/cloud/confluence/rest/api-group-content/#api-wiki-rest-api-content-id-put
+auth_str = "walter.warniaha@seagate.com:UBEafDH2XB36KbdPewDs2C48"
+auth_bytes = auth_str.encode('ascii')
+auth_encoded = base64.b64encode(auth_bytes)
+auth_basic = auth_encoded.decode('ascii')
+auth_token = "Basic " + auth_basic
+
+def create_payload(json_page):
+   payload_json = {
+   "version": {
+      "number": 5
+   },
+   "title": "<string>",
+   "type": "<string>",
+   "status": "current",
+   # "ancestors":[{"id":"458822","key":"PUB"}],
+   # "ancestors": [
+   #    {
+   #       "id": 2154
+   #    }
+   # ],
+    "space": {
+        "id": 458755,
+        "key": "PUB",
+    },
+   "body": {
+      #  "view": {
+      #    "value": "<string>",
+      #    "representation": "view"
+      #  },
+      #  "export_view": {
+      #    "value": "<string>",
+      #    "representation": "view"
+      #  },
+      #  "styled_view": {
+      #    "value": "<string>",
+      #    "representation": "view"
+      #  },
+      "storage": {
+         "value": "<string>",
+         "representation": "storage"
+      },
+      #  "editor": {
+      #    "value": "<string>",
+      #    "representation": "view"
+      #  },
+      #  "editor2": {
+      #    "value": "<string>",
+      #    "representation": "view"
+      #  },
+      #  "wiki": {
+      #    "value": "<string>",
+      #    "representation": "view"
+      #  },
+      #  "atlas_doc_format": {
+      #    "value": "<string>",
+      #    "representation": "view"
+      #  },
+      #  "anonymous_export_view": {
+      #    "value": "<string>",
+      #    "representation": "view"
+      }
+   }
+   payload_json["version"]["number"] = page_json["version"]["number"]
+   payload_json["space"]["id"] = page_json["space"]["id"]
+   payload_json["space"]["key"] = page_json["space"]["key"]
+   payload_json["title"] = page_json["title"]
+   payload_json["type"] = page_json["type"]
+   payload_json["status"] = page_json["status"]
+   payload_json["body"]["storage"]["value"] = page_json["body"]["storage"]["value"]
+   # print(json.dumps(payload_json))
+   return payload_json
+
+def update_page(payload):
+   new_payload = json.dumps(create_payload(payload))
+   updateurl = "https://seagate-systems.atlassian.net/wiki/rest/api/content/1069023297"
+   updateheaders = {
+      "Accept": "application/json",
+      "Content-Type": "application/json",
+      "Authorization": auth_token
+   }
+   response = requests.request("PUT", updateurl, data=new_payload, headers=updateheaders)
+   return response
+
+def get_space():
+   geturl = "https://seagate-systems.atlassian.net/wiki/rest/api/space"
+   getheaders = {
+      "Accept": "application/json",
+      "Authorization": auth_str
+   }
+   response = requests.request("GET", geturl, headers=getheaders)
+   page_json = response.text
+   page_json = json.loads(response.text)
+   return page_json
+
+def get_page_json():
+   geturl = "https://seagate-systems.atlassian.net/wiki/rest/api/content/1069023297?expand=body.storage,version,space"
+   getheaders = {
+      "Accept": "application/json",
+      "Authorization": auth_str
+   }
+   response = requests.request("GET", geturl, headers=getheaders)
+   page_json = response.text
+   page_json = json.loads(response.text)
+   return page_json
+
+def update_table_add_csv(table, csv_data):
+   tablerow = copy.copy(table.tr.next_sibling)
+   tablecolumn = tablerow.find('td')
+   for columndata in csv_data:
+      tablecolumn.string.replace_with(columndata)
+      tablecolumn = tablecolumn.next_sibling
+   table.tr.insert_after(tablerow)
+
+def get_csv_data(filename):
+   s3_summary_csv = open(filename)
+   s3_summary_reader = csv.reader(s3_summary_csv, delimiter=',')
+   csv_header = next(s3_summary_reader)
+   csv_data = next(s3_summary_reader)
+   return csv_data
+
+# page_json = get_space()
+# print(json.dumps(page_json))
+
+page_json = get_page_json()
+csv_data = get_csv_data(sys.argv[1])
+# print(json.dumps(page_json))
+soup = BeautifulSoup(page_json["body"]["storage"]["value"], 'html.parser')
+# print(soup)
+table = soup.tbody
+tableheader = table.tr.find_all('th')
+update_table_add_csv(table, csv_data)
+page_json["body"]["storage"]["value"] = str(soup)
+page_json["version"]["number"] += 1
+payload = page_json
+# print(json.dumps(payload))
+print(update_page(payload).text)
