@@ -6,9 +6,12 @@ from requests.auth import HTTPBasicAuth
 import copy
 import csv
 import sys
+import os
 
 # https://developer.atlassian.com/cloud/confluence/rest/api-group-content/#api-wiki-rest-api-content-id-put
-auth_str = "walter.warniaha@seagate.com:UBEafDH2XB36KbdPewDs2C48"
+auth_email = os.environ['CONFLUENCE_UPDATE_EMAIL']
+auth_key = os.environ['CONFLUENCE_UPDATE_KEY']
+auth_str = auth_email + ":" + auth_key
 auth_bytes = auth_str.encode('ascii')
 auth_encoded = base64.b64encode(auth_bytes)
 auth_basic = auth_encoded.decode('ascii')
@@ -114,7 +117,15 @@ def get_page_json():
    return page_json
 
 def update_table_add_csv(table, csv_data):
-   tablerow = copy.copy(table.tr.next_sibling)
+   tablerow = copy.copy(table.tr)
+   table_headers = tablerow.find_all("th")
+   for header in table_headers:
+      header.name = "td" # replaces th tag with td
+
+   strong_tags = tablerow.find_all("strong")
+   for match in strong_tags:
+      match.replaceWithChildren()
+
    tablecolumn = tablerow.find('td')
    for columndata in csv_data:
       tablecolumn.string.replace_with(columndata)
@@ -135,7 +146,7 @@ page_json = get_page_json()
 csv_data = get_csv_data(sys.argv[1])
 # print(json.dumps(page_json))
 soup = BeautifulSoup(page_json["body"]["storage"]["value"], 'html.parser')
-# print(soup)
+# print(soup.tbody)
 table = soup.tbody
 tableheader = table.tr.find_all('th')
 update_table_add_csv(table, csv_data)
@@ -143,4 +154,5 @@ page_json["body"]["storage"]["value"] = str(soup)
 page_json["version"]["number"] += 1
 payload = page_json
 # print(json.dumps(payload))
-print(update_page(payload).text)
+results = update_page(payload)
+print(results)

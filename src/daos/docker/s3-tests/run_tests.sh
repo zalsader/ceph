@@ -80,6 +80,18 @@ NOCCOLOR='\033[0m'
 #available status codes
 status_enum="ok|FAIL|ERROR|SKIP|MISSING|NOT_RUNNING|CRASHED"
 
+DAOS_BIN=''
+if [[ -e $DAOS_PATH/install/bin/dmg ]]; then
+    DAOS_BIN="$DAOS_PATH/install/bin/"
+fi
+if [[ -e $DAOS_PATH/bin/dmg ]]; then
+    DAOS_BIN="$DAOS_PATH/bin/"
+fi
+if [[ $DAOS_BIN == '' ]]; then
+    echo "dmg was not found in the usual places, exiting"
+    exit 1
+fi
+
 declare -a status
 declare -a stop
 assign_status()
@@ -117,6 +129,7 @@ skipped=0
 start_count=0
 end_count=1000000
 restart_count=0
+clean_daos=0
 while (( $# ))
     do
         case $1 in
@@ -132,6 +145,9 @@ while (( $# ))
                 assign_status $2 add_stop
                 shift
                 ;;
+            cleandaos)
+                clean_daos=1
+                ;;
             restart)
                 restart_count=$2
                 shift
@@ -143,6 +159,9 @@ while (( $# ))
             end)
                 end_count=$2
                 shift
+                ;;
+            verbose)
+                set -x
                 ;;
             *)
                 echo "Unknown option $1"
@@ -247,20 +266,55 @@ isRadosgwRunning()
     return 0
 }
 
+function wait_for()
+{
+    timeout=0
+    searchterms=$1
+    $2 &> /tmp/dmg.log
+    while true
+    do
+        for search in "${searchterms[@]}"
+        do
+            grepresult=`grep -q "$search" < /tmp/dmg.log`
+            if $grepresult ; then
+                return
+            fi
+        done
+        if [[ ! "$3" == "" ]] && [ $timeout -ge $3 ]; then
+            echo "Timeout occurred waiting for [ ${searchterms[@]} ] in /tmp/dmg.log"
+            cat /tmp/dmg.log
+            exit 1
+        fi
+        sleep 1
+        ((timeout++))
+        $2 &> /tmp/dmg.log
+    done
+}
+
 attempt_restart()
 {
     if [ $summary == 0 ];
     then
-        # attempt to retart ceph
-        echo "attempt to retart ceph"
+        echo "attempt to retart radosgw"
         local s3folder=`pwd`
         cd ${CEPH_PATH}/build
         sudo ../src/stop.sh
-        sudo rm -rf ${CEPH_PATH}/build/out/*
-        # sudo ${DAOS_PATH}/install/bin/dmg system stop
-        # sudo ${DAOS_PATH}/install/bin/dmg system erase
-        # sudo ${DAOS_PATH}/install/bin/dmg storage format --force
-        # sudo ${DAOS_PATH}/install/bin/dmg pool create --size=4GB tank
+        sudo rm -rf ${CEPH_PATH}/build/out/* /tmp/*
+        if [ $clean_daos -ne 0 ]; then
+            # sh run_tests.sh cleandaos restart 50
+            query_system="sudo ${DAOS_BIN}dmg system query"
+            sudo ${DAOS_BIN}dmg system stop
+            match=( "Stopped" "storage format required" )
+            wait_for $match "$query_system" 10
+            sudo ${DAOS_BIN}dmg system erase
+            match=( "storage format required" )
+            wait_for $match "$query_system" 10
+            sleep 10
+            sudo ${DAOS_BIN}dmg storage format --force
+            sleep 10
+            sudo ${DAOS_BIN}dmg pool create --size=4GB tank
+            sleep 5
+        fi
         sudo RGW=1 ../src/vstart.sh -d
         cd $s3folder
         sh setup.sh
