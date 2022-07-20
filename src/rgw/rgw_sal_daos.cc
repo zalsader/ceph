@@ -169,31 +169,18 @@ int DaosUser::create_bucket(
 
     // Create a new bucket:
     DaosBucket* daos_bucket = static_cast<DaosBucket*>(bucket.get());
-    ret = dfs_cont_create_with_label(store->poh, bucket->get_name().c_str(),
-                                     nullptr, nullptr, nullptr, nullptr);
-    ldpp_dout(dpp, 20) << "DEBUG: dfs_cont_create_with_label ret=" << ret
-                       << " name=" << bucket->get_name() << dendl;
+    ret = ds3_bucket_create(bucket->get_name().c_str(), nullptr, nullptr, store->ds3, nullptr);
     if (ret != 0) {
-      ldpp_dout(dpp, 0) << "ERROR: dfs_cont_create_with_label failed! ret="
+      ldpp_dout(dpp, 0) << "ERROR: ds3_bucket_create failed! ret="
                         << ret << dendl;
       return ret;
     }
+
+    // TODO move this into ds3_bucket_create
     ret = daos_bucket->put_info(dpp, y, ceph::real_time());
     if (ret != 0) {
       ldpp_dout(dpp, 0) << "ERROR: failed to put bucket info! ret=" << ret
                         << dendl;
-      return ret;
-    }
-
-    // Create multipart index
-    ret = dfs_mkdir(store->meta_dfs, store->dirs[MULTIPART_DIR],
-                    bucket->get_name().c_str(), DEFFILEMODE, 0);
-    ldpp_dout(dpp, 20) << "DEBUG: multipart index dfs_mkdir bucket="
-                       << bucket->get_name() << " ret=" << ret << dendl;
-    if (ret != 0 && ret != EEXIST) {
-      ldpp_dout(dpp, 20)
-          << "ERROR: multipart index creation failed! dfs_mkdir ret=" << ret
-          << dendl;
       return ret;
     }
   } else {
