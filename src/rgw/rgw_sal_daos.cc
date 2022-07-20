@@ -81,33 +81,29 @@ int DaosUser::list_buckets(const DoutPrefixProvider* dpp, const string& marker,
   bool is_truncated = false;
   buckets.clear();
   daos_size_t bcount = max;
-  vector<struct daos_pool_cont_info> daos_buckets(max);
+  vector<struct ds3_bucket_info> bucket_infos(max);
 
-  // XXX: Somehow handle markers and other bucket info
-  ret = daos_pool_list_cont(store->poh, &bcount, daos_buckets.data(), nullptr);
-  ldpp_dout(dpp, 20) << "DEBUG: daos_pool_list_cont: bcount=" << bcount
+  char daos_marker[DS3_MAX_KEY];
+  strcpy(daos_marker, marker.c_str());
+  ret = ds3_bucket_list(&bcount, bucket_infos.data(), daos_marker, store->ds3, nullptr);
+  ldpp_dout(dpp, 20) << "DEBUG: ds3_bucket_list: bcount=" << bcount
                      << " ret=" << ret << dendl;
   if (ret == -DER_TRUNC) {
     is_truncated = true;
   } else if (ret < 0) {
-    ldpp_dout(dpp, 0) << "ERROR: daos_pool_list_cont failed!" << ret << dendl;
+    ldpp_dout(dpp, 0) << "ERROR: ds3_bucket_list failed!" << ret << dendl;
     return ret;
   }
 
   if (!is_truncated) {
-    daos_buckets.resize(bcount);
+    bucket_infos.resize(bcount);
   }
 
-  for (const auto& db : daos_buckets) {
-    string name = db.pci_label;
-    if (name == METADATA_BUCKET) {
-      // Skip metadata bucket
-      continue;
-    }
-
+  for (const auto& bi : bucket_infos) {
     RGWBucketEnt ent = {};
-    ent.bucket.name = name;
+    ent.bucket.name = bi.name;
     DaosBucket* daos_bucket = new DaosBucket(this->store, ent, this);
+    // XXX: Get rid of this since all bucket info should be loaded in bi
     daos_bucket->load_bucket(dpp, y);
     buckets.add(std::unique_ptr<DaosBucket>(daos_bucket));
   }
