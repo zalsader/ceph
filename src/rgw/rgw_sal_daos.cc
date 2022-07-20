@@ -1038,38 +1038,12 @@ void DaosStore::finalize(void) {
   ldout(cctx, 20) << "DEBUG: finalize" << dendl;
   int ret;
 
-  for (auto const& [dir_name, dir_obj] : dirs) {
-    ret = dfs_release(dir_obj);
-    ldout(cctx, 20) << "DEBUG: dfs_release name=" << dir_name << ", ret=" << ret
-                    << dendl;
+  ret = ds3_disconnect(ds3, nullptr);
+  if (ret != 0) {
+    ldout(cctx, 0) << "ERROR: ds3_disconnect() failed: " << ret << dendl;
   }
 
-  if (meta_dfs != nullptr) {
-    ret = dfs_umount(meta_dfs);
-    if (ret < 0) {
-      ldout(cctx, 0) << "ERROR: dfs_umount() failed: " << ret << dendl;
-    }
-    meta_dfs = nullptr;
-  }
-
-  if (daos_handle_is_valid(meta_coh)) {
-    ret = daos_cont_close(meta_coh, nullptr);
-    if (ret < 0) {
-      ldout(cctx, 0) << "ERROR: daos_cont_close() failed: " << ret << dendl;
-    }
-    meta_coh = DAOS_HDL_INVAL;
-  }
-
-  if (daos_handle_is_valid(poh)) {
-    ret = daos_pool_disconnect(poh, nullptr);
-    if (ret != 0) {
-      ldout(cctx, 0) << "ERROR: daos_pool_disconnect() failed: " << ret
-                     << dendl;
-    }
-    poh = DAOS_HDL_INVAL;
-  }
-
-  ret = daos_fini();
+  ret = ds3_fini();
   if (ret != 0) {
     ldout(cctx, 0) << "ERROR: daos_fini() failed: " << ret << dendl;
   }
@@ -1077,11 +1051,11 @@ void DaosStore::finalize(void) {
 
 int DaosStore::initialize(CephContext* cct, const DoutPrefixProvider* dpp) {
   ldpp_dout(dpp, 20) << "DEBUG: initialize" << dendl;
-  int ret = daos_init();
+  int ret = ds3_init();
 
-  // DAOS init failed, allow the case where init is already done
+  // DS3 init failed, allow the case where init is already done
   if (ret != 0 && ret != DER_ALREADY) {
-    ldout(cct, 0) << "ERROR: daos_init() failed: " << ret << dendl;
+    ldout(cct, 0) << "ERROR: ds3_init() failed: " << ret << dendl;
     return ret;
   }
 
@@ -1089,77 +1063,14 @@ int DaosStore::initialize(CephContext* cct, const DoutPrefixProvider* dpp) {
   // cct somehow?
   const auto& daos_pool = g_conf().get_val<std::string>("daos_pool");
   ldout(cct, 20) << "INFO: daos pool: " << daos_pool << dendl;
-  daos_pool_info_t pool_info = {};
-  ret = daos_pool_connect(daos_pool.c_str(), nullptr, DAOS_PC_RW, &poh,
-                          &pool_info, nullptr);
+  
+  ret = ds3_connect(daos_pool.c_str(), nullptr, &ds3, nullptr);
 
   if (ret != 0) {
-    ldout(cct, 0) << "ERROR: daos_pool_connect() failed: " << ret << dendl;
-    return ret;
+    ldout(cct, 0) << "ERROR: ds3_connect() failed: " << ret << dendl;
   }
 
-  uuid_copy(pool, pool_info.pi_uuid);
-
-  // Connect to metadata container
-  // TODO use dfs_connect
-  // Attempt to create
-  ret = dfs_cont_create_with_label(poh, METADATA_BUCKET, nullptr, nullptr,
-                                   &meta_coh, &meta_dfs);
-
-  if (ret == 0) {
-    // Create inner directories
-    mode_t mode = DEFFILEMODE;
-    for (auto& dir : METADATA_DIRS) {
-      ret = dfs_mkdir(meta_dfs, nullptr, dir.c_str(), mode, 0);
-      ldout(cct, 20) << "DEBUG: dfs_mkdir dir=" << dir << " ret=" << ret
-                     << dendl;
-      if (ret != 0 && ret != EEXIST) {
-        ldout(cct, 0) << "ERROR: dfs_mkdir failed! ret=" << ret << dendl;
-        return ret;
-      }
-    }
-  } else if (ret == EEXIST) {
-    // Metadata container exists, mount it
-    ret = daos_cont_open(poh, METADATA_BUCKET, DAOS_COO_RW, &meta_coh, nullptr,
-                         nullptr);
-
-    if (ret != 0) {
-      ldout(cct, 0) << "ERROR: daos_cont_open failed! ret=" << ret << dendl;
-      return ret;
-    }
-
-    ret = dfs_mount(poh, meta_coh, O_RDWR, &meta_dfs);
-
-    if (ret != 0) {
-      ldout(cct, 0) << "ERROR: dfs_mount failed! ret=" << ret << dendl;
-      return ret;
-    }
-
-  } else {
-    ldout(cct, 0) << "ERROR: dfs_cont_create_with_label failed! ret=" << ret
-                  << dendl;
-    return ret;
-  }
-
-  // XXX: if we do this, do we need to keep everything else open?
-  rgw_bucket b;
-  b.name = METADATA_BUCKET;
-  metadata_bucket = std::make_unique<DaosBucket>(this, b);
-
-  // Open metadata dirs
-  for (auto& dir : METADATA_DIRS) {
-    dirs[dir] = nullptr;
-    ret = dfs_lookup_rel(meta_dfs, nullptr, dir.c_str(), O_RDWR, &dirs[dir],
-                         nullptr, nullptr);
-    ldout(cct, 20) << "DEBUG: dfs_lookup_rel dir=" << dir << " ret=" << ret
-                   << dendl;
-    if (ret != 0) {
-      ldout(cct, 0) << "ERROR: dfs_lookup_rel failed! ret=" << ret << dendl;
-      return ret;
-    }
-  }
-
-  return 0;
+  return ret;
 }
 
 const std::string& DaosZoneGroup::get_endpoint() const {

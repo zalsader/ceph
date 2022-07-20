@@ -870,16 +870,7 @@ class DaosStore : public Store {
   std::unique_ptr<DaosBucket> metadata_bucket;
 
  public:
-  /** UUID of the pool */
-  uuid_t pool;
-  /** Pool handle */
-  daos_handle_t poh;
-  /** Metadata bucket handle */
-  daos_handle_t meta_coh;
-  /** Metadata dfs handle */
-  dfs_t* meta_dfs = nullptr;
-  /** Metadata index directories */
-  std::map<std::string, dfs_obj_t*> dirs;
+  ds3_t *ds3 = nullptr;
 
   CephContext* cctx;
 
