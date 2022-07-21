@@ -227,7 +227,7 @@ int DaosUser::load_user(const DoutPrefixProvider* dpp, optional_yield y) {
   ldpp_dout(dpp, 20) << "DEBUG: load_user, name=" << name << dendl;
 
   DaosUserInfo duinfo;
-  int ret = store->read_user(dpp, USERS_DIR, name, &duinfo);
+  int ret = read_user(dpp, name, &duinfo);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: load_user failed, name=" << name << dendl;
     return ret;
@@ -256,7 +256,7 @@ int DaosUser::store_user(const DoutPrefixProvider* dpp, optional_yield y,
   // Read user
   int ret = 0;
   struct DaosUserInfo duinfo;
-  ret = store->read_user(dpp, USERS_DIR, name, &duinfo);
+  ret = read_user(dpp, name, &duinfo);
   obj_version obj_ver = duinfo.user_version;
 
   // Check if the user already exists
@@ -307,43 +307,36 @@ int DaosUser::store_user(const DoutPrefixProvider* dpp, optional_yield y,
 
   ret = ds3_user_set(name.c_str(), &user_info, store->ds3, nullptr);
 
+  if (ret != 0) {
+    ldpp_dout(dpp, 0) << "Error: ds3_user_set failed, name=" << name
+                      << " ret=" << ret << dendl;
+  }
+
   return ret;
 }
 
-int DaosUser::remove_user(const DoutPrefixProvider* dpp, optional_yield y) {
-  const string name = info.user_id.to_str();
+int  DaosUser::read_user(const DoutPrefixProvider* dpp,
+                std::string name, DaosUserInfo* duinfo) {
+  // Initialize ds3_user_info
+  bufferlist bl;
+  uint64_t size = DFS_MAX_XATTR_LEN;
+  struct ds3_user_info user_info = {.encoded = bl.append_hole(size).c_str(),
+                                    .encoded_length = size};
 
-  // TODO: the expectation is that the object version needs to be passed in as a
-  // method arg see int DB::remove_user(const DoutPrefixProvider *dpp,
-  // RGWUserInfo& uinfo, RGWObjVersionTracker *pobjv)
-  ldpp_dout(dpp, 20) << "DEBUG: remove_user, name=" << name << dendl;
+  int ret = ds3_user_get(name.c_str(), &user_info, store->ds3, nullptr);
 
-  // Open user file
-  dfs_obj_t* user_obj;
-  mode_t mode = DEFFILEMODE;
-  int ret =
-      dfs_open(store->ds3->meta_dfs, store->ds3->meta_dirs[USERS_DIR],
-               name.c_str(), S_IFREG | mode, O_RDWR, 0, 0, nullptr, &user_obj);
   if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: failed to open user file, name=" << name
+    ldpp_dout(dpp, 0) << "Error: ds3_user_get failed, name=" << name
                       << " ret=" << ret << dendl;
     return ret;
   }
 
-  // make sure each access_key is removed
-  for (auto it : info.access_keys) {
-    if (dfs_access(store->ds3->meta_dfs, store->ds3->meta_dirs[ACCESS_KEYS_DIR],
-                   it.first.c_str(), W_OK) == 0) {
-      ret = dfs_remove(store->ds3->meta_dfs,
-                       store->ds3->meta_dirs[ACCESS_KEYS_DIR], it.first.c_str(),
-                       true, nullptr);
-      if (ret != 0) {
-        ldpp_dout(dpp, 0) << "ERROR: failed to remove access_keys file="
-                          << it.first.c_str() << " ret=" << ret << dendl;
-        return ret;
-      }
-    }
-  }
+  // Decode
+  bufferlist& blr = bl;
+  auto iter = blr.cbegin();
+  duinfo->decode(iter);
+  return ret;
+}
 
   // email should be removed if it exists
   const string& email = info.user_email;
@@ -382,9 +375,7 @@ int DaosUser::remove_user(const DoutPrefixProvider* dpp, optional_yield y) {
   return 0;
 }
 
-DaosBucket::~DaosBucket() {
-  close(nullptr);
-}
+DaosBucket::~DaosBucket() { close(nullptr); }
 
 int DaosBucket::open(const DoutPrefixProvider* dpp) {
   ldpp_dout(dpp, 20) << "DEBUG: open, name=" << info.bucket.name.c_str() << dendl;
@@ -2629,53 +2620,6 @@ bool DaosStore::valid_placement(const rgw_placement_rule& rule) {
   return zone.zone_params->valid_placement(rule);
 }
 
-int DaosStore::read_user(const DoutPrefixProvider* dpp, enum meta_dir parent,
-                         std::string name, DaosUserInfo* duinfo) {
-  ldpp_dout(dpp, 20) << "read_user" << dendl;
-  // Open file
-  dfs_obj_t* user_obj;
-  int ret = dfs_lookup_rel(ds3->meta_dfs, ds3->meta_dirs[parent], name.c_str(),
-                           O_RDWR, &user_obj, nullptr, nullptr);
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel parent=" << parent
-                     << " name=" << name << " ret=" << ret << dendl;
-  if (ret != 0) {
-    return -ENOENT;
-  }
-
-  // Reserve buffers
-  uint64_t size = DFS_MAX_XATTR_LEN;
-  bufferlist bl;
-  d_iov_t iov;
-  d_sg_list_t rsgl;
-  d_iov_set(&iov, bl.append_hole(size).c_str(), size);
-  rsgl.sg_nr = 1;
-  rsgl.sg_iovs = &iov;
-  rsgl.sg_nr_out = 1;
-
-  // Read file
-  uint64_t actual;
-  ret = dfs_read(ds3->meta_dfs, user_obj, &rsgl, 0, &actual, nullptr);
-  if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: failed to read user file, name=" << name
-                      << " ret=" << ret << dendl;
-    return ret;
-  }
-
-  // Close file
-  ret = dfs_release(user_obj);
-  if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: dfs_release failed, user name=" << name
-                      << " ret=" << ret << dendl;
-    return ret;
-  }
-
-  // Decode
-  bufferlist& blr = bl;
-  auto iter = blr.cbegin();
-  duinfo->decode(iter);
-  return 0;
-}
-
 std::unique_ptr<User> DaosStore::get_user(const rgw_user& u) {
   ldout(cctx, 20) << "DEBUG: bucket's user:  " << u.to_str() << dendl;
   return std::make_unique<DaosUser>(this, u);
@@ -2684,14 +2628,24 @@ std::unique_ptr<User> DaosStore::get_user(const rgw_user& u) {
 int DaosStore::get_user_by_access_key(const DoutPrefixProvider* dpp,
                                       const std::string& key, optional_yield y,
                                       std::unique_ptr<User>* user) {
-  ldpp_dout(dpp, 20) << "get_user_by_access_key" << dendl;
-  DaosUserInfo duinfo;
-  int ret = read_user(dpp, ACCESS_KEYS_DIR, key, &duinfo);
+  // Initialize ds3_user_info
+  bufferlist bl;
+  uint64_t size = DFS_MAX_XATTR_LEN;
+  struct ds3_user_info user_info = {.encoded = bl.append_hole(size).c_str(),
+                                    .encoded_length = size};
+
+  int ret = ds3_user_get_by_key(key.c_str(), &user_info, ds3, nullptr);
+
   if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: get_user_by_access_key failed, key=" << key
-                      << dendl;
-    return ret;
+    ldpp_dout(dpp, 0) << "Error: ds3_user_get_by_key failed, key=" << key
+                      << " ret=" << ret << dendl;
   }
+
+  // Decode
+  DaosUserInfo duinfo;
+  bufferlist& blr = bl;
+  auto iter = blr.cbegin();
+  duinfo.decode(iter);
 
   User* u = new DaosUser(this, duinfo.info);
   if (!u) {
@@ -2705,14 +2659,24 @@ int DaosStore::get_user_by_access_key(const DoutPrefixProvider* dpp,
 int DaosStore::get_user_by_email(const DoutPrefixProvider* dpp,
                                  const std::string& email, optional_yield y,
                                  std::unique_ptr<User>* user) {
-  ldpp_dout(dpp, 20) << "get_user_by_email" << dendl;
-  DaosUserInfo duinfo;
-  int ret = read_user(dpp, EMAILS_DIR, email, &duinfo);
+  // Initialize ds3_user_info
+  bufferlist bl;
+  uint64_t size = DFS_MAX_XATTR_LEN;
+  struct ds3_user_info user_info = {.encoded = bl.append_hole(size).c_str(),
+                                    .encoded_length = size};
+
+  int ret = ds3_user_get_by_email(email.c_str(), &user_info, ds3, nullptr);
+
   if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: get_user_by_email failed, email=" << email
-                      << dendl;
-    return ret;
+    ldpp_dout(dpp, 0) << "Error: ds3_user_get_by_email failed, email=" << email
+                      << " ret=" << ret << dendl;
   }
+
+  // Decode
+  DaosUserInfo duinfo;
+  bufferlist& blr = bl;
+  auto iter = blr.cbegin();
+  duinfo.decode(iter);
 
   User* u = new DaosUser(this, duinfo.info);
   if (!u) {

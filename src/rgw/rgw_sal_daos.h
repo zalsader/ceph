@@ -199,6 +199,10 @@ class DaosUser : public User {
   virtual int remove_user(const DoutPrefixProvider* dpp,
                           optional_yield y) override;
 
+  /** Read user info without loading it */
+  int read_user(const DoutPrefixProvider* dpp,
+                std::string name, DaosUserInfo* duinfo);
+  
   friend class DaosBucket;
 };
 
@@ -1029,8 +1033,6 @@ class DaosStore : public Store {
   virtual int initialize(CephContext* cct,
                          const DoutPrefixProvider* dpp) override;
 
-  int read_user(const DoutPrefixProvider* dpp, enum meta_dir parent,
-                std::string name, DaosUserInfo* duinfo);
   DaosBucket* get_metadata_bucket();
 };
 
