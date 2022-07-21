@@ -17,9 +17,14 @@ if [ $? -ne 0 ]; then
     sudo bin/radosgw-admin user info --uid johndoe > ${s3folder}/$user_file
     if [ $? -ne 0 ]; then
         echo "failed to get info for johndoe"
-        exit $?
+        exit 1
     fi
 fi
+
+# the rest of the command should cause a failure of the script
+set -e
+trap 'echo "Failed: $BASH_COMMAND' ERR
+
 cd $s3folder
 sudo chmod 666 $user_file
 # remove all lines that start with 4 digits (log lines from the admin tool)

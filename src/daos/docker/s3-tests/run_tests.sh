@@ -291,33 +291,45 @@ function wait_for()
     done
 }
 
+restart_daos()
+{
+    # sh run_tests.sh cleandaos restart 50
+    query_system="sudo ${DAOS_BIN}dmg system query"
+    sudo ${DAOS_BIN}dmg system stop
+    match=( "Stopped" "storage format required" )
+    wait_for $match "$query_system" 10
+    sudo ${DAOS_BIN}dmg system erase
+    match=( "storage format required" )
+    wait_for $match "$query_system" 10
+    sleep 10
+    sudo ${DAOS_BIN}dmg storage format --force
+    sleep 10
+    sudo ${DAOS_BIN}dmg pool create --size=4GB tank
+    sleep 10
+}
+
 attempt_restart()
 {
     if [ $summary == 0 ];
     then
-        echo "attempt to retart radosgw"
-        local s3folder=`pwd`
-        cd ${CEPH_PATH}/build
-        sudo ../src/stop.sh
-        sudo rm -rf ${CEPH_PATH}/build/out/* /tmp/*
-        if [ $clean_daos -ne 0 ]; then
-            # sh run_tests.sh cleandaos restart 50
-            query_system="sudo ${DAOS_BIN}dmg system query"
-            sudo ${DAOS_BIN}dmg system stop
-            match=( "Stopped" "storage format required" )
-            wait_for $match "$query_system" 10
-            sudo ${DAOS_BIN}dmg system erase
-            match=( "storage format required" )
-            wait_for $match "$query_system" 10
-            sleep 10
-            sudo ${DAOS_BIN}dmg storage format --force
-            sleep 10
-            sudo ${DAOS_BIN}dmg pool create --size=4GB tank
-            sleep 5
-        fi
-        sudo RGW=1 ../src/vstart.sh -d
-        cd $s3folder
-        sh setup.sh
+        index=1
+        rados_restart=5
+        while [ $index -le $rados_restart ]; do
+            ((index++))
+            echo "attempt to retart radosgw"
+            pushd ${CEPH_PATH}/build
+            sudo ../src/stop.sh
+            sudo rm -rf ${CEPH_PATH}/build/out/* /tmp/*
+            if [ $clean_daos -ne 0 ]; then
+                restart_daos
+            fi
+            sudo RGW=1 ../src/vstart.sh -d
+            popd
+            sh setup.sh
+            if [[ $? == 0 ]]; then return; fi
+        done
+        echo "Failed to restart radosgw after $rados_restart attempts"
+        exit 1
     fi
 }
 

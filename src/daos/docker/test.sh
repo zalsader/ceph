@@ -1,11 +1,12 @@
 #!/bin/bash
+set -x
+
 if [[ $RUN_DATE == "" ]]; then
     export RUN_DATE="$(date +"%Y-%m-%d")"
 fi
 if [[ $CONTAINER_NAME == "" ]]; then
     export CONTAINER_NAME="dgws3-$RUN_DATE"
 fi
-set -x
 
 function start_docker_container()
 {
@@ -98,19 +99,71 @@ function cleanup_hugepages()
 
 function reboot_jenkins_node()
 {
+    # reboot moved to the cleanup stage in jenkins - will always reboot even if the build fails)
     # reboots the host in 30 seconds but doesn't wait (jenkins build will not fail)
     (sudo bash -c "(sleep 30 && sudo shutdown -r now) &") &
+}
+
+function get_git_status()
+{
+    pushd $1
+    local GIT_STATUS=`git status | grep -o "Your branch is up to date with"`
+    local GREP_RESULT=$?
+    popd
+    return $GREP_RESULT
+}
+
+function build_docker_images()
+{
+    DAOS_BUILT=0
+    CEPH_BUILT=0
+    get_git_status /opt/daos
+    DAOS_GIT=$?
+    docker inspect -f '{{ .Created }}' daos-rocky
+    DAOS_ROCKY=$?
+    docker inspect -f '{{ .Created }}' daos-single-host
+    DAOS_SINGLE_HOST=$?
+    if [[ $DAOS_GIT != 0 ]] || [[ $DAOS_ROCKY != 0 ]] || [[ $DAOS_SINGLE_HOST != 0 ]]; then
+        pushd daos
+        docker build https://github.com/daos-stack/daos.git#master -f utils/docker/Dockerfile.el.8 -t daos-rocky
+        if [[ ! $? == 0 ]]; then exit 1; fi
+        docker build . -t "daos-single-host"
+        if [[ ! $? == 0 ]]; then exit 1; fi
+        DAOS_BUILT=1
+        popd
+    fi
+    get_git_status /opt/ceph
+    CEPH_GIT=$?
+    docker inspect -f '{{ .Created }}' dgw-single-host
+    DGW_SINGLE=$?
+    if [[ $DAOS_BUILT != 0 ]] || [[ $CEPH_GIT != 0 ]] || [[ $DGW_SINGLE != 0 ]]; then
+        pushd ceph
+        docker build . -t "dgw-single-host"
+        if [[ ! $? == 0 ]]; then exit 1; fi
+        CEPH_BUILT=1
+        popd
+    fi
+    get_git_status /opt/s3-tests
+    S3TESTS_GIT=$?
+    docker inspect -f '{{ .Created }}' dgw-s3-tests
+    DGW_S3TESTS=$?
+    if [[ $CEPH_BUILT != 0 ]] || [[ $S3TESTS_GIT != 0 ]] || [[ $DGW_S3TESTS != 0 ]]; then
+        pushd s3-tests
+        docker build . -t "dgw-s3-tests"
+        if [[ ! $? == 0 ]]; then exit 1; fi
+        popd
+    fi
 }
 
 cleanup_hugepages
 hugepages=`grep HugePages_Free /proc/meminfo | grep -oE "[0-9]+"`
 if [ $hugepages -lt 512 ]; then
-    echo "Not enough free hugepages: $hugepages < 512, skipping run and attempting to reboot node"
+    echo "Not enough free hugepages: $hugepages < 512, skipping run, reboot node required"
 else
+    build_docker_images
     start_docker_container
     start_daos_cortx_s3tests
     copy_s3tests_artifacts
     update_confluence_s3tests_page
     # cleanup_container
 fi
-reboot_jenkins_node
