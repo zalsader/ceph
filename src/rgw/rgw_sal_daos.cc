@@ -49,16 +49,9 @@ using ::ceph::encode;
 #define RGW_DIR_ENTRY_XATTR "rgw_entry"
 #define RGW_PART_XATTR "rgw_part"
 #define METADATA_BUCKET "_METADATA"
-#define USERS_DIR "users"
-#define EMAILS_DIR "emails"
-#define ACCESS_KEYS_DIR "access_keys"
-#define MULTIPART_DIR "multipart"
 #define MULTIPART_MAX_PARTS 10000
 #define LATEST_INSTANCE "latest"
 #define LATEST_INSTANCE_SUFFIX "[latest]"
-
-static const std::string METADATA_DIRS[] = {USERS_DIR, EMAILS_DIR,
-                                            ACCESS_KEYS_DIR, MULTIPART_DIR};
 
 /**
  * Combines the vector to return a path
@@ -85,7 +78,8 @@ int DaosUser::list_buckets(const DoutPrefixProvider* dpp, const string& marker,
 
   char daos_marker[DS3_MAX_KEY];
   strcpy(daos_marker, marker.c_str());
-  ret = ds3_bucket_list(&bcount, bucket_infos.data(), daos_marker, store->ds3, nullptr);
+  ret = ds3_bucket_list(&bcount, bucket_infos.data(), daos_marker, store->ds3,
+                        nullptr);
   ldpp_dout(dpp, 20) << "DEBUG: ds3_bucket_list: bcount=" << bcount
                      << " ret=" << ret << dendl;
   if (ret == -DER_TRUNC) {
@@ -169,10 +163,11 @@ int DaosUser::create_bucket(
 
     // Create a new bucket:
     DaosBucket* daos_bucket = static_cast<DaosBucket*>(bucket.get());
-    ret = ds3_bucket_create(bucket->get_name().c_str(), nullptr, nullptr, store->ds3, nullptr);
+    ret = ds3_bucket_create(bucket->get_name().c_str(), nullptr, nullptr,
+                            store->ds3, nullptr);
     if (ret != 0) {
-      ldpp_dout(dpp, 0) << "ERROR: ds3_bucket_create failed! ret="
-                        << ret << dendl;
+      ldpp_dout(dpp, 0) << "ERROR: ds3_bucket_create failed! ret=" << ret
+                        << dendl;
       return ret;
     }
 
@@ -298,88 +293,21 @@ int DaosUser::store_user(const DoutPrefixProvider* dpp, optional_yield y,
   duinfo.user_version = obj_ver;
   duinfo.encode(bl);
 
-  // Open user file
-  dfs_obj_t* user_obj;
-  mode_t mode = DEFFILEMODE;
-  ret = dfs_open(store->meta_dfs, store->dirs[USERS_DIR], name.c_str(),
-                 S_IFREG | mode, O_RDWR | O_CREAT | O_TRUNC, 0, 0, nullptr,
-                 &user_obj);
-  if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: failed to open user file, name=" << name
-                      << " ret=" << ret << dendl;
-    return ret;
+  // Initialize ds3_user_info
+  vector<const char*> access_ids;
+  for (auto const& [id, key] : info.access_keys) {
+    access_ids.push_back(id.c_str());
   }
+  struct ds3_user_info user_info = {.name = name.c_str(),
+                                    .email = info.user_email.c_str(),
+                                    .access_ids = access_ids.data(),
+                                    .access_ids_nr = access_ids.size(),
+                                    .encoded = bl.c_str(),
+                                    .encoded_length = bl.length()};
 
-  // Write user data
-  d_sg_list_t wsgl;
-  d_iov_t iov;
-  d_iov_set(&iov, bl.c_str(), bl.length());
-  wsgl.sg_nr = 1;
-  wsgl.sg_iovs = &iov;
-  ret = dfs_write(store->meta_dfs, user_obj, &wsgl, 0, nullptr);
-  if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: failed to write to user file, name=" << name
-                      << " ret=" << ret << dendl;
-    return ret;
-  }
+  ret = ds3_user_set(name.c_str(), &user_info, store->ds3, nullptr);
 
-  // Close file
-  ret = dfs_release(user_obj);
-  if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: dfs_release failed, user name=" << name
-                      << " ret=" << ret << dendl;
-    return ret;
-  }
-
-  if (ret == 0) {
-    objv_tracker.read_version = obj_ver;
-    objv_tracker.write_version = obj_ver;
-  }
-
-  fs::path user_path = make_path({"..", USERS_DIR, name});
-
-  // Store access key in access key index
-  if (!info.access_keys.empty()) {
-    for (auto const& [id, key] : info.access_keys) {
-      ret = dfs_open(store->meta_dfs, store->dirs[ACCESS_KEYS_DIR], id.c_str(),
-                     S_IFLNK | mode, O_RDWR | O_CREAT | O_TRUNC, 0, 0,
-                     user_path.c_str(), &user_obj);
-      if (ret != 0) {
-        ldpp_dout(dpp, 0) << "ERROR: failed to create user file, id=" << id
-                          << " ret=" << ret << dendl;
-        return ret;
-      }
-
-      ret = dfs_release(user_obj);
-      if (ret != 0) {
-        ldpp_dout(dpp, 0) << "ERROR: dfs_release failed, user file, id=" << id
-                          << " ret=" << ret << dendl;
-        return ret;
-      }
-    }
-  }
-
-  // Store email in email index
-  if (!info.user_email.empty()) {
-    string& email = info.user_email;
-    ret = dfs_open(store->meta_dfs, store->dirs[EMAILS_DIR], email.c_str(),
-                   S_IFLNK | mode, O_RDWR | O_CREAT | O_TRUNC, 0, 0,
-                   user_path.c_str(), &user_obj);
-    if (ret != 0) {
-      ldpp_dout(dpp, 0) << "ERROR: failed to create user file, email=" << email
-                        << " ret=" << ret << dendl;
-      return ret;
-    }
-
-    ret = dfs_release(user_obj);
-    if (ret != 0) {
-      ldpp_dout(dpp, 0) << "ERROR: dfs_release failed, user file, email="
-                        << email << " ret=" << ret << dendl;
-      return ret;
-    }
-  }
-
-  return 0;
+  return ret;
 }
 
 int DaosUser::remove_user(const DoutPrefixProvider* dpp, optional_yield y) {
@@ -393,8 +321,9 @@ int DaosUser::remove_user(const DoutPrefixProvider* dpp, optional_yield y) {
   // Open user file
   dfs_obj_t* user_obj;
   mode_t mode = DEFFILEMODE;
-  int ret = dfs_open(store->meta_dfs, store->dirs[USERS_DIR], name.c_str(),
-                     S_IFREG | mode, O_RDWR, 0, 0, nullptr, &user_obj);
+  int ret =
+      dfs_open(store->ds3->meta_dfs, store->ds3->meta_dirs[USERS_DIR],
+               name.c_str(), S_IFREG | mode, O_RDWR, 0, 0, nullptr, &user_obj);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to open user file, name=" << name
                       << " ret=" << ret << dendl;
@@ -403,10 +332,11 @@ int DaosUser::remove_user(const DoutPrefixProvider* dpp, optional_yield y) {
 
   // make sure each access_key is removed
   for (auto it : info.access_keys) {
-    if (dfs_access(store->meta_dfs, store->dirs[ACCESS_KEYS_DIR],
+    if (dfs_access(store->ds3->meta_dfs, store->ds3->meta_dirs[ACCESS_KEYS_DIR],
                    it.first.c_str(), W_OK) == 0) {
-      ret = dfs_remove(store->meta_dfs, store->dirs[ACCESS_KEYS_DIR],
-                       it.first.c_str(), true, nullptr);
+      ret = dfs_remove(store->ds3->meta_dfs,
+                       store->ds3->meta_dirs[ACCESS_KEYS_DIR], it.first.c_str(),
+                       true, nullptr);
       if (ret != 0) {
         ldpp_dout(dpp, 0) << "ERROR: failed to remove access_keys file="
                           << it.first.c_str() << " ret=" << ret << dendl;
@@ -418,10 +348,10 @@ int DaosUser::remove_user(const DoutPrefixProvider* dpp, optional_yield y) {
   // email should be removed if it exists
   const string& email = info.user_email;
   if (email.length() > 0) {
-    if (dfs_access(store->meta_dfs, store->dirs[EMAILS_DIR], email.c_str(),
-                   W_OK) == 0) {
-      ret = dfs_remove(store->meta_dfs, store->dirs[EMAILS_DIR], email.c_str(),
-                       true, nullptr);
+    if (dfs_access(store->ds3->meta_dfs, store->ds3->meta_dirs[EMAILS_DIR],
+                   email.c_str(), W_OK) == 0) {
+      ret = dfs_remove(store->ds3->meta_dfs, store->ds3->meta_dirs[EMAILS_DIR],
+                       email.c_str(), true, nullptr);
       if (ret != 0) {
         ldpp_dout(dpp, 0) << "ERROR: failed to remove email file, email="
                           << email << " ret=" << ret << dendl;
@@ -431,10 +361,10 @@ int DaosUser::remove_user(const DoutPrefixProvider* dpp, optional_yield y) {
   }
 
   // and remove the user object
-  if (dfs_access(store->meta_dfs, store->dirs[USERS_DIR], name.c_str(), W_OK) ==
-      0) {
-    ret = dfs_remove(store->meta_dfs, store->dirs[USERS_DIR], name.c_str(),
-                     true, nullptr);
+  if (dfs_access(store->ds3->meta_dfs, store->ds3->meta_dirs[USERS_DIR],
+                 name.c_str(), W_OK) == 0) {
+    ret = dfs_remove(store->ds3->meta_dfs, store->ds3->meta_dirs[USERS_DIR],
+                     name.c_str(), true, nullptr);
     if (ret != 0) {
       ldpp_dout(dpp, 0) << "ERROR: failed to remove user file, name=" << name
                         << " ret=" << ret << dendl;
@@ -466,8 +396,8 @@ int DaosBucket::open(const DoutPrefixProvider* dpp) {
   int ret;
   daos_cont_info_t cont_info;
   // TODO: We need to cache open container handles
-  ret = daos_cont_open(store->poh, info.bucket.name.c_str(), DAOS_COO_RW, &coh,
-                       &cont_info, nullptr);
+  ret = daos_cont_open(store->ds3->poh, info.bucket.name.c_str(), DAOS_COO_RW,
+                       &coh, &cont_info, nullptr);
   ldpp_dout(dpp, 20) << "DEBUG: daos_cont_open, name=" << info.bucket.name
                      << ", ret=" << ret << dendl;
 
@@ -477,7 +407,7 @@ int DaosBucket::open(const DoutPrefixProvider* dpp) {
 
   uuid_copy(cont_uuid, cont_info.ci_uuid);
 
-  ret = dfs_mount(store->poh, coh, O_RDWR, &dfs);
+  ret = dfs_mount(store->ds3->poh, coh, O_RDWR, &dfs);
   ldpp_dout(dpp, 20) << "DEBUG: dfs_mount ret=" << ret << dendl;
 
   if (ret != 0) {
@@ -515,8 +445,8 @@ int DaosBucket::close(const DoutPrefixProvider* dpp) {
 std::unique_ptr<DaosObject> DaosBucket::get_part_object(std::string upload_id,
                                                         uint64_t part_num) {
   // XXX: create a util for path build
-  fs::path part_path = make_path(
-      {MULTIPART_DIR, get_name(), upload_id, std::to_string(part_num)});
+  fs::path part_path =
+      make_path({"multipart", get_name(), upload_id, std::to_string(part_num)});
   rgw_obj_key k;
   k.name = part_path.string();
   return std::make_unique<DaosObject>(store, k, store->get_metadata_bucket());
@@ -913,9 +843,9 @@ int DaosBucket::list_multiparts(
   }
 
   dfs_obj_t* multipart_dir;
-  ret = dfs_lookup_rel(store->meta_dfs, store->dirs[MULTIPART_DIR],
-                       get_name().c_str(), O_RDWR, &multipart_dir, nullptr,
-                       nullptr);
+  ret = dfs_lookup_rel(store->ds3->meta_dfs,
+                       store->ds3->meta_dirs[MULTIPART_DIR], get_name().c_str(),
+                       O_RDWR, &multipart_dir, nullptr, nullptr);
   ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel bucket=" << get_name()
                      << " ret=" << ret << dendl;
   if (ret != 0) {
@@ -928,8 +858,8 @@ int DaosBucket::list_multiparts(
   daos_anchor_init(&anchor, 0);
 
   uint32_t nr = dirents.size();
-  ret =
-      dfs_readdir(store->meta_dfs, multipart_dir, &anchor, &nr, dirents.data());
+  ret = dfs_readdir(store->ds3->meta_dfs, multipart_dir, &anchor, &nr,
+                    dirents.data());
   ldpp_dout(dpp, 20) << "DEBUG: dfs_readdir bucket=" << get_name()
                      << " nr=" << nr << " ret=" << ret << dendl;
   if (ret != 0) {
@@ -945,7 +875,7 @@ int DaosBucket::list_multiparts(
 
     // Open upload dir
     dfs_obj_t* upload_dir;
-    ret = dfs_lookup_rel(store->meta_dfs, multipart_dir, upload_id, O_RDWR,
+    ret = dfs_lookup_rel(store->ds3->meta_dfs, multipart_dir, upload_id, O_RDWR,
                          &upload_dir, nullptr, nullptr);
     ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel i=" << i
                        << " upload_id=" << upload_id << " ret=" << ret << dendl;
@@ -956,7 +886,7 @@ int DaosBucket::list_multiparts(
     // Read the xattr
     vector<uint8_t> value(DFS_MAX_XATTR_LEN);
     size_t size = value.size();
-    ret = dfs_getxattr(store->meta_dfs, upload_dir, RGW_DIR_ENTRY_XATTR,
+    ret = dfs_getxattr(store->ds3->meta_dfs, upload_dir, RGW_DIR_ENTRY_XATTR,
                        value.data(), &size);
     ldpp_dout(dpp, 20) << "DEBUG: dfs_getxattr upload_id=" << upload_id
                        << " xattr=" << RGW_DIR_ENTRY_XATTR << dendl;
@@ -1046,7 +976,7 @@ int DaosStore::initialize(CephContext* cct, const DoutPrefixProvider* dpp) {
   // cct somehow?
   const auto& daos_pool = g_conf().get_val<std::string>("daos_pool");
   ldout(cct, 20) << "INFO: daos pool: " << daos_pool << dendl;
-  
+
   ret = ds3_connect(daos_pool.c_str(), nullptr, &ds3, nullptr);
 
   if (ret != 0) {
@@ -1132,9 +1062,7 @@ bool DaosZone::is_writeable() { return true; }
 
 bool DaosZone::get_redirect_endpoint(std::string* endpoint) { return false; }
 
-bool DaosZone::has_zonegroup_api(const std::string& api) const {
-  return false;
-}
+bool DaosZone::has_zonegroup_api(const std::string& api) const { return false; }
 
 const std::string& DaosZone::get_current_period_id() {
   return current_period->get_id();
@@ -1150,7 +1078,7 @@ int DaosObject::get_obj_state(const DoutPrefixProvider* dpp,
   // Get object's metadata (those stored in rgw_bucket_dir_entry)
   ldpp_dout(dpp, 20) << "DEBUG: get_obj_state" << dendl;
   rgw_bucket_dir_entry ent;
-  *_state = &state;   // state is required even if a failure occurs
+  *_state = &state;  // state is required even if a failure occurs
 
   int ret = get_dir_entry_attrs(dpp, &ent);
   if (ret != 0) {
@@ -1173,9 +1101,7 @@ int DaosObject::get_obj_state(const DoutPrefixProvider* dpp,
   return 0;
 }
 
-DaosObject::~DaosObject() {
-  close(nullptr);
-}
+DaosObject::~DaosObject() { close(nullptr); }
 
 int DaosObject::set_obj_attrs(const DoutPrefixProvider* dpp, Attrs* setattrs,
                               Attrs* delattrs, optional_yield y) {
@@ -1978,10 +1904,10 @@ int DaosMultipartUpload::abort(const DoutPrefixProvider* dpp,
   // Remove upload from bucket multipart index
   ldpp_dout(dpp, 20) << "DEBUG: abort" << dendl;
   dfs_obj_t* multipart_dir;
-  int ret = dfs_lookup_rel(store->meta_dfs, store->dirs[MULTIPART_DIR],
-                           bucket->get_name().c_str(), O_RDWR, &multipart_dir,
-                           nullptr, nullptr);
-  ret = dfs_remove(store->meta_dfs, multipart_dir, get_upload_id().c_str(),
+  int ret = dfs_lookup_rel(
+      store->ds3->meta_dfs, store->ds3->meta_dirs[MULTIPART_DIR],
+      bucket->get_name().c_str(), O_RDWR, &multipart_dir, nullptr, nullptr);
+  ret = dfs_remove(store->ds3->meta_dfs, multipart_dir, get_upload_id().c_str(),
                    true, nullptr);
   dfs_release(multipart_dir);
   return ret;
@@ -2002,9 +1928,9 @@ int DaosMultipartUpload::init(const DoutPrefixProvider* dpp, optional_yield y,
   int ret;
   std::string oid = mp_obj.get_key();
   dfs_obj_t* multipart_dir;
-  ret = dfs_lookup_rel(store->meta_dfs, store->dirs[MULTIPART_DIR],
-                       bucket->get_name().c_str(), O_RDWR, &multipart_dir,
-                       nullptr, nullptr);
+  ret = dfs_lookup_rel(
+      store->ds3->meta_dfs, store->ds3->meta_dirs[MULTIPART_DIR],
+      bucket->get_name().c_str(), O_RDWR, &multipart_dir, nullptr, nullptr);
   ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel multipart dir for bucket="
                      << bucket->get_name() << " ret=" << ret << dendl;
 
@@ -2017,7 +1943,7 @@ int DaosMultipartUpload::init(const DoutPrefixProvider* dpp, optional_yield y,
     mp_obj.init(oid, upload_id);
 
     // Create meta index
-    ret = dfs_mkdir(store->meta_dfs, multipart_dir, upload_id.c_str(),
+    ret = dfs_mkdir(store->ds3->meta_dfs, multipart_dir, upload_id.c_str(),
                     DEFFILEMODE, 0);
   } while (ret == EEXIST);
 
@@ -2048,10 +1974,11 @@ int DaosMultipartUpload::init(const DoutPrefixProvider* dpp, optional_yield y,
 
   // Insert an entry into bucket multipart index
   dfs_obj_t* upload_dir;
-  ret = dfs_lookup_rel(store->meta_dfs, multipart_dir, get_upload_id().c_str(),
-                       O_RDWR, &upload_dir, nullptr, nullptr);
+  ret = dfs_lookup_rel(store->ds3->meta_dfs, multipart_dir,
+                       get_upload_id().c_str(), O_RDWR, &upload_dir, nullptr,
+                       nullptr);
 
-  ret = dfs_setxattr(store->meta_dfs, upload_dir, RGW_DIR_ENTRY_XATTR,
+  ret = dfs_setxattr(store->ds3->meta_dfs, upload_dir, RGW_DIR_ENTRY_XATTR,
                      bl.c_str(), bl.length(), 0);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to set xattr of multipart upload dir ("
@@ -2073,13 +2000,14 @@ int DaosMultipartUpload::list_parts(const DoutPrefixProvider* dpp,
   ldpp_dout(dpp, 20) << "DEBUG: list_parts" << dendl;
   dfs_obj_t* multipart_dir;
   dfs_obj_t* upload_dir;
-  int ret = dfs_lookup_rel(store->meta_dfs, store->dirs[MULTIPART_DIR],
-                           bucket->get_name().c_str(), O_RDWR, &multipart_dir,
-                           nullptr, nullptr);
+  int ret = dfs_lookup_rel(
+      store->ds3->meta_dfs, store->ds3->meta_dirs[MULTIPART_DIR],
+      bucket->get_name().c_str(), O_RDWR, &multipart_dir, nullptr, nullptr);
   ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel entry=" << bucket->get_name()
                      << " ret=" << ret << dendl;
-  ret = dfs_lookup_rel(store->meta_dfs, multipart_dir, get_upload_id().c_str(),
-                       O_RDWR, &upload_dir, nullptr, nullptr);
+  ret = dfs_lookup_rel(store->ds3->meta_dfs, multipart_dir,
+                       get_upload_id().c_str(), O_RDWR, &upload_dir, nullptr,
+                       nullptr);
   ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel entry=" << get_upload_id()
                      << " ret=" << ret << dendl;
   if (ret != 0) {
@@ -2095,7 +2023,8 @@ int DaosMultipartUpload::list_parts(const DoutPrefixProvider* dpp,
   daos_anchor_init(&anchor, 0);
 
   uint32_t nr = dirents.size();
-  ret = dfs_readdir(store->meta_dfs, upload_dir, &anchor, &nr, dirents.data());
+  ret = dfs_readdir(store->ds3->meta_dfs, upload_dir, &anchor, &nr,
+                    dirents.data());
   ldpp_dout(dpp, 20) << "DEBUG: dfs_readdir name=" << get_upload_id()
                      << " nr=" << nr << " ret=" << ret << dendl;
   if (ret != 0) {
@@ -2122,7 +2051,7 @@ int DaosMultipartUpload::list_parts(const DoutPrefixProvider* dpp,
     }
 
     dfs_obj_t* part_obj;
-    ret = dfs_lookup_rel(store->meta_dfs, upload_dir, part_name, O_RDWR,
+    ret = dfs_lookup_rel(store->ds3->meta_dfs, upload_dir, part_name, O_RDWR,
                          &part_obj, nullptr, nullptr);
     ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel i=" << i
                        << " entry=" << part_name << " ret=" << ret << dendl;
@@ -2133,8 +2062,8 @@ int DaosMultipartUpload::list_parts(const DoutPrefixProvider* dpp,
     // The entry is a regular file, read the xattr and add to objs
     vector<uint8_t> value(DFS_MAX_XATTR_LEN);
     size_t size = value.size();
-    ret = dfs_getxattr(store->meta_dfs, part_obj, RGW_PART_XATTR, value.data(),
-                       &size);
+    ret = dfs_getxattr(store->ds3->meta_dfs, part_obj, RGW_PART_XATTR,
+                       value.data(), &size);
     ldpp_dout(dpp, 20) << "DEBUG: dfs_getxattr entry=" << part_name
                        << " xattr=" << RGW_PART_XATTR << dendl;
     // Skip if the part has no info
@@ -2347,13 +2276,14 @@ int DaosMultipartUpload::complete(
   // Read the object's multipart info
   dfs_obj_t* multipart_dir;
   dfs_obj_t* upload_dir;
-  ret = dfs_lookup_rel(store->meta_dfs, store->dirs[MULTIPART_DIR],
-                       bucket->get_name().c_str(), O_RDWR, &multipart_dir,
-                       nullptr, nullptr);
+  ret = dfs_lookup_rel(
+      store->ds3->meta_dfs, store->ds3->meta_dirs[MULTIPART_DIR],
+      bucket->get_name().c_str(), O_RDWR, &multipart_dir, nullptr, nullptr);
   ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel entry=" << bucket->get_name()
                      << " ret=" << ret << dendl;
-  ret = dfs_lookup_rel(store->meta_dfs, multipart_dir, get_upload_id().c_str(),
-                       O_RDWR, &upload_dir, nullptr, nullptr);
+  ret = dfs_lookup_rel(store->ds3->meta_dfs, multipart_dir,
+                       get_upload_id().c_str(), O_RDWR, &upload_dir, nullptr,
+                       nullptr);
   ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel entry=" << get_upload_id()
                      << " ret=" << ret << dendl;
   if (ret != 0) {
@@ -2366,7 +2296,7 @@ int DaosMultipartUpload::complete(
 
   vector<uint8_t> value(DFS_MAX_XATTR_LEN);
   size_t size = value.size();
-  ret = dfs_getxattr(store->meta_dfs, upload_dir, RGW_DIR_ENTRY_XATTR,
+  ret = dfs_getxattr(store->ds3->meta_dfs, upload_dir, RGW_DIR_ENTRY_XATTR,
                      value.data(), &size);
   ldpp_dout(dpp, 20) << "DEBUG: dfs_getxattr entry=" << bucket->get_name()
                      << "/" << get_upload_id()
@@ -2446,7 +2376,7 @@ int DaosMultipartUpload::complete(
   obj->close(dpp);
 
   // Remove upload from bucket multipart index
-  ret = dfs_remove(store->meta_dfs, multipart_dir, get_upload_id().c_str(),
+  ret = dfs_remove(store->ds3->meta_dfs, multipart_dir, get_upload_id().c_str(),
                    true, nullptr);
   dfs_release(multipart_dir);
   return ret;
@@ -2476,13 +2406,14 @@ int DaosMultipartUpload::get_info(const DoutPrefixProvider* dpp,
 
   dfs_obj_t* multipart_dir;
   dfs_obj_t* upload_dir;
-  int ret = dfs_lookup_rel(store->meta_dfs, store->dirs[MULTIPART_DIR],
-                           bucket->get_name().c_str(), O_RDWR, &multipart_dir,
-                           nullptr, nullptr);
+  int ret = dfs_lookup_rel(
+      store->ds3->meta_dfs, store->ds3->meta_dirs[MULTIPART_DIR],
+      bucket->get_name().c_str(), O_RDWR, &multipart_dir, nullptr, nullptr);
   ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel entry=" << bucket->get_name()
                      << " ret=" << ret << dendl;
-  ret = dfs_lookup_rel(store->meta_dfs, multipart_dir, get_upload_id().c_str(),
-                       O_RDWR, &upload_dir, nullptr, nullptr);
+  ret = dfs_lookup_rel(store->ds3->meta_dfs, multipart_dir,
+                       get_upload_id().c_str(), O_RDWR, &upload_dir, nullptr,
+                       nullptr);
   ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel entry=" << get_upload_id()
                      << " ret=" << ret << dendl;
   if (ret != 0) {
@@ -2495,7 +2426,7 @@ int DaosMultipartUpload::get_info(const DoutPrefixProvider* dpp,
 
   vector<uint8_t> value(DFS_MAX_XATTR_LEN);
   size_t size = value.size();
-  ret = dfs_getxattr(store->meta_dfs, upload_dir, RGW_DIR_ENTRY_XATTR,
+  ret = dfs_getxattr(store->ds3->meta_dfs, upload_dir, RGW_DIR_ENTRY_XATTR,
                      value.data(), &size);
   ldpp_dout(dpp, 20) << "DEBUG: dfs_getxattr entry=" << bucket->get_name()
                      << "/" << get_upload_id()
@@ -2615,7 +2546,7 @@ int DaosMultipartWriter::complete(
   ldpp_dout(dpp, 20) << "DaosMultipartWriter::complete(): entry size"
                      << bl.length() << dendl;
 
-  ret = dfs_setxattr(store->meta_dfs, part_obj->dfs_obj, RGW_PART_XATTR,
+  ret = dfs_setxattr(store->ds3->meta_dfs, part_obj->dfs_obj, RGW_PART_XATTR,
                      bl.c_str(), bl.length(), 0);
 
   if (ret != 0) {
@@ -2698,13 +2629,13 @@ bool DaosStore::valid_placement(const rgw_placement_rule& rule) {
   return zone.zone_params->valid_placement(rule);
 }
 
-int DaosStore::read_user(const DoutPrefixProvider* dpp, std::string parent,
+int DaosStore::read_user(const DoutPrefixProvider* dpp, enum meta_dir parent,
                          std::string name, DaosUserInfo* duinfo) {
   ldpp_dout(dpp, 20) << "read_user" << dendl;
   // Open file
   dfs_obj_t* user_obj;
-  int ret = dfs_lookup_rel(meta_dfs, dirs[parent], name.c_str(), O_RDWR,
-                           &user_obj, nullptr, nullptr);
+  int ret = dfs_lookup_rel(ds3->meta_dfs, ds3->meta_dirs[parent], name.c_str(),
+                           O_RDWR, &user_obj, nullptr, nullptr);
   ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel parent=" << parent
                      << " name=" << name << " ret=" << ret << dendl;
   if (ret != 0) {
@@ -2723,7 +2654,7 @@ int DaosStore::read_user(const DoutPrefixProvider* dpp, std::string parent,
 
   // Read file
   uint64_t actual;
-  ret = dfs_read(meta_dfs, user_obj, &rsgl, 0, &actual, nullptr);
+  ret = dfs_read(ds3->meta_dfs, user_obj, &rsgl, 0, &actual, nullptr);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to read user file, name=" << name
                       << " ret=" << ret << dendl;
@@ -2803,7 +2734,7 @@ std::unique_ptr<Object> DaosStore::get_object(const rgw_obj_key& k) {
   return std::make_unique<DaosObject>(this, k);
 }
 
-inline std::ostream& operator<<(std::ostream& out, const rgw_user * u) {
+inline std::ostream& operator<<(std::ostream& out, const rgw_user* u) {
   std::string s;
   if (u != nullptr)
     u->to_str(s);

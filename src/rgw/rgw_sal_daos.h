@@ -1029,7 +1029,7 @@ class DaosStore : public Store {
   virtual int initialize(CephContext* cct,
                          const DoutPrefixProvider* dpp) override;
 
-  int read_user(const DoutPrefixProvider* dpp, std::string parent,
+  int read_user(const DoutPrefixProvider* dpp, enum meta_dir parent,
                 std::string name, DaosUserInfo* duinfo);
   DaosBucket* get_metadata_bucket();
 };
