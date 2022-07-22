@@ -211,37 +211,37 @@ int DaosUser::create_bucket(
 }
 
 int DaosUser::read_attrs(const DoutPrefixProvider* dpp, optional_yield y) {
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 int DaosUser::read_stats(const DoutPrefixProvider* dpp, optional_yield y,
                          RGWStorageStats* stats,
                          ceph::real_time* last_stats_sync,
                          ceph::real_time* last_stats_update) {
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 /* stats - Not for first pass */
 int DaosUser::read_stats_async(const DoutPrefixProvider* dpp,
                                RGWGetUserStats_CB* cb) {
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 int DaosUser::complete_flush_stats(const DoutPrefixProvider* dpp,
                                    optional_yield y) {
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 int DaosUser::read_usage(const DoutPrefixProvider* dpp, uint64_t start_epoch,
                          uint64_t end_epoch, uint32_t max_entries,
                          bool* is_truncated, RGWUsageIter& usage_iter,
                          map<rgw_user_bucket, rgw_usage_log_entry>& usage) {
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 int DaosUser::trim_usage(const DoutPrefixProvider* dpp, uint64_t start_epoch,
                          uint64_t end_epoch) {
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 int DaosUser::load_user(const DoutPrefixProvider* dpp, optional_yield y) {
@@ -538,7 +538,7 @@ int DaosBucket::remove_bucket(const DoutPrefixProvider* dpp,
                               req_info* req_info, optional_yield y) {
   // TODO implement
 
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 int DaosBucket::remove_bucket_bypass_gc(int concurrent_max,
@@ -546,7 +546,7 @@ int DaosBucket::remove_bucket_bypass_gc(int concurrent_max,
                                         optional_yield y,
                                         const DoutPrefixProvider* dpp) {
   // TODO implement
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 int DaosBucket::put_info(const DoutPrefixProvider* dpp, bool exclusive,
@@ -630,30 +630,30 @@ int DaosBucket::read_stats(const DoutPrefixProvider* dpp, int shard_id,
                            std::string* bucket_ver, std::string* master_ver,
                            std::map<RGWObjCategory, RGWStorageStats>& stats,
                            std::string* max_marker, bool* syncstopped) {
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 int DaosBucket::read_stats_async(const DoutPrefixProvider* dpp, int shard_id,
                                  RGWGetBucketStats_CB* ctx) {
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 int DaosBucket::sync_user_stats(const DoutPrefixProvider* dpp,
                                 optional_yield y) {
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 int DaosBucket::update_container_stats(const DoutPrefixProvider* dpp) {
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
-int DaosBucket::check_bucket_shards(const DoutPrefixProvider* dpp) { return 0; }
+int DaosBucket::check_bucket_shards(const DoutPrefixProvider* dpp) { return DAOS_NOT_IMPLEMENTED_LOG(dpp); }
 
 int DaosBucket::chown(const DoutPrefixProvider* dpp, User* new_user,
                       User* old_user, optional_yield y,
                       const std::string* marker) {
   /* XXX: Update policies of all the bucket->objects with new user */
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 /* Make sure to call load_bucket() if you need it first */
@@ -663,7 +663,7 @@ bool DaosBucket::is_owner(User* user) {
 
 int DaosBucket::check_empty(const DoutPrefixProvider* dpp, optional_yield y) {
   /* XXX: Check if bucket contains any objects */
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 int DaosBucket::check_quota(const DoutPrefixProvider* dpp,
@@ -671,7 +671,7 @@ int DaosBucket::check_quota(const DoutPrefixProvider* dpp,
                             RGWQuotaInfo& bucket_quota, uint64_t obj_size,
                             optional_yield y, bool check_size_only) {
   /* Not Handled in the first pass as stats are also needed */
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 int DaosBucket::merge_and_store_attrs(const DoutPrefixProvider* dpp,
@@ -685,7 +685,7 @@ int DaosBucket::merge_and_store_attrs(const DoutPrefixProvider* dpp,
 
 int DaosBucket::try_refresh_info(const DoutPrefixProvider* dpp,
                                  ceph::real_time* pmtime) {
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 /* XXX: usage and stats not supported in the first pass */
@@ -693,12 +693,12 @@ int DaosBucket::read_usage(const DoutPrefixProvider* dpp, uint64_t start_epoch,
                            uint64_t end_epoch, uint32_t max_entries,
                            bool* is_truncated, RGWUsageIter& usage_iter,
                            map<rgw_user_bucket, rgw_usage_log_entry>& usage) {
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 int DaosBucket::trim_usage(const DoutPrefixProvider* dpp, uint64_t start_epoch,
                            uint64_t end_epoch) {
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 int DaosBucket::remove_objs_from_index(
@@ -708,7 +708,7 @@ int DaosBucket::remove_objs_from_index(
    * Delete all the object in the list from the object table of this
    * bucket
    */
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 int DaosBucket::check_index(
@@ -716,25 +716,25 @@ int DaosBucket::check_index(
     std::map<RGWObjCategory, RGWStorageStats>& existing_stats,
     std::map<RGWObjCategory, RGWStorageStats>& calculated_stats) {
   /* XXX: stats not supported yet */
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 int DaosBucket::rebuild_index(const DoutPrefixProvider* dpp) {
   /* there is no index table in DAOS. Not applicable */
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 int DaosBucket::set_tag_timeout(const DoutPrefixProvider* dpp,
                                 uint64_t timeout) {
   /* XXX: CHECK: set tag timeout for all the bucket objects? */
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 int DaosBucket::purge_instance(const DoutPrefixProvider* dpp) {
   /* XXX: CHECK: for DAOS only single instance supported.
    * Remove all the objects for that instance? Anything extra needed?
    */
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 int DaosBucket::set_acl(const DoutPrefixProvider* dpp,
@@ -1018,7 +1018,7 @@ int DaosBucket::list_multiparts(
 
 int DaosBucket::abort_multiparts(const DoutPrefixProvider* dpp,
                                  CephContext* cct) {
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 void DaosStore::finalize(void) {
@@ -1362,26 +1362,26 @@ int DaosObject::omap_get_vals(const DoutPrefixProvider* dpp,
                               const std::string& marker, uint64_t count,
                               std::map<std::string, bufferlist>* m, bool* pmore,
                               optional_yield y) {
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 int DaosObject::omap_get_all(const DoutPrefixProvider* dpp,
                              std::map<std::string, bufferlist>* m,
                              optional_yield y) {
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 int DaosObject::omap_get_vals_by_keys(const DoutPrefixProvider* dpp,
                                       const std::string& oid,
                                       const std::set<std::string>& keys,
                                       Attrs* vals) {
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 int DaosObject::omap_set_val_by_key(const DoutPrefixProvider* dpp,
                                     const std::string& key, bufferlist& val,
                                     bool must_exist, optional_yield y) {
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 MPSerializer* DaosObject::get_serializer(const DoutPrefixProvider* dpp,
@@ -1393,14 +1393,14 @@ int DaosObject::transition(Bucket* bucket,
                            const rgw_placement_rule& placement_rule,
                            const real_time& mtime, uint64_t olh_epoch,
                            const DoutPrefixProvider* dpp, optional_yield y) {
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 int DaosObject::transition_to_cloud(
     Bucket* bucket, rgw::sal::PlacementTier* tier, rgw_bucket_dir_entry& o,
     std::set<std::string>& cloud_targets, CephContext* cct, bool update_object,
     const DoutPrefixProvider* dpp, optional_yield y) {
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 bool DaosObject::placement_rules_match(rgw_placement_rule& r1,
@@ -1411,7 +1411,7 @@ bool DaosObject::placement_rules_match(rgw_placement_rule& r1,
 
 int DaosObject::dump_obj_layout(const DoutPrefixProvider* dpp, optional_yield y,
                                 Formatter* f) {
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 std::unique_ptr<Object::ReadOp> DaosObject::get_read_op() {
@@ -1456,7 +1456,7 @@ int DaosObject::DaosReadOp::read(int64_t off, int64_t end, bufferlist& bl,
                                  optional_yield y,
                                  const DoutPrefixProvider* dpp) {
   ldpp_dout(dpp, 20) << "DaosReadOp::read(): sync read." << dendl;
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 // RGWGetObj::execute() calls ReadOp::iterate() to read object from 'off' to
@@ -1586,7 +1586,7 @@ int DaosObject::delete_obj_aio(const DoutPrefixProvider* dpp,
                                RGWObjState* astate, Completions* aio,
                                bool keep_index_consistent, optional_yield y) {
   /* XXX: Make it async */
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 int DaosObject::copy_object(
@@ -1601,22 +1601,22 @@ int DaosObject::copy_object(
     boost::optional<ceph::real_time> delete_at, std::string* version_id,
     std::string* tag, std::string* etag, void (*progress_cb)(off_t, void*),
     void* progress_data, const DoutPrefixProvider* dpp, optional_yield y) {
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 int DaosObject::swift_versioning_restore(bool& restored,
                                          const DoutPrefixProvider* dpp) {
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 int DaosObject::swift_versioning_copy(const DoutPrefixProvider* dpp,
                                       optional_yield y) {
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 int DaosObject::lookup(const DoutPrefixProvider* dpp, mode_t* mode) {
   if (is_open()) {
-    return 0;
+    return DAOS_NOT_IMPLEMENTED_LOG(dpp);
   }
 
   int ret = 0;
@@ -2713,7 +2713,7 @@ int DaosStore::get_roles(const DoutPrefixProvider* dpp, optional_yield y,
                          const std::string& path_prefix,
                          const std::string& tenant,
                          vector<std::unique_ptr<RGWRole>>& roles) {
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 std::unique_ptr<RGWOIDCProvider> DaosStore::get_oidc_provider() {
@@ -2724,7 +2724,7 @@ std::unique_ptr<RGWOIDCProvider> DaosStore::get_oidc_provider() {
 int DaosStore::get_oidc_providers(
     const DoutPrefixProvider* dpp, const std::string& tenant,
     vector<std::unique_ptr<RGWOIDCProvider>>& providers) {
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 std::unique_ptr<MultipartUpload> DaosBucket::get_multipart_upload(
@@ -2857,7 +2857,7 @@ int DaosStore::get_user_by_swift(const DoutPrefixProvider* dpp,
                                  const std::string& user_str, optional_yield y,
                                  std::unique_ptr<User>* user) {
   /* Swift keys and subusers are not supported for now */
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 std::unique_ptr<Object> DaosStore::get_object(const rgw_obj_key& k) {
@@ -2921,7 +2921,7 @@ int DaosStore::forward_request_to_master(const DoutPrefixProvider* dpp,
                                          User* user, obj_version* objv,
                                          bufferlist& in_data, JSONParser* jp,
                                          req_info& info, optional_yield y) {
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 std::string DaosStore::zone_unique_id(uint64_t unique_num) { return ""; }
@@ -2930,11 +2930,11 @@ std::string DaosStore::zone_unique_trans_id(const uint64_t unique_num) {
   return "";
 }
 
-int DaosStore::cluster_stat(RGWClusterStat& stats) { return 0; }
+int DaosStore::cluster_stat(RGWClusterStat& stats) { return DAOS_NOT_IMPLEMENTED_LOG(nullptr); }
 
-std::unique_ptr<Lifecycle> DaosStore::get_lifecycle(void) { return 0; }
+std::unique_ptr<Lifecycle> DaosStore::get_lifecycle(void) { DAOS_NOT_IMPLEMENTED_LOG(nullptr); return 0; }
 
-std::unique_ptr<Completions> DaosStore::get_completions(void) { return 0; }
+std::unique_ptr<Completions> DaosStore::get_completions(void) { DAOS_NOT_IMPLEMENTED_LOG(nullptr); return 0; }
 
 std::unique_ptr<Notification> DaosStore::get_notification(
     rgw::sal::Object* obj, rgw::sal::Object* src_obj, struct req_state* s,
@@ -2952,18 +2952,19 @@ std::unique_ptr<Notification> DaosStore::get_notification(
 
 int DaosStore::log_usage(const DoutPrefixProvider* dpp,
                          map<rgw_user_bucket, RGWUsageBatch>& usage_info) {
+  DAOS_NOT_IMPLEMENTED_LOG(dpp);
   return 0;
 }
 
 int DaosStore::log_op(const DoutPrefixProvider* dpp, string& oid,
                       bufferlist& bl) {
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 int DaosStore::register_to_service_map(const DoutPrefixProvider* dpp,
                                        const string& daemon_type,
                                        const map<string, string>& meta) {
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 void DaosStore::get_quota(RGWQuotaInfo& bucket_quota,
@@ -2980,7 +2981,7 @@ void DaosStore::get_ratelimit(RGWRateLimitInfo& bucket_ratelimit,
 
 int DaosStore::set_buckets_enabled(const DoutPrefixProvider* dpp,
                                    vector<rgw_bucket>& buckets, bool enabled) {
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 int DaosStore::get_sync_policy_handler(const DoutPrefixProvider* dpp,
@@ -2988,11 +2989,12 @@ int DaosStore::get_sync_policy_handler(const DoutPrefixProvider* dpp,
                                        std::optional<rgw_bucket> bucket,
                                        RGWBucketSyncPolicyHandlerRef* phandler,
                                        optional_yield y) {
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 RGWDataSyncStatusManager* DaosStore::get_data_sync_manager(
     const rgw_zone_id& source_zone) {
+  DAOS_NOT_IMPLEMENTED_LOG(nullptr);
   return 0;
 }
 
@@ -3000,26 +3002,26 @@ int DaosStore::read_all_usage(
     const DoutPrefixProvider* dpp, uint64_t start_epoch, uint64_t end_epoch,
     uint32_t max_entries, bool* is_truncated, RGWUsageIter& usage_iter,
     map<rgw_user_bucket, rgw_usage_log_entry>& usage) {
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 int DaosStore::trim_all_usage(const DoutPrefixProvider* dpp,
                               uint64_t start_epoch, uint64_t end_epoch) {
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
-int DaosStore::get_config_key_val(string name, bufferlist* bl) { return 0; }
+int DaosStore::get_config_key_val(string name, bufferlist* bl) { return DAOS_NOT_IMPLEMENTED_LOG(nullptr); }
 
 int DaosStore::meta_list_keys_init(const DoutPrefixProvider* dpp,
                                    const string& section, const string& marker,
                                    void** phandle) {
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 int DaosStore::meta_list_keys_next(const DoutPrefixProvider* dpp, void* handle,
                                    int max, list<string>& keys,
                                    bool* truncated) {
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 void DaosStore::meta_list_keys_complete(void* handle) { return; }
@@ -3028,7 +3030,7 @@ std::string DaosStore::meta_get_marker(void* handle) { return ""; }
 
 int DaosStore::meta_remove(const DoutPrefixProvider* dpp, string& metadata_key,
                            optional_yield y) {
-  return 0;
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
 std::string DaosStore::get_cluster_id(const DoutPrefixProvider* dpp,
