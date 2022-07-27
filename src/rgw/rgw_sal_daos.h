@@ -200,9 +200,11 @@ class DaosUser : public User {
                           optional_yield y) override;
 
   /** Read user info without loading it */
-  int read_user(const DoutPrefixProvider* dpp,
-                std::string name, DaosUserInfo* duinfo);
-  
+  int read_user(const DoutPrefixProvider* dpp, std::string name,
+                DaosUserInfo* duinfo);
+
+  std::unique_ptr<struct ds3_user_info> get_encoded_info(obj_version& obj_ver);
+
   friend class DaosBucket;
 };
 
@@ -246,18 +248,14 @@ class DaosBucket : public Bucket {
   WRITE_CLASS_ENCODER(DaosBucketInfo);
 
  public:
-  /** Container handle */
-  daos_handle_t coh;
-  /** Container uuid */
-  uuid_t cont_uuid;
   /** Container dfs handle */
-  dfs_t* dfs;
+  ds3_bucket_t* ds3b;
 
   DaosBucket(DaosStore* _st) : store(_st), acls() {}
 
-  DaosBucket(const DaosBucket& _daos_bucket) : store(_daos_bucket.store), acls(), coh(DAOS_HDL_INVAL), dfs(nullptr) {
-    //TODO: deep copy all objects
-    //daos_duplicate_handle(_daos_bucket.coh);
+  DaosBucket(const DaosBucket& _daos_bucket)
+      : store(_daos_bucket.store), acls(), ds3b(nullptr), _is_open(false) {
+    // TODO: deep copy all objects
   }
 
   DaosBucket(DaosStore* _st, User* _u) : Bucket(_u), store(_st), acls() {}
@@ -362,6 +360,8 @@ class DaosBucket : public Bucket {
   bool is_open() { return _is_open; }
   std::unique_ptr<DaosObject> get_part_object(std::string upload_id,
                                               uint64_t part_num);
+  std::unique_ptr<struct ds3_bucket_info> get_encoded_info(
+      ceph::real_time mtime);
 
   friend class DaosStore;
 };
@@ -643,7 +643,7 @@ class DaosObject : public Object {
   virtual bool placement_rules_match(rgw_placement_rule& r1,
                                      rgw_placement_rule& r2) override;
   virtual int dump_obj_layout(const DoutPrefixProvider* dpp, optional_yield y,
-                              Formatter* f ) override;
+                              Formatter* f) override;
 
   /* Swift versioning */
   virtual int swift_versioning_restore(bool& restored,
@@ -874,7 +874,7 @@ class DaosStore : public Store {
   std::unique_ptr<DaosBucket> metadata_bucket;
 
  public:
-  ds3_t *ds3 = nullptr;
+  ds3_t* ds3 = nullptr;
 
   CephContext* cctx;
 

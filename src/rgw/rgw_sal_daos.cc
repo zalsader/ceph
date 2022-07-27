@@ -45,7 +45,6 @@ namespace rgw::sal {
 using ::ceph::decode;
 using ::ceph::encode;
 
-#define RGW_BUCKET_RGW_INFO "rgw_info"
 #define RGW_DIR_ENTRY_XATTR "rgw_entry"
 #define RGW_PART_XATTR "rgw_part"
 #define METADATA_BUCKET "_METADATA"
@@ -163,18 +162,12 @@ int DaosUser::create_bucket(
 
     // Create a new bucket:
     DaosBucket* daos_bucket = static_cast<DaosBucket*>(bucket.get());
-    ret = ds3_bucket_create(bucket->get_name().c_str(), nullptr, nullptr,
-                            store->ds3, nullptr);
+    std::unique_ptr<struct ds3_bucket_info> bucket_info =
+        daos_bucket->get_encoded_info(ceph::real_time());
+    ret = ds3_bucket_create(bucket->get_name().c_str(), bucket_info.get(),
+                            nullptr, store->ds3, nullptr);
     if (ret != 0) {
       ldpp_dout(dpp, 0) << "ERROR: ds3_bucket_create failed! ret=" << ret
-                        << dendl;
-      return ret;
-    }
-
-    // TODO move this into ds3_bucket_create
-    ret = daos_bucket->put_info(dpp, y, ceph::real_time());
-    if (ret != 0) {
-      ldpp_dout(dpp, 0) << "ERROR: failed to put bucket info! ret=" << ret
                         << dendl;
       return ret;
     }
@@ -286,26 +279,9 @@ int DaosUser::store_user(const DoutPrefixProvider* dpp, optional_yield y,
     obj_ver.tag = "UserTAG";
   }
 
-  // Encode user data
-  bufferlist bl;
-  duinfo.info = info;
-  duinfo.attrs = attrs;
-  duinfo.user_version = obj_ver;
-  duinfo.encode(bl);
+  std::unique_ptr<struct ds3_user_info> user_info = get_encoded_info(obj_ver);
 
-  // Initialize ds3_user_info
-  vector<const char*> access_ids;
-  for (auto const& [id, key] : info.access_keys) {
-    access_ids.push_back(id.c_str());
-  }
-  struct ds3_user_info user_info = {.name = name.c_str(),
-                                    .email = info.user_email.c_str(),
-                                    .access_ids = access_ids.data(),
-                                    .access_ids_nr = access_ids.size(),
-                                    .encoded = bl.c_str(),
-                                    .encoded_length = bl.length()};
-
-  ret = ds3_user_set(name.c_str(), &user_info, store->ds3, nullptr);
+  ret = ds3_user_set(name.c_str(), user_info.get(), store->ds3, nullptr);
 
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "Error: ds3_user_set failed, name=" << name
@@ -315,8 +291,8 @@ int DaosUser::store_user(const DoutPrefixProvider* dpp, optional_yield y,
   return ret;
 }
 
-int  DaosUser::read_user(const DoutPrefixProvider* dpp,
-                std::string name, DaosUserInfo* duinfo) {
+int DaosUser::read_user(const DoutPrefixProvider* dpp, std::string name,
+                        DaosUserInfo* duinfo) {
   // Initialize ds3_user_info
   bufferlist bl;
   uint64_t size = DFS_MAX_XATTR_LEN;
@@ -338,41 +314,46 @@ int  DaosUser::read_user(const DoutPrefixProvider* dpp,
   return ret;
 }
 
-  // email should be removed if it exists
-  const string& email = info.user_email;
-  if (email.length() > 0) {
-    if (dfs_access(store->ds3->meta_dfs, store->ds3->meta_dirs[EMAILS_DIR],
-                   email.c_str(), W_OK) == 0) {
-      ret = dfs_remove(store->ds3->meta_dfs, store->ds3->meta_dirs[EMAILS_DIR],
-                       email.c_str(), true, nullptr);
-      if (ret != 0) {
-        ldpp_dout(dpp, 0) << "ERROR: failed to remove email file, email="
-                          << email << " ret=" << ret << dendl;
-        return ret;
-      }
-    }
-  }
+std::unique_ptr<struct ds3_user_info> DaosUser::get_encoded_info(
+    obj_version& obj_ver) {
+  // Encode user data
+  bufferlist bl;
+  struct DaosUserInfo duinfo;
+  duinfo.info = info;
+  duinfo.attrs = attrs;
+  duinfo.user_version = obj_ver;
+  duinfo.encode(bl);
 
-  // and remove the user object
-  if (dfs_access(store->ds3->meta_dfs, store->ds3->meta_dirs[USERS_DIR],
-                 name.c_str(), W_OK) == 0) {
-    ret = dfs_remove(store->ds3->meta_dfs, store->ds3->meta_dirs[USERS_DIR],
-                     name.c_str(), true, nullptr);
-    if (ret != 0) {
-      ldpp_dout(dpp, 0) << "ERROR: failed to remove user file, name=" << name
-                        << " ret=" << ret << dendl;
-      return ret;
-    }
+  // Initialize ds3_user_info
+  vector<const char*> access_ids;
+  for (auto const& [id, key] : info.access_keys) {
+    access_ids.push_back(id.c_str());
   }
+  return std::unique_ptr<struct ds3_user_info>(
+      new ds3_user_info{.name = info.user_id.to_str().c_str(),
+                        .email = info.user_email.c_str(),
+                        .access_ids = access_ids.data(),
+                        .access_ids_nr = access_ids.size(),
+                        .encoded = bl.c_str(),
+                        .encoded_length = bl.length()});
+}
 
-  // Close file
-  ret = dfs_release(user_obj);
+int DaosUser::remove_user(const DoutPrefixProvider* dpp, optional_yield y) {
+  const string name = info.user_id.to_str();
+
+  // TODO: the expectation is that the object version needs to be passed in as a
+  // method arg see int DB::remove_user(const DoutPrefixProvider *dpp,
+  // RGWUserInfo& uinfo, RGWObjVersionTracker *pobjv)
+  obj_version obj_ver;
+  std::unique_ptr<struct ds3_user_info> user_info = get_encoded_info(obj_ver);
+
+  // Remove user
+  int ret = ds3_user_remove(name.c_str(), user_info.get(), store->ds3, nullptr);
   if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: dfs_release failed, user name=" << name
+    ldpp_dout(dpp, 0) << "Error: ds3_user_set failed, name=" << name
                       << " ret=" << ret << dendl;
-    return ret;
   }
-  return 0;
+  return ret;
 }
 
 DaosBucket::~DaosBucket() { close(nullptr); }
@@ -387,16 +368,14 @@ int DaosBucket::open(const DoutPrefixProvider* dpp) {
   int ret;
   daos_cont_info_t cont_info;
   // TODO: We need to cache open container handles
-  ret = daos_cont_open(store->ds3->poh, info.bucket.name.c_str(), DAOS_COO_RW,
-                       &coh, &cont_info, nullptr);
-  ldpp_dout(dpp, 20) << "DEBUG: daos_cont_open, name=" << info.bucket.name
+  ret = daos_cont_open(store->ds3->poh, get_name().c_str(), DAOS_COO_RW, &coh,
+                       &cont_info, nullptr);
+  ldpp_dout(dpp, 20) << "DEBUG: daos_cont_open, name=" << get_name()
                      << ", ret=" << ret << dendl;
 
   if (ret != 0) {
     return -ENOENT;
   }
-
-  uuid_copy(cont_uuid, cont_info.ci_uuid);
 
   ret = dfs_mount(store->ds3->poh, coh, O_RDWR, &dfs);
   ldpp_dout(dpp, 20) << "DEBUG: dfs_mount ret=" << ret << dendl;
@@ -443,6 +422,22 @@ std::unique_ptr<DaosObject> DaosBucket::get_part_object(std::string upload_id,
   return std::make_unique<DaosObject>(store, k, store->get_metadata_bucket());
 }
 
+std::unique_ptr<struct ds3_bucket_info> DaosBucket::get_encoded_info(
+    ceph::real_time _mtime) {
+  bufferlist bl;
+  DaosBucketInfo dbinfo;
+  dbinfo.info = info;
+  dbinfo.bucket_attrs = attrs;
+  dbinfo.mtime = _mtime;
+  dbinfo.bucket_version = bucket_version;
+  dbinfo.encode(bl);
+
+  std::unique_ptr<struct ds3_bucket_info> bucket_info(new ds3_bucket_info{
+      .encoded = bl.c_str(), .encoded_length = bl.length()});
+  std::strcpy(bucket_info->name, get_name().c_str());
+  return bucket_info;
+}
+
 int DaosBucket::remove_bucket(const DoutPrefixProvider* dpp,
                               bool delete_children, bool forward_to_master,
                               req_info* req_info, optional_yield y) {
@@ -463,7 +458,7 @@ int DaosBucket::remove_bucket_bypass_gc(int concurrent_max,
 
 int DaosBucket::put_info(const DoutPrefixProvider* dpp, bool exclusive,
                          ceph::real_time _mtime) {
-  ldpp_dout(dpp, 20) << "DEBUG: put_info(): bucket name=" << info.bucket.name
+  ldpp_dout(dpp, 20) << "DEBUG: put_info(): bucket name=" << get_name()
                      << dendl;
 
   int ret = open(dpp);
@@ -683,8 +678,8 @@ bool compare_multipart_upload(std::unique_ptr<MultipartUpload>& upload1,
 
 int DaosBucket::list(const DoutPrefixProvider* dpp, ListParams& params, int max,
                      ListResults& results, optional_yield y) {
-  ldpp_dout(dpp, 20) << "DEBUG: list bucket=" << info.bucket.name
-                     << " max=" << max << " params=" << params << dendl;
+  ldpp_dout(dpp, 20) << "DEBUG: list bucket=" << get_name() << " max=" << max
+                     << " params=" << params << dendl;
 
   // TODO: support the case when delim is not /
   if (params.delim != "/") {
