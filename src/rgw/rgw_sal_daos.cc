@@ -83,7 +83,7 @@ int DaosUser::list_buckets(const DoutPrefixProvider* dpp, const string& marker,
                      << " ret=" << ret << dendl;
   if (ret == -DER_TRUNC) {
     is_truncated = true;
-  } else if (ret < 0) {
+  } else if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: ds3_bucket_list failed!" << ret << dendl;
     return ret;
   }
@@ -118,7 +118,7 @@ int DaosUser::create_bucket(
 
   // Look up the bucket. Create it if it doesn't exist.
   ret = this->store->get_bucket(dpp, this, b, &bucket, y);
-  if (ret < 0 && ret != -ENOENT) {
+  if (ret != 0 && ret != -ENOENT) {
     return ret;
   }
 
@@ -369,7 +369,7 @@ int DaosBucket::open(const DoutPrefixProvider* dpp) {
   ldpp_dout(dpp, 20) << "DEBUG: ds3_bucket_open, name=" << get_name()
                      << ", ret=" << ret << dendl;
 
-  return -ret;
+  return ret;
 }
 
 int DaosBucket::close(const DoutPrefixProvider* dpp) {
@@ -382,7 +382,7 @@ int DaosBucket::close(const DoutPrefixProvider* dpp) {
   int ret = ds3_bucket_close(ds3b, nullptr);
   ldpp_dout(dpp, 20) << "DEBUG: ds3_bucket_close ret=" << ret << dendl;
 
-  return -ret;
+  return ret;
 }
 
 std::unique_ptr<DaosObject> DaosBucket::get_part_object(std::string upload_id,
@@ -435,7 +435,7 @@ int DaosBucket::put_info(const DoutPrefixProvider* dpp, bool exclusive,
                      << dendl;
 
   int ret = open(dpp);
-  if (ret < 0) {
+  if (ret != 0) {
     return ret;
   }
 
@@ -452,7 +452,7 @@ int DaosBucket::put_info(const DoutPrefixProvider* dpp, bool exclusive,
   size_t const sizes[] = {bl.length()};
   // TODO: separate attributes
   ret = daos_cont_set_attr(coh, 1, names, values, sizes, nullptr);
-  if (ret < 0) {
+  if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: daos_cont_set_attr failed: " << ret << dendl;
   }
   ret = close(dpp);
@@ -471,7 +471,7 @@ int DaosBucket::load_bucket(const DoutPrefixProvider* dpp, optional_yield y,
   }
 
   int ret = open(dpp);
-  if (ret < 0) {
+  if (ret != 0) {
     return ret;
   }
 
@@ -483,7 +483,7 @@ int DaosBucket::load_bucket(const DoutPrefixProvider* dpp, optional_yield y,
   size_t sizes[] = {value.size()};
 
   ret = daos_cont_get_attr(coh, 1, names, values, sizes, nullptr);
-  if (ret < 0) {
+  if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: daos_cont_get_attr failed: " << ret << dendl;
     return ret;
   }
@@ -665,7 +665,7 @@ int DaosBucket::list(const DoutPrefixProvider* dpp, ListParams& params, int max,
   }
 
   int ret = open(dpp);
-  if (ret < 0) {
+  if (ret != 0) {
     return ret;
   }
 
@@ -797,7 +797,7 @@ int DaosBucket::list_multiparts(
   }
 
   int ret = open(dpp);
-  if (ret < 0) {
+  if (ret != 0) {
     return ret;
   }
 
@@ -2107,7 +2107,7 @@ int DaosMultipartUpload::complete(
     if (ret == -ENOENT) {
       ret = -ERR_NO_SUCH_UPLOAD;
     }
-    if (ret < 0) return ret;
+    if (ret != 0) return ret;
 
     total_parts += parts.size();
     if (!truncated && total_parts != (int)part_etags.size()) {
@@ -2495,7 +2495,7 @@ int DaosMultipartWriter::complete(
   int ret = rgw_compression_info_from_attrset(attrs, compressed, info.cs_info);
   ldpp_dout(dpp, 20) << "DaosMultipartWriter::complete(): compression ret="
                      << ret << dendl;
-  if (ret < 0) {
+  if (ret != 0) {
     ldpp_dout(dpp, 1) << "cannot get compression info" << dendl;
     part_obj->close(dpp);
     return ret;
@@ -2684,7 +2684,7 @@ int DaosStore::get_bucket(const DoutPrefixProvider* dpp, User* u,
 
   bp = new DaosBucket(this, b, u);
   ret = bp->load_bucket(dpp, y);
-  if (ret < 0) {
+  if (ret != 0) {
     delete bp;
     return ret;
   }
