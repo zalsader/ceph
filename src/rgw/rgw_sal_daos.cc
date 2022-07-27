@@ -361,55 +361,28 @@ DaosBucket::~DaosBucket() { close(nullptr); }
 int DaosBucket::open(const DoutPrefixProvider* dpp) {
   ldpp_dout(dpp, 20) << "DEBUG: open, name=" << info.bucket.name.c_str() << dendl;
   // Idempotent
-  if (_is_open) {
+  if (is_open()) {
     return 0;
   }
 
-  int ret;
-  daos_cont_info_t cont_info;
-  // TODO: We need to cache open container handles
-  ret = daos_cont_open(store->ds3->poh, get_name().c_str(), DAOS_COO_RW, &coh,
-                       &cont_info, nullptr);
-  ldpp_dout(dpp, 20) << "DEBUG: daos_cont_open, name=" << get_name()
+  int ret = ds3_bucket_open(get_name().c_str(), &ds3b, store->ds3, nullptr);
+  ldpp_dout(dpp, 20) << "DEBUG: ds3_bucket_open, name=" << get_name()
                      << ", ret=" << ret << dendl;
 
-  if (ret != 0) {
-    return -ENOENT;
-  }
-
-  ret = dfs_mount(store->ds3->poh, coh, O_RDWR, &dfs);
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_mount ret=" << ret << dendl;
-
-  if (ret != 0) {
-    daos_cont_close(coh, nullptr);
-    return -ENOENT;
-  }
-  _is_open = true;
-  return 0;
+  return -ret;
 }
 
 int DaosBucket::close(const DoutPrefixProvider* dpp) {
   ldpp_dout(dpp, 20) << "DEBUG: close" << dendl;
   // Idempotent
-  if (!_is_open) {
+  if (!is_open()) {
     return 0;
   }
 
-  int ret = 0;
-  ret = dfs_umount(dfs);
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_umount ret=" << ret << dendl;
+  int ret = ds3_bucket_close(ds3b, nullptr);
+  ldpp_dout(dpp, 20) << "DEBUG: ds3_bucket_close ret=" << ret << dendl;
 
-  if (ret < 0) {
-    return ret;
-  }
-
-  ret = daos_cont_close(coh, nullptr);
-  ldpp_dout(dpp, 20) << "DEBUG: daos_cont_close ret=" << ret << dendl;
-  if (ret < 0) {
-    return ret;
-  }
-  _is_open = false;
-  return 0;
+  return -ret;
 }
 
 std::unique_ptr<DaosObject> DaosBucket::get_part_object(std::string upload_id,

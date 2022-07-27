@@ -212,7 +212,6 @@ class DaosBucket : public Bucket {
  private:
   DaosStore* store;
   RGWAccessControlPolicy acls;
-  bool _is_open = false;
 
   // RGWBucketInfo and other information that are shown when listing a bucket is
   // represented in struct DaosBucketInfo. The structure is encoded and stored
@@ -254,7 +253,7 @@ class DaosBucket : public Bucket {
   DaosBucket(DaosStore* _st) : store(_st), acls() {}
 
   DaosBucket(const DaosBucket& _daos_bucket)
-      : store(_daos_bucket.store), acls(), ds3b(nullptr), _is_open(false) {
+      : store(_daos_bucket.store), acls(), ds3b(nullptr) {
     // TODO: deep copy all objects
   }
 
@@ -357,7 +356,7 @@ class DaosBucket : public Bucket {
 
   int open(const DoutPrefixProvider* dpp);
   int close(const DoutPrefixProvider* dpp);
-  bool is_open() { return _is_open; }
+  bool is_open() { return ds3b != nullptr; }
   std::unique_ptr<DaosObject> get_part_object(std::string upload_id,
                                               uint64_t part_num);
   std::unique_ptr<struct ds3_bucket_info> get_encoded_info(
