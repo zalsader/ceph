@@ -439,21 +439,12 @@ int DaosBucket::put_info(const DoutPrefixProvider* dpp, bool exclusive,
     return ret;
   }
 
-  bufferlist bl;
-  DaosBucketInfo dbinfo;
-  dbinfo.info = info;
-  dbinfo.bucket_attrs = attrs;
-  dbinfo.mtime = _mtime;
-  dbinfo.bucket_version = bucket_version;
-  dbinfo.encode(bl);
+  std::unique_ptr<struct ds3_bucket_info> bucket_info =
+      get_encoded_info(ceph::real_time());
 
-  char const* const names[] = {RGW_BUCKET_RGW_INFO};
-  void const* const values[] = {bl.c_str()};
-  size_t const sizes[] = {bl.length()};
-  // TODO: separate attributes
-  ret = daos_cont_set_attr(coh, 1, names, values, sizes, nullptr);
+  ret = ds3_bucket_set_info(bucket_info.get(), ds3b, nullptr);
   if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: daos_cont_set_attr failed: " << ret << dendl;
+    ldpp_dout(dpp, 0) << "ERROR: ds3_bucket_set_info failed: " << ret << dendl;
   }
   ret = close(dpp);
   return ret;
