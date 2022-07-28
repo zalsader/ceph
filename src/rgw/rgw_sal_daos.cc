@@ -673,7 +673,7 @@ int DaosBucket::list(const DoutPrefixProvider* dpp, ListParams& params, int max,
 
   string lookup_path = "/" + path;
   ret =
-      dfs_lookup(dfs, lookup_path.c_str(), O_RDWR, &dir_obj, nullptr, nullptr);
+      dfs_lookup(ds3b->dfs, lookup_path.c_str(), O_RDWR, &dir_obj, nullptr, nullptr);
 
   ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup lookup_path=" << lookup_path
                      << " ret=" << ret << dendl;
@@ -688,7 +688,7 @@ int DaosBucket::list(const DoutPrefixProvider* dpp, ListParams& params, int max,
   daos_anchor_init(&anchor, 0);
 
   uint32_t nr = dirents.size();
-  ret = dfs_readdir(dfs, dir_obj, &anchor, &nr, dirents.data());
+  ret = dfs_readdir(ds3b->dfs, dir_obj, &anchor, &nr, dirents.data());
   ldpp_dout(dpp, 20) << "DEBUG: dfs_readdir path=" << path << " nr=" << nr
                      << " ret=" << ret << dendl;
   if (ret != 0) {
@@ -711,7 +711,7 @@ int DaosBucket::list(const DoutPrefixProvider* dpp, ListParams& params, int max,
 
     dfs_obj_t* entry_obj;
     mode_t mode;
-    ret = dfs_lookup_rel(dfs, dir_obj, name, O_RDWR | O_NOFOLLOW, &entry_obj,
+    ret = dfs_lookup_rel(ds3b->dfs, dir_obj, name, O_RDWR | O_NOFOLLOW, &entry_obj,
                          &mode, nullptr);
     ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel i=" << i << " entry=" << name
                        << " ret=" << ret << dendl;
@@ -730,7 +730,7 @@ int DaosBucket::list(const DoutPrefixProvider* dpp, ListParams& params, int max,
       // The entry is a regular file, read the xattr and add to objs
       vector<uint8_t> value(DFS_MAX_XATTR_LEN);
       size_t size = value.size();
-      ret = dfs_getxattr(dfs, entry_obj, RGW_DIR_ENTRY_XATTR, value.data(),
+      ret = dfs_getxattr(ds3b->dfs, entry_obj, RGW_DIR_ENTRY_XATTR, value.data(),
                          &size);
       ldpp_dout(dpp, 20) << "DEBUG: dfs_getxattr entry=" << name
                          << " xattr=" << RGW_DIR_ENTRY_XATTR << dendl;
@@ -1343,7 +1343,7 @@ int DaosObject::DaosDeleteOp::delete_obj(const DoutPrefixProvider* dpp,
     // Open parent dir
     std::string parent_path = "/" + path.substr(0, file_start);
     file_name = path.substr(file_start + 1);
-    ret = dfs_lookup(daos_bucket->dfs, parent_path.c_str(), O_RDWR, &parent,
+    ret = dfs_lookup(daos_bucket->ds3b->dfs, parent_path.c_str(), O_RDWR, &parent,
                      nullptr, nullptr);
     ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup parent_path=" << parent_path
                        << " ret=" << ret << dendl;
@@ -1352,7 +1352,7 @@ int DaosObject::DaosDeleteOp::delete_obj(const DoutPrefixProvider* dpp,
     }
   }
 
-  ret = dfs_remove(daos_bucket->dfs, parent, file_name.c_str(), false, nullptr);
+  ret = dfs_remove(daos_bucket->ds3b->dfs, parent, file_name.c_str(), false, nullptr);
   ldpp_dout(dpp, 20) << "DEBUG: dfs_remove file_name=" << file_name
                      << " ret=" << ret << dendl;
 
@@ -1423,7 +1423,7 @@ int DaosObject::lookup(const DoutPrefixProvider* dpp, mode_t* mode) {
   // TODO: cache open file handles
   std::string path = get_key().to_str();
   if (path.front() != '/') path = "/" + path;
-  ret = dfs_lookup(daos_bucket->dfs, path.c_str(), O_RDWR, &dfs_obj, mode,
+  ret = dfs_lookup(daos_bucket->ds3b->dfs, path.c_str(), O_RDWR, &dfs_obj, mode,
                    nullptr);
   ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup path=" << path << " ret=" << ret
                      << dendl;
@@ -1435,7 +1435,7 @@ int DaosObject::lookup(const DoutPrefixProvider* dpp, mode_t* mode) {
       // null instance since it is likely that the bucket did not have
       // versioning before
       path = path.substr(0, suffix_start);
-      ret = dfs_lookup(daos_bucket->dfs, path.c_str(), O_RDWR, &dfs_obj, mode,
+      ret = dfs_lookup(daos_bucket->ds3b->dfs, path.c_str(), O_RDWR, &dfs_obj, mode,
                        nullptr);
       ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup path=" << path << " ret=" << ret
                          << dendl;
@@ -1495,7 +1495,7 @@ int DaosObject::create(const DoutPrefixProvider* dpp, const bool create_parents,
     for (const auto& dir : parent_path) {
       if (create_parents) {
         // Create directory
-        ret = dfs_mkdir(daos_bucket->dfs, parent, dir.c_str(), mode, 0);
+        ret = dfs_mkdir(daos_bucket->ds3b->dfs, parent, dir.c_str(), mode, 0);
         ldpp_dout(dpp, 20) << "DEBUG: dfs_mkdir dir=" << dir << " ret=" << ret
                            << dendl;
         if (ret != 0 && ret != EEXIST) {
@@ -1507,7 +1507,7 @@ int DaosObject::create(const DoutPrefixProvider* dpp, const bool create_parents,
       }
 
       // Open directory
-      ret = dfs_lookup_rel(daos_bucket->dfs, parent, dir.c_str(), O_RDWR,
+      ret = dfs_lookup_rel(daos_bucket->ds3b->dfs, parent, dir.c_str(), O_RDWR,
                            &dir_obj, nullptr, nullptr);
       ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel dir=" << dir
                          << " ret=" << ret << dendl;
@@ -1529,13 +1529,13 @@ int DaosObject::create(const DoutPrefixProvider* dpp, const bool create_parents,
 
     // Remove any existing symlinks since O_TRUNC is not handled
     ret =
-        dfs_remove(daos_bucket->dfs, parent, file_name.c_str(), false, nullptr);
+        dfs_remove(daos_bucket->ds3b->dfs, parent, file_name.c_str(), false, nullptr);
   } else {
     mode |= S_IFREG;
   }
 
   // Finally create the file
-  ret = dfs_open(daos_bucket->dfs, parent, file_name.c_str(), mode,
+  ret = dfs_open(daos_bucket->ds3b->dfs, parent, file_name.c_str(), mode,
                  O_RDWR | O_CREAT | O_TRUNC, 0, 0, link_to_c, &dfs_obj);
   ldpp_dout(dpp, 20) << "DEBUG: dfs_open file_name=" << file_name
                      << " ret=" << ret << dendl;
@@ -1578,7 +1578,7 @@ int DaosObject::write(const DoutPrefixProvider* dpp, bufferlist&& data,
   d_iov_set(&iov, data.c_str(), data.length());
   wsgl.sg_nr = 1;
   wsgl.sg_iovs = &iov;
-  int ret = dfs_write(get_daos_bucket()->dfs, dfs_obj, &wsgl, offset, nullptr);
+  int ret = dfs_write(get_daos_bucket()->ds3b->dfs, dfs_obj, &wsgl, offset, nullptr);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to write into daos object ("
                       << get_bucket()->get_name() << ", " << get_key().to_str()
@@ -1598,7 +1598,7 @@ int DaosObject::read(const DoutPrefixProvider* dpp, bufferlist& data,
   rsgl.sg_iovs = &iov;
   rsgl.sg_nr_out = 1;
   int ret =
-      dfs_read(get_daos_bucket()->dfs, dfs_obj, &rsgl, offset, &size, nullptr);
+      dfs_read(get_daos_bucket()->ds3b->dfs, dfs_obj, &rsgl, offset, &size, nullptr);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to read from daos object ("
                       << get_bucket()->get_name() << ", " << get_key().to_str()
@@ -1619,7 +1619,7 @@ int DaosObject::get_dir_entry_attrs(const DoutPrefixProvider* dpp,
 
   vector<uint8_t> value(DFS_MAX_XATTR_LEN);
   size_t size = value.size();
-  ret = dfs_getxattr(get_daos_bucket()->dfs, dfs_obj, RGW_DIR_ENTRY_XATTR,
+  ret = dfs_getxattr(get_daos_bucket()->ds3b->dfs, dfs_obj, RGW_DIR_ENTRY_XATTR,
                      value.data(), &size);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to get dirent of daos object ("
@@ -1685,7 +1685,7 @@ int DaosObject::set_dir_entry_attrs(const DoutPrefixProvider* dpp,
   encode(*upload_info, wbl);
 
   // Write rgw_bucket_dir_entry into object xattr
-  ret = dfs_setxattr(get_daos_bucket()->dfs, dfs_obj, RGW_DIR_ENTRY_XATTR,
+  ret = dfs_setxattr(get_daos_bucket()->ds3b->dfs, dfs_obj, RGW_DIR_ENTRY_XATTR,
                      wbl.c_str(), wbl.length(), 0);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to set dirent of daos object ("
