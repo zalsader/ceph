@@ -494,14 +494,17 @@ class DaosLuaScriptManager : public LuaScriptManager {
 
   virtual int get(const DoutPrefixProvider* dpp, optional_yield y,
                   const std::string& key, std::string& script) override {
+    DAOS_NOT_IMPLEMENTED_LOG(dpp);
     return -ENOENT;
   }
   virtual int put(const DoutPrefixProvider* dpp, optional_yield y,
                   const std::string& key, const std::string& script) override {
+    DAOS_NOT_IMPLEMENTED_LOG(dpp);
     return -ENOENT;
   }
   virtual int del(const DoutPrefixProvider* dpp, optional_yield y,
                   const std::string& key) override {
+    DAOS_NOT_IMPLEMENTED_LOG(dpp);
     return -ENOENT;
   }
 };
@@ -697,7 +700,9 @@ class DaosObject : public Object {
 class MPDaosSerializer : public MPSerializer {
  public:
   MPDaosSerializer(const DoutPrefixProvider* dpp, DaosStore* store,
-                   DaosObject* obj, const std::string& lock_name) {}
+                   DaosObject* obj, const std::string& lock_name) {
+    DAOS_NOT_IMPLEMENTED_LOG(dpp);
+  }
 
   virtual int try_lock(const DoutPrefixProvider* dpp, utime_t dur,
                        optional_yield y) override {
