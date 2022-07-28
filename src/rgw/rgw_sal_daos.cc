@@ -405,8 +405,9 @@ std::unique_ptr<struct ds3_bucket_info> DaosBucket::get_encoded_info(
   dbinfo.bucket_version = bucket_version;
   dbinfo.encode(bl);
 
-  std::unique_ptr<struct ds3_bucket_info> bucket_info(new ds3_bucket_info{
-      .encoded = bl.c_str(), .encoded_length = bl.length()});
+  auto bucket_info = std::make_unique<struct ds3_bucket_info>();
+  bucket_info->encoded = bl.c_str();
+  bucket_info->encoded_length = bl.length();
   std::strcpy(bucket_info->name, get_name().c_str());
   return bucket_info;
 }
@@ -456,6 +457,7 @@ int DaosBucket::load_bucket(const DoutPrefixProvider* dpp, optional_yield y,
                      << dendl;
 
   // Prevent attempting to load metadata bucket
+  // TODO move inside ds3_bucket_open
   if (get_name() == METADATA_BUCKET) {
     ldpp_dout(dpp, 0) << "ERROR: Cannot load metadata bucket" << dendl;
     return -ENOENT;
@@ -468,18 +470,16 @@ int DaosBucket::load_bucket(const DoutPrefixProvider* dpp, optional_yield y,
 
   bufferlist bl;
   DaosBucketInfo dbinfo;
-  vector<uint8_t> value(DFS_MAX_XATTR_LEN);
-  char const* const names[] = {RGW_BUCKET_RGW_INFO};
-  void* const values[] = {value.data()};
-  size_t sizes[] = {value.size()};
+  uint64_t size = DFS_MAX_XATTR_LEN;
+  struct ds3_bucket_info bucket_info = {.encoded = bl.append_hole(size).c_str(),
+                                        .encoded_length = size};
 
-  ret = daos_cont_get_attr(coh, 1, names, values, sizes, nullptr);
+  ret = ds3_bucket_get_info(&bucket_info, ds3b, nullptr);
   if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: daos_cont_get_attr failed: " << ret << dendl;
+    ldpp_dout(dpp, 0) << "ERROR: ds3_bucket_get_info failed: " << ret << dendl;
     return ret;
   }
 
-  bl.append(reinterpret_cast<char*>(value.data()), sizes[0]);
   auto iter = bl.cbegin();
   dbinfo.decode(iter);
   info = dbinfo.info;
