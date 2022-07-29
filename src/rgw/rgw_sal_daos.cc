@@ -1983,7 +1983,6 @@ DaosAtomicWriter::DaosAtomicWriter(
       unique_tag(_unique_tag),
       obj(_store, _head_obj->get_key(), _head_obj->get_bucket())
 {
-  ldpp_dout(dpp, 20) << "DEBUG: DaosAtomicWriter::DaosAtomicWriter" << dendl;
 }
 
 int DaosAtomicWriter::prepare(optional_yield y) {

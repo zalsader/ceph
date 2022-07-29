@@ -701,7 +701,6 @@ class MPDaosSerializer : public MPSerializer {
  public:
   MPDaosSerializer(const DoutPrefixProvider* dpp, DaosStore* store,
                    DaosObject* obj, const std::string& lock_name) {
-    DAOS_NOT_IMPLEMENTED_LOG(dpp);
   }
 
   virtual int try_lock(const DoutPrefixProvider* dpp, utime_t dur,
