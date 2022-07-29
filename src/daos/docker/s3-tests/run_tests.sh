@@ -291,21 +291,72 @@ function wait_for()
     done
 }
 
+daos_stop()
+{
+    # wait until daos_engine is not running
+    sudo ${DAOS_BIN}dmg system stop --force
+    local check_command='ps -e | grep daos_engine'
+    eval "$check_command"
+    while [[ $? == 0 ]]; do
+        eval "$check_command"
+    done
+}
+
+daos_erase()
+{
+    local result=0
+    sudo ${DAOS_BIN}dmg system erase
+    while [ $result -ge 0 ]; do
+        # loop until there is an error
+        result=`sudo ${DAOS_BIN}dmg system query --json | jq .status`
+        sleep 1
+    done
+}
+
+daos_format()
+{
+    local result=-1025
+    sudo ${DAOS_BIN}dmg storage format --force
+    while [ $result -lt 0 ]; do
+        result=`sudo ${DAOS_BIN}dmg system query --json | jq .status`
+        sleep 1
+    done
+}
+
+get_daos_pools_status()
+{
+    sudo ${DAOS_BIN}dmg system query --json > /tmp/daos_pools_status.json
+    jq .status /tmp/daos_pools_status.json
+}
+
+get_daos_pools_state()
+{
+    sudo ${DAOS_BIN}dmg system query --json > /tmp/daos_pools_state.json
+    jq .response.members[].state /tmp/daos_pools_state.json | sed 's/"//g'
+}
+
+daos_pool_create()
+{
+    sudo ${DAOS_BIN}dmg pool create --size=4GB tank
+    local result=$(get_daos_pools_status)
+    while [ ! $result -eq 0 ]; do
+        result=$(get_daos_pools_status)
+        sleep 1
+    done
+
+    result=$(get_daos_pools_state)
+    while [[ ! $result == 'joined' ]] && [[ ! $result == 'Ready' ]]; do
+        result=$(get_daos_pools_state)
+        sleep 1
+    done
+}
+
 restart_daos()
 {
-    # sh run_tests.sh cleandaos restart 50
-    query_system="sudo ${DAOS_BIN}dmg system query"
-    sudo ${DAOS_BIN}dmg system stop
-    match=( "Stopped" "storage format required" )
-    wait_for $match "$query_system" 10
-    sudo ${DAOS_BIN}dmg system erase
-    match=( "storage format required" )
-    wait_for $match "$query_system" 10
-    sleep 10
-    sudo ${DAOS_BIN}dmg storage format --force
-    sleep 10
-    sudo ${DAOS_BIN}dmg pool create --size=4GB tank
-    sleep 10
+    daos_stop
+    daos_erase
+    daos_format
+    daos_pool_create
 }
 
 attempt_restart()
@@ -320,13 +371,24 @@ attempt_restart()
             pushd ${CEPH_PATH}/build
             sudo ../src/stop.sh
             sudo rm -rf ${CEPH_PATH}/build/out/* /tmp/*
+            local result=0
             if [ $clean_daos -ne 0 ]; then
                 restart_daos
+                result=$?
             fi
-            sudo RGW=1 ../src/vstart.sh -d
-            popd
-            sh setup.sh
-            if [[ $? == 0 ]]; then return; fi
+            if [[ ! $result == 0 ]]; then
+                echo "daos restart failed"
+                popd
+            else
+                sudo RGW=1 ../src/vstart.sh -d
+                isRadosgwRunning
+                rados_started=$?
+                popd
+                if [[ $rados_started == 1 ]]; then
+                    sh setup.sh
+                    if [[ $? == 0 ]]; then return; fi
+                fi
+            fi
         done
         echo "Failed to restart radosgw after $rados_restart attempts"
         exit 1
@@ -379,7 +441,7 @@ get_status_color()
         echo $On_IBlue
         ;;
     NOT_RUNNING)
-        echo $On_IYellow
+        echo $BYellow
         ;;
     CRASHED)
         echo $On_IRed
@@ -578,7 +640,7 @@ summarize()
                 fi
                 local math_calc="$result_count * 100 / $total_tests"
                 local percentage=`bc <<< "scale=1; $math_calc"`
-                csv_line="$csv_line,$result_count/$percentage%"
+                csv_line="$csv_line,$result_count ($percentage%)"
                 ;;
         esac
     done
