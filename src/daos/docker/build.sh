@@ -13,4 +13,5 @@ if [[ ! $? == 0 ]]; then exit 1; fi
 cd ../s3-tests
 docker build . -t "dgw-s3-tests"
 if [[ ! $? == 0 ]]; then exit 1; fi
+cd ..
 sh test.sh

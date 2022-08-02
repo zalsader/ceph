@@ -8,24 +8,24 @@ then
     ceph_folder=/opt/ceph
 fi
 
-user_file=john.doe.json
+user_file=$(mktemp /tmp/john.doe.XXXXXXXXX.json)
 
-s3folder=`pwd`
-cd ${ceph_folder}/build
-sudo bin/radosgw-admin user create --email johndoe@dgw.com --uid johndoe --display-name John-Doe --no-mon-config > ${s3folder}/$user_file
+pushd ${ceph_folder}/build
+sudo bin/radosgw-admin user create --email johndoe@dgw.com --uid johndoe --display-name John-Doe --no-mon-config > ${S3TESTS_PATH}/$user_file
 if [ $? -ne 0 ]; then
-    sudo bin/radosgw-admin user info --uid johndoe > ${s3folder}/$user_file
+    sudo bin/radosgw-admin user info --uid johndoe > $user_file
     if [ $? -ne 0 ]; then
         echo "failed to get info for johndoe"
         exit 1
     fi
 fi
+popd
 
 # the rest of the command should cause a failure of the script
 set -e
 trap 'echo "Failed: $BASH_COMMAND' ERR
 
-cd $s3folder
+pushd $S3TESTS_PATH
 sudo chmod 666 $user_file
 # remove all lines that start with 4 digits (log lines from the admin tool)
 # and lines that contain "dfs  ERR"
@@ -36,7 +36,6 @@ trim_quotes()
     echo $1 | sed -e 's/^[" \t]*//;s/[" \t]*$//'
 }
 
-user_file=john.doe.json
 user_name=$(trim_quotes `jq '.keys[0].user' $user_file`)
 access_key=$(trim_quotes `jq '.keys[0].access_key' $user_file`)
 secret_key=$(trim_quotes `jq '.keys[0].secret_key' $user_file`)
@@ -70,3 +69,4 @@ crudini --set s3tests.conf 'iam' access_key $access_key
 crudini --set s3tests.conf 'iam' secret_key $secret_key
 
 s3cmd --no-ssl mb s3://testbucket3
+popd

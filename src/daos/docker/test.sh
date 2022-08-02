@@ -1,46 +1,29 @@
 #!/bin/bash
 set -x
+source $CEPH_PATH/src/daos/set_boolean.sh
 
 function usage()
 {
+    # turn off echo
+    set +x
+
     local BOOLEAN_VALUES="T[RUE]|Y[ES]|F[ALSE]|N[O]|1|0"
     echo ""
     echo "./test.sh"
-    echo "\t-h --help"
-    echo "\t-s --summary=$BOOLEAN_VALUES default=FALSE"
-    echo "\t-u --update-confluence=$BOOLEAN_VALUES default=TRUE"
-    echo "\t-c --cleanup-container=$BOOLEAN_VALUES default=TRUE"
-    echo "\t-b --build-docker-images=$BOOLEAN_VALUES default=TRUE"
+    echo -e "\t-h --help"
+    echo -e "\t-s --summary=$BOOLEAN_VALUES default=FALSE"
+    echo -e "\t-u --update-confluence=$BOOLEAN_VALUES default=TRUE"
+    echo -e "\t-c --cleanup-container=$BOOLEAN_VALUES default=TRUE"
+    echo -e "\t-b --build-docker-images=$BOOLEAN_VALUES default=TRUE"
+    echo -e "\t-a --artifacts-folder=<folder> default=/opt"
     echo ""
-}
-
-function set_boolean()
-{
-    declare -n foo=$1
-    case ${2^^} in
-        TRUE | T | YES | Y | 1)
-            foo=true
-            ;;
-        FALSE | F | NO | N | 0)
-            foo=false
-            ;;
-        *)
-            if [[ "$2" == "" ]]; then
-                # just flip the meaning
-                foo=$(($foo ^ true))
-            else
-                echo "ERROR: unknown value \"$VALUE\""
-                usage
-                exit 1
-            fi
-            ;;
-    esac
 }
 
 BUILDDOCKERIMAGES=true
 SUMMARY=false
 CLEANUP_CONTAINER=true
 UPDATE_CONFLUENCE=true
+ARTIFACTS_FOLDER=/opt
 
 while [ "$1" != "" ]; do
     PARAM=`echo $1 | awk -F= '{print $1}'`
@@ -50,10 +33,13 @@ while [ "$1" != "" ]; do
             usage
             exit 0
             ;;
+        --artifacts-folder)
+            ARTIFACTS_FOLDER=$VALUE
+            ;;
         -b | --build-docker-images)
             set_boolean BUILDDOCKERIMAGES $VALUE
             ;;
-        -s | --summary)
+        -y | --summary)
             set_boolean SUMMARY $VALUE
             ;;
         -c | --cleanup-container)
@@ -116,10 +102,16 @@ function start_daos_cortx_s3tests()
         sleep 5
         docker exec -u 0 $CONTAINER_NAME bash -c 'cd /opt/s3-tests && sh setup.sh'
         if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
-        docker exec -u 0 $CONTAINER_NAME bash -c 'cd /opt/s3-tests && sh run_tests.sh cleandaos restart 50 stop MISSING'
+
+        docker exec -u 0 $CONTAINER_NAME bash -c 'cd /opt/s3-tests && sh run_tests.sh --artifacts-folder=$ARTIFACTS_FOLDER --cleandaos=true --restart=50 --stop-on-test-result=MISSING'
+        if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
+
+        # now try to shutdown
+        docker exec -u 0 $CONTAINER_NAME bash -c 'cd /opt/ceph/build && sudo ../src/stop.sh'
+        # still need to shutdown DAOS
         if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
     else
-        docker exec -u 0 $CONTAINER_NAME bash -c 'cd /opt/s3-tests && sh run_tests.sh summary'
+        docker exec -u 0 $CONTAINER_NAME bash -c 'cd /opt/s3-tests && sh run_tests.sh --summary'
         if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
     fi
 }
