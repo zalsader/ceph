@@ -77,20 +77,16 @@ int DaosUser::list_buckets(const DoutPrefixProvider* dpp, const string& marker,
 
   char daos_marker[DS3_MAX_KEY];
   strcpy(daos_marker, marker.c_str());
-  ret = ds3_bucket_list(&bcount, bucket_infos.data(), daos_marker, store->ds3,
-                        nullptr);
+  ret = ds3_bucket_list(&bcount, bucket_infos.data(), daos_marker,
+                        &is_truncated, store->ds3, nullptr);
   ldpp_dout(dpp, 20) << "DEBUG: ds3_bucket_list: bcount=" << bcount
                      << " ret=" << ret << dendl;
-  if (ret == -DER_TRUNC) {
-    is_truncated = true;
-  } else if (ret != 0) {
+  if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: ds3_bucket_list failed!" << ret << dendl;
     return ret;
   }
 
-  if (!is_truncated) {
-    bucket_infos.resize(bcount);
-  }
+  bucket_infos.resize(bcount);
 
   for (const auto& bi : bucket_infos) {
     RGWBucketEnt ent = {};
@@ -644,12 +640,6 @@ int DaosBucket::list(const DoutPrefixProvider* dpp, ListParams& params, int max,
                      ListResults& results, optional_yield y) {
   ldpp_dout(dpp, 20) << "DEBUG: list bucket=" << get_name() << " max=" << max
                      << " params=" << params << dendl;
-
-  // TODO: support the case when delim is not /
-  if (params.delim != "/") {
-    return -EINVAL;
-  }
-
   // End
   if (max == 0) {
     return 0;
@@ -660,113 +650,55 @@ int DaosBucket::list(const DoutPrefixProvider* dpp, ListParams& params, int max,
     return ret;
   }
 
-  size_t file_start = params.prefix.rfind(params.delim);
-  string path = "";
-  string prefix_rest = params.prefix;
-
-  if (file_start != std::string::npos) {
-    path = params.prefix.substr(0, file_start);
-    prefix_rest = params.prefix.substr(file_start + params.delim.length());
+  // Init needed structures
+  vector<struct ds3_object_info> object_infos(max);
+  uint32_t nobj = object_infos.size();
+  vector<vector<uint8_t>> values;
+  for (uint32_t i = 0; i < nobj; i++) {
+    vector<uint8_t> value(DFS_MAX_XATTR_LEN);
+    values.push_back(std::move(value));
+    object_infos[i].encoded = values[i].data();
   }
+  
+  vector<struct ds3_common_prefix_info> common_prefixes(max);
+  uint32_t ncp = common_prefixes.size();
+  
+  char daos_marker[DS3_MAX_KEY];
+  strcpy(daos_marker, params.marker.to_str().c_str());
+  
+  ret = ds3_bucket_list_obj(
+      &nobj, object_infos.data(), &ncp, common_prefixes.data(),
+      params.prefix.c_str(), params.delim.c_str(), daos_marker,
+      params.list_versions, &results.is_truncated, ds3b, nullptr);
 
-  dfs_obj_t* dir_obj;
-
-  string lookup_path = "/" + path;
-  ret =
-      dfs_lookup(ds3b->dfs, lookup_path.c_str(), O_RDWR, &dir_obj, nullptr, nullptr);
-
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup lookup_path=" << lookup_path
-                     << " ret=" << ret << dendl;
   if (ret != 0) {
     return ret;
   }
 
-  vector<struct dirent> dirents(max);
-  // TODO handle bigger directories
-  // TODO handle ordering
-  daos_anchor_t anchor;
-  daos_anchor_init(&anchor, 0);
+  object_infos.resize(nobj);
+  common_prefixes.resize(ncp);
 
-  uint32_t nr = dirents.size();
-  ret = dfs_readdir(ds3b->dfs, dir_obj, &anchor, &nr, dirents.data());
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_readdir path=" << path << " nr=" << nr
-                     << " ret=" << ret << dendl;
-  if (ret != 0) {
-    dfs_release(dir_obj);
-    return ret;
+  // Fill common prefixes
+  for (auto cp : common_prefixes) {
+    results.common_prefixes[cp.prefix] = true;
   }
 
-  if (!daos_anchor_is_eof(&anchor)) {
-    results.is_truncated = true;
-  }
-
-  for (uint32_t i = 0; i < nr; i++) {
-    const auto& name = dirents[i].d_name;
-
-    // Skip entries that do not start with prefix_rest
-    // TODO handle how this affects max
-    if (string(name).compare(0, prefix_rest.length(), prefix_rest) != 0) {
-      continue;
+  // Decode objs
+  for (auto obj : object_infos) {
+    bufferlist bl;
+    rgw_bucket_dir_entry ent;
+    bl.append(reinterpret_cast<char*>(obj.encoded), obj.encoded_length);
+    auto iter = bl.cbegin();
+    ent.decode(iter);
+    if (params.list_versions || ent.is_visible()) {
+      results.objs.emplace_back(std::move(ent));
     }
-
-    dfs_obj_t* entry_obj;
-    mode_t mode;
-    ret = dfs_lookup_rel(ds3b->dfs, dir_obj, name, O_RDWR | O_NOFOLLOW, &entry_obj,
-                         &mode, nullptr);
-    ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel i=" << i << " entry=" << name
-                       << " ret=" << ret << dendl;
-    if (ret != 0) {
-      dfs_release(dir_obj);
-      return ret;
-    }
-
-    if (S_ISDIR(mode)) {
-      // The entry is a directory, add to common prefix
-      string key = path.empty() ? "" : path + params.delim;
-      key += name + params.delim;
-      results.common_prefixes[key] = true;
-
-    } else if (S_ISREG(mode)) {
-      // The entry is a regular file, read the xattr and add to objs
-      vector<uint8_t> value(DFS_MAX_XATTR_LEN);
-      size_t size = value.size();
-      ret = dfs_getxattr(ds3b->dfs, entry_obj, RGW_DIR_ENTRY_XATTR, value.data(),
-                         &size);
-      ldpp_dout(dpp, 20) << "DEBUG: dfs_getxattr entry=" << name
-                         << " xattr=" << RGW_DIR_ENTRY_XATTR << dendl;
-      // Skip if file has no dirent
-      if (ret != 0) {
-        ldpp_dout(dpp, 0) << "ERROR: no dirent, skipping entry=" << name
-                          << dendl;
-        dfs_release(entry_obj);
-        continue;
-      }
-
-      bufferlist bl;
-      rgw_bucket_dir_entry ent;
-      bl.append(reinterpret_cast<char*>(value.data()), size);
-      auto iter = bl.cbegin();
-      ent.decode(iter);
-      if (params.list_versions || ent.is_visible()) {
-        results.objs.emplace_back(std::move(ent));
-      }
-    } else {
-      // Skip other types
-      ldpp_dout(dpp, 20) << "DEBUG: skipping entry=" << name << dendl;
-    }
-
-    // Close handles
-    ret = dfs_release(entry_obj);
-    ldpp_dout(dpp, 20) << "DEBUG: dfs_release entry_obj ret=" << ret << dendl;
   }
 
   if (!params.allow_unordered) {
     std::sort(results.objs.begin(), results.objs.end(),
               compare_rgw_bucket_dir_entry);
   }
-
-  ret = dfs_release(dir_obj);
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_release dir_obj ret=" << ret << dendl;
 
   ret = close(dpp);
 
@@ -1343,8 +1275,8 @@ int DaosObject::DaosDeleteOp::delete_obj(const DoutPrefixProvider* dpp,
     // Open parent dir
     std::string parent_path = "/" + path.substr(0, file_start);
     file_name = path.substr(file_start + 1);
-    ret = dfs_lookup(daos_bucket->ds3b->dfs, parent_path.c_str(), O_RDWR, &parent,
-                     nullptr, nullptr);
+    ret = dfs_lookup(daos_bucket->ds3b->dfs, parent_path.c_str(), O_RDWR,
+                     &parent, nullptr, nullptr);
     ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup parent_path=" << parent_path
                        << " ret=" << ret << dendl;
     if (ret != 0) {
@@ -1352,7 +1284,8 @@ int DaosObject::DaosDeleteOp::delete_obj(const DoutPrefixProvider* dpp,
     }
   }
 
-  ret = dfs_remove(daos_bucket->ds3b->dfs, parent, file_name.c_str(), false, nullptr);
+  ret = dfs_remove(daos_bucket->ds3b->dfs, parent, file_name.c_str(), false,
+                   nullptr);
   ldpp_dout(dpp, 20) << "DEBUG: dfs_remove file_name=" << file_name
                      << " ret=" << ret << dendl;
 
@@ -1435,8 +1368,8 @@ int DaosObject::lookup(const DoutPrefixProvider* dpp, mode_t* mode) {
       // null instance since it is likely that the bucket did not have
       // versioning before
       path = path.substr(0, suffix_start);
-      ret = dfs_lookup(daos_bucket->ds3b->dfs, path.c_str(), O_RDWR, &dfs_obj, mode,
-                       nullptr);
+      ret = dfs_lookup(daos_bucket->ds3b->dfs, path.c_str(), O_RDWR, &dfs_obj,
+                       mode, nullptr);
       ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup path=" << path << " ret=" << ret
                          << dendl;
     }
@@ -1528,8 +1461,8 @@ int DaosObject::create(const DoutPrefixProvider* dpp, const bool create_parents,
     link_to_c = link_to.c_str();
 
     // Remove any existing symlinks since O_TRUNC is not handled
-    ret =
-        dfs_remove(daos_bucket->ds3b->dfs, parent, file_name.c_str(), false, nullptr);
+    ret = dfs_remove(daos_bucket->ds3b->dfs, parent, file_name.c_str(), false,
+                     nullptr);
   } else {
     mode |= S_IFREG;
   }
@@ -1578,7 +1511,8 @@ int DaosObject::write(const DoutPrefixProvider* dpp, bufferlist&& data,
   d_iov_set(&iov, data.c_str(), data.length());
   wsgl.sg_nr = 1;
   wsgl.sg_iovs = &iov;
-  int ret = dfs_write(get_daos_bucket()->ds3b->dfs, dfs_obj, &wsgl, offset, nullptr);
+  int ret =
+      dfs_write(get_daos_bucket()->ds3b->dfs, dfs_obj, &wsgl, offset, nullptr);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to write into daos object ("
                       << get_bucket()->get_name() << ", " << get_key().to_str()
@@ -1597,8 +1531,8 @@ int DaosObject::read(const DoutPrefixProvider* dpp, bufferlist& data,
   rsgl.sg_nr = 1;
   rsgl.sg_iovs = &iov;
   rsgl.sg_nr_out = 1;
-  int ret =
-      dfs_read(get_daos_bucket()->ds3b->dfs, dfs_obj, &rsgl, offset, &size, nullptr);
+  int ret = dfs_read(get_daos_bucket()->ds3b->dfs, dfs_obj, &rsgl, offset,
+                     &size, nullptr);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to read from daos object ("
                       << get_bucket()->get_name() << ", " << get_key().to_str()
