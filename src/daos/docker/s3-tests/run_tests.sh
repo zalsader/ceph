@@ -6,21 +6,24 @@ source $CEPH_PATH/src/daos/set_boolean.sh
 source $CEPH_PATH/src/daos/set_integer.sh
 source $CEPH_PATH/src/daos/restart_daos.sh
 source $CEPH_PATH/src/daos/isRadosgwRunning.sh
+source $CEPH_PATH/src/daos/silent_pushd_popd.sh
 source $CEPH_PATH/src/daos/docker/s3-tests/testresults.sh
+source $CEPH_PATH/src/daos/radosgw_start.sh
 
 if [[ ! "$CEPH_PATH" =~ . ]];
 then
     CEPH_PATH=/opt/ceph
 fi
 
-DAOS_BIN=''
-if [[ -e $DAOS_PATH/install/bin/dmg ]]; then
-    DAOS_BIN="$DAOS_PATH/install/bin/"
+if [[ "$DAOS_BIN" == "" ]]; then
+    if [[ -e $DAOS_PATH/install/bin/dmg ]]; then
+        DAOS_BIN="$DAOS_PATH/install/bin/"
+    fi
+    if [[ -e $DAOS_PATH/bin/dmg ]]; then
+        DAOS_BIN="$DAOS_PATH/bin/"
+    fi
 fi
-if [[ -e $DAOS_PATH/bin/dmg ]]; then
-    DAOS_BIN="$DAOS_PATH/bin/"
-fi
-if [[ $DAOS_BIN == '' ]]; then
+if [[ "$DAOS_BIN" == "" ]]; then
     echo "dmg was not found in the usual places, exiting"
     exit 1
 fi
@@ -66,6 +69,7 @@ restart_count=0
 clean_daos=true
 color_output=true
 ARTIFACTS_FOLDER=/opt
+COMMAND_PREFIX='sudo'
 
 while (( $# ))
     do
@@ -132,7 +136,9 @@ working_folder=`pwd`
 if [[ ! -e $input ]];
 then
     echo "Creating lists file: $input"
+    pushd ${S3TESTS_PATH}
     S3TEST_CONF=s3tests.conf virtualenv/bin/nosetests -v --collect-only 2> $input
+    popd
 fi
 
 echo "Test name,Results,Count,Time" > $csv_output
@@ -198,7 +204,7 @@ check_test_result()
 attempt_restart()
 {
     echo "attempting restart"
-    if [[ $summary == true ]]; then
+    if [[ $summary == false ]]; then
         index=1
         rados_restart=5
         while [ $index -le $rados_restart ]; do
@@ -216,9 +222,7 @@ attempt_restart()
             if [[ ! $result == 0 ]]; then
                 echo "daos restart failed"
             else
-                pushd ${CEPH_PATH}/build
-                sudo RGW=1 ../src/vstart.sh -d
-                popd
+                radosgw_start
                 isRadosgwRunning
                 if [[ $? == 1 ]]; then
                     sh $CEPH_PATH/src/daos/docker/s3-tests/setup.sh
@@ -335,12 +339,12 @@ run_test()
 
 get_test_filename()
 {
-    echo "test_results/${1}.txt"
+    echo "$ARTIFACTS_FOLDER/test_results/${1}.txt"
 }
 
-if [[ ! -d test_results ]];
+if [[ ! -d $ARTIFACTS_FOLDER/test_results ]];
 then
-    mkdir test_results
+    mkdir $ARTIFACTS_FOLDER/test_results
 fi
 
 create_test_array()
@@ -378,6 +382,7 @@ test_each()
 
 summarize()
 {
+    set +x
     local total_tests=${#test_list[@]}
     if [[ $total_tests == 0 ]]; then
         echo "Summarize failed due to test results missing"

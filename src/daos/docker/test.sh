@@ -1,6 +1,21 @@
 #!/bin/bash
+# Prerequisites:
+#   create folders /opt/daos, /opt/ceph, /opt/s3-tests making sure there is about 50gb free
+#   install git, docker
+#   move docker storage to a location with about 250gb free
+#   git clone daos, ceph & s3-tests (used for determining if docker images need to be rebuilt)
+#   export CEPH_PATH=/opt/ceph
+#   export DAOS_PATH=/opt/daos
+#   export S3TESTS_PATH=/opt/s3-tests
+#   (CEPH_PATH, DAOS_PATH & S3TESTS_PATH can be located in different folders on docker host)
+
 set -x
 source $CEPH_PATH/src/daos/set_boolean.sh
+source $CEPH_PATH/src/daos/require_variables.sh
+source $CEPH_PATH/src/daos/daos_format.sh
+source $CEPH_PATH/src/daos/daos_pool_create.sh
+
+require_variables DAOS_PATH S3TESTS_PATH
 
 function usage()
 {
@@ -63,6 +78,8 @@ fi
 if [[ $CONTAINER_NAME == "" ]]; then
     export CONTAINER_NAME="dgws3-$RUN_DATE"
 fi
+COMMAND_PREFIX="docker exec -u 0 $CONTAINER_NAME"
+DAOS_BIN="/opt/daos/bin"
 
 function start_docker_container()
 {
@@ -91,27 +108,37 @@ function start_daos_cortx_s3tests()
         docker exec -u 0 $CONTAINER_NAME /opt/daos/bin/daos_agent &
         if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
         sleep 5
-        docker exec -u 0 $CONTAINER_NAME /opt/daos/bin/dmg -i storage format
-        if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
-        sleep 20
-        docker exec -u 0 $CONTAINER_NAME /opt/daos/bin/dmg pool create --size=4GB tank
-        if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
-        sleep 10
-        docker exec -u 0 $CONTAINER_NAME bash -c 'cd /opt/ceph/build && sudo RGW=1 ../src/vstart.sh'
-        if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
-        sleep 5
-        docker exec -u 0 $CONTAINER_NAME bash -c 'cd /opt/s3-tests && sh setup.sh'
-        if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
 
-        docker exec -u 0 $CONTAINER_NAME bash -c 'cd /opt/s3-tests && sh run_tests.sh --artifacts-folder=$ARTIFACTS_FOLDER --cleandaos=true --restart=50 --stop-on-test-result=MISSING'
+        # docker exec -u 0 $CONTAINER_NAME /opt/daos/bin/dmg -i storage format
+        # if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
+        # sleep 20
+        daos_format
+
+        # docker exec -u 0 $CONTAINER_NAME /opt/daos/bin/dmg pool create --size=4GB tank
+        # if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
+        # sleep 10
+        daos_pool_create
+
+        # docker exec -u 0 $CONTAINER_NAME bash -c 'cd $CEPH_PATH/build && sudo RGW=1 ../src/vstart.sh'
+        # if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
+        # sleep 5
+        radosgw_start
+
+        # docker exec -u 0 $CONTAINER_NAME bash -c 'cd $CEPH_PATH/src/daos/docker/s3-tests && sh setup.sh'
+        # if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
+        radosgw_create_s3bucket
+
+        docker exec -u 0 $CONTAINER_NAME bash -c 'sh $CEPH_PATH/src/daos/docker/s3-tests/run_tests.sh --artifacts-folder=$ARTIFACTS_FOLDER --cleandaos=true --restart=50 --stop-on-test-result=MISSING'
         if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
 
         # now try to shutdown
-        docker exec -u 0 $CONTAINER_NAME bash -c 'cd /opt/ceph/build && sudo ../src/stop.sh'
+        # docker exec -u 0 $CONTAINER_NAME bash -c 'cd $CEPH_PATH/build && sudo ../src/stop.sh'
         # still need to shutdown DAOS
-        if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
+        # if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
+        radosgw_stop
+        daos_stop
     else
-        docker exec -u 0 $CONTAINER_NAME bash -c 'cd /opt/s3-tests && sh run_tests.sh --summary'
+        docker exec -u 0 $CONTAINER_NAME bash -c '$CEPH_PATH/src/daos/docker/s3-tests/run_tests.sh --artifacts-folder=$ARTIFACTS_FOLDER --summary'
         if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
     fi
 }
@@ -121,7 +148,7 @@ function copy_artifact()
     if [[ -e $RUN_DATE/$1 ]]; then
         sudo chmod 666 $RUN_DATE/$1
     fi
-    docker cp $CONTAINER_NAME:/opt/s3-tests/$1 $RUN_DATE/
+    docker cp $CONTAINER_NAME:$ARTIFACTS_FOLDER/$1 $RUN_DATE/
     if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
 }
 
@@ -201,7 +228,7 @@ function build_docker_images()
 {
     DAOS_BUILT=0
     CEPH_BUILT=0
-    get_git_status /opt/daos
+    get_git_status $DAOS_PATH
     DAOS_GIT=$?
     docker inspect -f '{{ .Created }}' daos-rocky
     DAOS_ROCKY=$?
@@ -216,7 +243,7 @@ function build_docker_images()
         DAOS_BUILT=1
         popd
     fi
-    get_git_status /opt/ceph
+    get_git_status $CEPH_PATH
     CEPH_GIT=$?
     docker inspect -f '{{ .Created }}' dgw-single-host
     DGW_SINGLE=$?
@@ -227,7 +254,7 @@ function build_docker_images()
         CEPH_BUILT=1
         popd
     fi
-    get_git_status /opt/s3-tests
+    get_git_status $S3TESTS_PATH
     S3TESTS_GIT=$?
     docker inspect -f '{{ .Created }}' dgw-s3-tests
     DGW_S3TESTS=$?

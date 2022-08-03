@@ -3,6 +3,8 @@
 # create conf file from s3tests.conf.SAMPLE
 # prepare the tests
 
+source $CEPH_PATH/src/daos/silent_pushd_popd.sh
+
 if [[ ! "$ceph_folder" =~ . ]];
 then
     ceph_folder=/opt/ceph
@@ -11,7 +13,7 @@ fi
 user_file=$(mktemp /tmp/john.doe.XXXXXXXXX.json)
 
 pushd ${ceph_folder}/build
-sudo bin/radosgw-admin user create --email johndoe@dgw.com --uid johndoe --display-name John-Doe --no-mon-config > ${S3TESTS_PATH}/$user_file
+sudo bin/radosgw-admin user create --email johndoe@dgw.com --uid johndoe --display-name John-Doe --no-mon-config > $user_file
 if [ $? -ne 0 ]; then
     sudo bin/radosgw-admin user info --uid johndoe > $user_file
     if [ $? -ne 0 ]; then
