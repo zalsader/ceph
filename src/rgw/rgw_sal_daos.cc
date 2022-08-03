@@ -1373,28 +1373,10 @@ int DaosObject::lookup(const DoutPrefixProvider* dpp) {
   return ret;
 }
 
-int DaosObject::create(const DoutPrefixProvider* dpp, const bool create_parents,
-                       const string link_to) {
+int DaosObject::create(const DoutPrefixProvider* dpp) {
   ldpp_dout(dpp, 20) << "DEBUG: create" << dendl;
   if (is_open()) {
     return 0;
-  }
-
-  // TODO: cache open file handles
-  dfs_obj_t* parent = nullptr;
-  fs::path path = get_key().to_str();
-  fs::path file_name = path.filename();
-  fs::path parent_path = path.parent_path();
-  mode_t mode = DEFFILEMODE;
-
-  // Disallow creating a file with the instance = latest, since it is supposed
-  // to be a link, not a writeable file
-  size_t suffix_pos = path.string().rfind(LATEST_INSTANCE_SUFFIX);
-  if (suffix_pos != std::string::npos && link_to.empty()) {
-    ldpp_dout(dpp, 0) << "ERROR: creating an object that ends with "
-                      << LATEST_INSTANCE_SUFFIX
-                      << " is not allowed unless it is a link" << dendl;
-    return -EINVAL;
   }
 
   int ret = 0;
@@ -1404,67 +1386,10 @@ int DaosObject::create(const DoutPrefixProvider* dpp, const bool create_parents,
     return ret;
   }
 
-  if (!parent_path.empty()) {
-    // Recursively open parent directories
-    vector<string> dirs;
-    dfs_obj_t* dir_obj;
+  ret = ds3_obj_create(get_key().to_str().c_str(), &ds3o, daos_bucket->ds3b);
 
-    for (const auto& dir : parent_path) {
-      if (create_parents) {
-        // Create directory
-        ret = dfs_mkdir(daos_bucket->ds3b->dfs, parent, dir.c_str(), mode, 0);
-        ldpp_dout(dpp, 20) << "DEBUG: dfs_mkdir dir=" << dir << " ret=" << ret
-                           << dendl;
-        if (ret != 0 && ret != EEXIST) {
-          if (parent) {
-            dfs_release(parent);
-          }
-          return ret;
-        }
-      }
-
-      // Open directory
-      ret = dfs_lookup_rel(daos_bucket->ds3b->dfs, parent, dir.c_str(), O_RDWR,
-                           &dir_obj, nullptr, nullptr);
-      ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel dir=" << dir
-                         << " ret=" << ret << dendl;
-      if (parent) {
-        dfs_release(parent);
-      }
-      if (ret != 0) {
-        return ret;
-      }
-      parent = dir_obj;
-    }
-  }
-
-  // Create links if requested
-  const char* link_to_c = nullptr;
-  if (!link_to.empty()) {
-    mode |= S_IFLNK;
-    link_to_c = link_to.c_str();
-
-    // Remove any existing symlinks since O_TRUNC is not handled
-    ret = dfs_remove(daos_bucket->ds3b->dfs, parent, file_name.c_str(), false,
-                     nullptr);
-  } else {
-    mode |= S_IFREG;
-  }
-
-  // Finally create the file
-  ret = dfs_open(daos_bucket->ds3b->dfs, parent, file_name.c_str(), mode,
-                 O_RDWR | O_CREAT | O_TRUNC, 0, 0, link_to_c, &ds3o->dfs_obj);
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_open file_name=" << file_name
-                     << " ret=" << ret << dendl;
-  if (parent) {
-    ret = dfs_release(parent);
-    ldpp_dout(dpp, 20) << "DEBUG: dfs_release ret=" << ret << dendl;
-  }
-
-  if (ret == 0 || ret == EEXIST) {
-    ret = 0;
-  } else {
-    ldpp_dout(dpp, 0) << "ERROR: failed to open daos object ("
+  if (ret != 0) {
+    ldpp_dout(dpp, 0) << "ERROR: failed to create daos object ("
                       << get_bucket()->get_name() << ", " << get_key().to_str()
                       << "): ret=" << ret << dendl;
   }
@@ -2337,7 +2262,8 @@ int DaosMultipartWriter::prepare(optional_yield y) {
 
   part_obj = get_daos_bucket()->get_part_object(upload_id, part_num);
   // XXX: we should just create the file, and not the whole path
-  int ret = part_obj->create(dpp, false);
+  // TODO implement part creation
+  int ret = 0; //part_obj->create(dpp, false);
   if (ret == -ENOENT) {
     ret = -ERR_NO_SUCH_UPLOAD;
   }
