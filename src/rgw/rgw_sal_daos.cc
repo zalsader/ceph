@@ -1643,13 +1643,8 @@ int DaosObject::mark_as_latest(const DoutPrefixProvider* dpp,
 
   // Get or create the link [latest], make it link to the current latest
   // version.
-  std::unique_ptr<DaosObject> latest_link = std::make_unique<DaosObject>(
-      store, rgw_obj_key(get_name(), LATEST_INSTANCE), get_bucket());
-  fs::path path = get_key().to_str();
-  ret = latest_link->create(dpp, false, path.filename().string());
-
-  // TODO Update an xattr with a list to all the version ids, ordered by
-  // creation to handle deletion
+  ret = ds3_obj_mark_latest(get_key().to_str().c_str(), get_daos_bucket()->ds3b);
+  ldpp_dout(dpp, 20) << "DEBUG: ds3_obj_mark_latest ret=" << ret << dendl;
   return ret;
 }
 
