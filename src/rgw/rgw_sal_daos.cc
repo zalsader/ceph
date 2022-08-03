@@ -1340,10 +1340,10 @@ int DaosObject::swift_versioning_copy(const DoutPrefixProvider* dpp,
   return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
-int DaosObject::lookup(const DoutPrefixProvider* dpp, mode_t* mode) {
+int DaosObject::lookup(const DoutPrefixProvider* dpp) {
   ldpp_dout(dpp, 20) << "DEBUG: lookup" << dendl;
   if (is_open()) {
-    return DAOS_NOT_IMPLEMENTED_LOG(dpp);
+    return 0;
   }
 
   int ret = 0;
@@ -1361,27 +1361,11 @@ int DaosObject::lookup(const DoutPrefixProvider* dpp, mode_t* mode) {
   ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup path=" << path << " ret=" << ret
                      << dendl;
 
-  if (ret != 0) {
-    size_t suffix_start = path.rfind(LATEST_INSTANCE_SUFFIX);
-    if (suffix_start != std::string::npos) {
-      // If we are trying to access the latest version, try accessing key with
-      // null instance since it is likely that the bucket did not have
-      // versioning before
-      path = path.substr(0, suffix_start);
-      ret = dfs_lookup(daos_bucket->ds3b->dfs, path.c_str(), O_RDWR, &dfs_obj,
-                       mode, nullptr);
-      ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup path=" << path << " ret=" << ret
-                         << dendl;
-    }
-  }
-
-  if (ret == 0) {
-    _is_open = true;
-  } else if (ret == ENOENT) {
+  if (ret == -ENOENT) {
     ldpp_dout(dpp, 20) << "DEBUG: daos object (" << get_bucket()->get_name()
                        << ", " << get_key().to_str()
                        << ") does not exist: ret=" << ret << dendl;
-  } else {
+  } else if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to open daos object ("
                       << get_bucket()->get_name() << ", " << get_key().to_str()
                       << "): ret=" << ret << dendl;
@@ -1469,7 +1453,7 @@ int DaosObject::create(const DoutPrefixProvider* dpp, const bool create_parents,
 
   // Finally create the file
   ret = dfs_open(daos_bucket->ds3b->dfs, parent, file_name.c_str(), mode,
-                 O_RDWR | O_CREAT | O_TRUNC, 0, 0, link_to_c, &dfs_obj);
+                 O_RDWR | O_CREAT | O_TRUNC, 0, 0, link_to_c, &ds3o->dfs_obj);
   ldpp_dout(dpp, 20) << "DEBUG: dfs_open file_name=" << file_name
                      << " ret=" << ret << dendl;
   if (parent) {
@@ -1479,7 +1463,6 @@ int DaosObject::create(const DoutPrefixProvider* dpp, const bool create_parents,
 
   if (ret == 0 || ret == EEXIST) {
     ret = 0;
-    _is_open = true;
   } else {
     ldpp_dout(dpp, 0) << "ERROR: failed to open daos object ("
                       << get_bucket()->get_name() << ", " << get_key().to_str()
@@ -1494,12 +1477,8 @@ int DaosObject::close(const DoutPrefixProvider* dpp) {
     return 0;
   }
 
-  int ret = dfs_release(dfs_obj);
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_release ret=" << ret << dendl;
-
-  if (ret == 0) {
-    _is_open = false;
-  }
+  int ret = ds3_obj_close(ds3o);
+  ldpp_dout(dpp, 20) << "DEBUG: ds3_obj_close ret=" << ret << dendl;
   return ret;
 }
 
@@ -1512,7 +1491,7 @@ int DaosObject::write(const DoutPrefixProvider* dpp, bufferlist&& data,
   wsgl.sg_nr = 1;
   wsgl.sg_iovs = &iov;
   int ret =
-      dfs_write(get_daos_bucket()->ds3b->dfs, dfs_obj, &wsgl, offset, nullptr);
+      dfs_write(get_daos_bucket()->ds3b->dfs, ds3o->dfs_obj, &wsgl, offset, nullptr);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to write into daos object ("
                       << get_bucket()->get_name() << ", " << get_key().to_str()
@@ -1531,7 +1510,7 @@ int DaosObject::read(const DoutPrefixProvider* dpp, bufferlist& data,
   rsgl.sg_nr = 1;
   rsgl.sg_iovs = &iov;
   rsgl.sg_nr_out = 1;
-  int ret = dfs_read(get_daos_bucket()->ds3b->dfs, dfs_obj, &rsgl, offset,
+  int ret = dfs_read(get_daos_bucket()->ds3b->dfs, ds3o->dfs_obj, &rsgl, offset,
                      &size, nullptr);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to read from daos object ("
@@ -1553,7 +1532,7 @@ int DaosObject::get_dir_entry_attrs(const DoutPrefixProvider* dpp,
 
   vector<uint8_t> value(DFS_MAX_XATTR_LEN);
   size_t size = value.size();
-  ret = dfs_getxattr(get_daos_bucket()->ds3b->dfs, dfs_obj, RGW_DIR_ENTRY_XATTR,
+  ret = dfs_getxattr(get_daos_bucket()->ds3b->dfs, ds3o->dfs_obj, RGW_DIR_ENTRY_XATTR,
                      value.data(), &size);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to get dirent of daos object ("
@@ -1619,7 +1598,7 @@ int DaosObject::set_dir_entry_attrs(const DoutPrefixProvider* dpp,
   encode(*upload_info, wbl);
 
   // Write rgw_bucket_dir_entry into object xattr
-  ret = dfs_setxattr(get_daos_bucket()->ds3b->dfs, dfs_obj, RGW_DIR_ENTRY_XATTR,
+  ret = dfs_setxattr(get_daos_bucket()->ds3b->dfs, ds3o->dfs_obj, RGW_DIR_ENTRY_XATTR,
                      wbl.c_str(), wbl.length(), 0);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to set dirent of daos object ("
@@ -2430,7 +2409,7 @@ int DaosMultipartWriter::complete(
   ldpp_dout(dpp, 20) << "DaosMultipartWriter::complete(): entry size"
                      << bl.length() << dendl;
 
-  ret = dfs_setxattr(store->ds3->meta_dfs, part_obj->dfs_obj, RGW_PART_XATTR,
+  ret = dfs_setxattr(store->ds3->meta_dfs, part_obj->ds3o->dfs_obj, RGW_PART_XATTR,
                      bl.c_str(), bl.length(), 0);
 
   if (ret != 0) {

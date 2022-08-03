@@ -541,7 +541,6 @@ class DaosObject : public Object {
  private:
   DaosStore* store;
   RGWAccessControlPolicy acls;
-  bool _is_open = false;
 
  public:
   struct DaosReadOp : public ReadOp {
@@ -572,7 +571,7 @@ class DaosObject : public Object {
                            optional_yield y) override;
   };
 
-  dfs_obj_t* dfs_obj;
+  ds3_obj_t *ds3o = nullptr;
 
   DaosObject() = default;
 
@@ -670,9 +669,9 @@ class DaosObject : public Object {
                                   const std::string& key, bufferlist& val,
                                   bool must_exist, optional_yield y) override;
 
-  bool is_open() { return _is_open; };
+  bool is_open() { return ds3o != nullptr; };
   // Only lookup the object, do not create
-  int lookup(const DoutPrefixProvider* dpp, mode_t* mode = nullptr);
+  int lookup(const DoutPrefixProvider* dpp);
   // Create the object, truncate if exists
   int create(const DoutPrefixProvider* dpp, const bool create_parents = true,
              const std::string link_to = "");
