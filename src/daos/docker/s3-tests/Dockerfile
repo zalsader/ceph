@@ -16,4 +16,4 @@ RUN cd /opt && sudo mkdir -p s3-tests && sudo chmod 777 s3-tests && git clone ht
 # add rocky to the distro
 RUN sed -i 's/ centos|fedora|rhel/ rocky|centos|fedora|rhel/' /opt/s3-tests/bootstrap 
 RUN cd /opt/s3-tests && ./bootstrap
-
+ENV S3TESTS_PATH=/opt/s3-tests

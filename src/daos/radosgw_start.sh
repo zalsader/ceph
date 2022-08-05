@@ -8,5 +8,5 @@ source $CEPH_PATH/src/daos/require_variables.sh
 radosgw_start()
 {
     require_variables COMMAND_PREFIX
-    COMMAND_PREFIX bash -c "pushd ${CEPH_PATH}/build && RGW=1 ../src/vstart.sh $RADOSGW_STARTOPTIONS && popd"
+    $COMMAND_PREFIX bash -c "pushd ${CEPH_PATH}/build && RGW=1 ../src/vstart.sh $RADOSGW_STARTOPTIONS && popd"
 }

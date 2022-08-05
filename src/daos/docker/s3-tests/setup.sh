@@ -3,7 +3,7 @@
 # create conf file from s3tests.conf.SAMPLE
 # prepare the tests
 
-source $CEPH_PATH/src/daos/silent_pushd_popd.sh
+# source $CEPH_PATH/src/daos/silent_pushd_popd.sh
 
 if [[ ! "$ceph_folder" =~ . ]];
 then
@@ -49,6 +49,7 @@ echo "host_base = localhost:8000" >> ~/.s3cfg
 echo "host_bucket = %(bucket)localhost" >> ~/.s3cfg
 echo "use_https = True" >> ~/.s3cfg
 
+pwd
 cp s3tests.conf.SAMPLE s3tests.conf
 sudo chmod 777 s3tests.conf
 crudini --set s3tests.conf fixtures 'bucket prefix' testbucket3-{random}

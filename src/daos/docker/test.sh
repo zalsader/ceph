@@ -14,6 +14,9 @@ source $CEPH_PATH/src/daos/set_boolean.sh
 source $CEPH_PATH/src/daos/require_variables.sh
 source $CEPH_PATH/src/daos/daos_format.sh
 source $CEPH_PATH/src/daos/daos_pool_create.sh
+source $CEPH_PATH/src/daos/radosgw_start.sh
+source $CEPH_PATH/src/daos/radosgw_stop.sh
+source $CEPH_PATH/src/daos/radosgw_create_s3bucket.sh
 
 require_variables DAOS_PATH S3TESTS_PATH
 
@@ -39,6 +42,8 @@ SUMMARY=false
 CLEANUP_CONTAINER=true
 UPDATE_CONFLUENCE=true
 ARTIFACTS_FOLDER=/opt
+START_DAOS=true
+START_RADOSGW=true
 
 while [ "$1" != "" ]; do
     PARAM=`echo $1 | awk -F= '{print $1}'`
@@ -47,6 +52,12 @@ while [ "$1" != "" ]; do
         -h | --help)
             usage
             exit 0
+            ;;
+        --start-daos)
+            set_boolean START_DAOS $VALUE
+            ;;
+        --start-radosgw)
+            set_boolean START_RADOSGW $VALUE
             ;;
         --artifacts-folder)
             ARTIFACTS_FOLDER=$VALUE
@@ -103,42 +114,30 @@ function start_daos_cortx_s3tests()
     # check for anything running as this may be a re-run
     PROCESSES=$(docker exec $CONTAINER_NAME  ps -e)
     if [[ ! $PROCESSES =~ daos_server ]] && [[ $SUMMARY == false ]]; then
-        docker exec -u 0 $CONTAINER_NAME /opt/daos/bin/daos_server start &
-        if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
-        docker exec -u 0 $CONTAINER_NAME /opt/daos/bin/daos_agent &
-        if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
-        sleep 5
+        if [[ $START_DAOS == true ]]; then
+            docker exec -u 0 $CONTAINER_NAME /opt/daos/bin/daos_server start &
+            if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
+            docker exec -u 0 $CONTAINER_NAME /opt/daos/bin/daos_agent &
+            if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
+            sleep 5
 
-        # docker exec -u 0 $CONTAINER_NAME /opt/daos/bin/dmg -i storage format
-        # if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
-        # sleep 20
-        daos_format
+            daos_format
+            daos_pool_create
+        fi
 
-        # docker exec -u 0 $CONTAINER_NAME /opt/daos/bin/dmg pool create --size=4GB tank
-        # if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
-        # sleep 10
-        daos_pool_create
+        if [[ $START_RADOSGW == true ]]; then
+            radosgw_start
+        fi
 
-        # docker exec -u 0 $CONTAINER_NAME bash -c 'cd $CEPH_PATH/build && sudo RGW=1 ../src/vstart.sh'
-        # if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
-        # sleep 5
-        radosgw_start
-
-        # docker exec -u 0 $CONTAINER_NAME bash -c 'cd $CEPH_PATH/src/daos/docker/s3-tests && sh setup.sh'
-        # if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
         radosgw_create_s3bucket
 
-        docker exec -u 0 $CONTAINER_NAME bash -c 'sh $CEPH_PATH/src/daos/docker/s3-tests/run_tests.sh --artifacts-folder=$ARTIFACTS_FOLDER --cleandaos=true --restart=50 --stop-on-test-result=MISSING'
+        docker exec -u 0 $CONTAINER_NAME bash -c "sh /opt/ceph/src/daos/docker/s3-tests/run_tests.sh --artifacts-folder=$ARTIFACTS_FOLDER --cleandaos=true --restart=50 --stop-on-test-result=MISSING --run-on-test-result=MISSING,NOT_RUNNING"
         if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
 
-        # now try to shutdown
-        # docker exec -u 0 $CONTAINER_NAME bash -c 'cd $CEPH_PATH/build && sudo ../src/stop.sh'
-        # still need to shutdown DAOS
-        # if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
         radosgw_stop
         daos_stop
     else
-        docker exec -u 0 $CONTAINER_NAME bash -c '$CEPH_PATH/src/daos/docker/s3-tests/run_tests.sh --artifacts-folder=$ARTIFACTS_FOLDER --summary'
+        docker exec -u 0 $CONTAINER_NAME bash -c "sh /opt/ceph/src/daos/docker/s3-tests/run_tests.sh --artifacts-folder=$ARTIFACTS_FOLDER --summary"
         if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
     fi
 }
