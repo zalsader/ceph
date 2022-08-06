@@ -10,6 +10,7 @@
 #   (CEPH_PATH, DAOS_PATH & S3TESTS_PATH can be located in different folders on docker host)
 
 set -x
+source $CEPH_PATH/src/daos/error_handler.sh
 source $CEPH_PATH/src/daos/set_boolean.sh
 source $CEPH_PATH/src/daos/require_variables.sh
 source $CEPH_PATH/src/daos/daos_format.sh
@@ -111,9 +112,7 @@ function start_docker_container()
 
 function start_daos_cortx_s3tests()
 {
-    # check for anything running as this may be a re-run
-    PROCESSES=$(docker exec $CONTAINER_NAME  ps -e)
-    if [[ ! $PROCESSES =~ daos_server ]] && [[ $SUMMARY == false ]]; then
+    if [[ $SUMMARY == false ]]; then
         if [[ $START_DAOS == true ]]; then
             docker exec -u 0 $CONTAINER_NAME /opt/daos/bin/daos_server start &
             if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
@@ -236,9 +235,9 @@ function build_docker_images()
     if [[ $DAOS_GIT == $PULL_NEEDED ]] || [[ $DAOS_ROCKY != 0 ]] || [[ $DAOS_SINGLE_HOST != 0 ]]; then
         pushd daos
         docker build https://github.com/daos-stack/daos.git#master -f utils/docker/Dockerfile.el.8 -t daos-rocky
-        if [[ ! $? == 0 ]]; then exit 1; fi
+        error_handler $? $(basename $0) FUNCNAME LINENO
         docker build . -t "daos-single-host"
-        if [[ ! $? == 0 ]]; then exit 1; fi
+        error_handler $? $(basename $0) FUNCNAME LINENO
         DAOS_BUILT=1
         popd
     fi
@@ -249,7 +248,7 @@ function build_docker_images()
     if [[ $DAOS_BUILT != 0 ]] || [[ $CEPH_GIT == $PULL_NEEDED ]] || [[ $DGW_SINGLE != 0 ]]; then
         pushd ceph
         docker build . -t "dgw-single-host"
-        if [[ ! $? == 0 ]]; then exit 1; fi
+        error_handler $? $(basename $0) FUNCNAME LINENO
         CEPH_BUILT=1
         popd
     fi
@@ -260,7 +259,7 @@ function build_docker_images()
     if [[ $CEPH_BUILT != 0 ]] || [[ $S3TESTS_GIT == $PULL_NEEDED ]] || [[ $DGW_S3TESTS != 0 ]]; then
         pushd s3-tests
         docker build . -t "dgw-s3-tests"
-        if [[ ! $? == 0 ]]; then exit 1; fi
+        error_handler $? $(basename $0) FUNCNAME LINENO
         popd
     fi
 

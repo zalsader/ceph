@@ -17,8 +17,8 @@ pipeline {
 					export RUN_DATE="$(date +"%Y-%m-%d")"
 					export DOCKER_RUN=/opt/ceph/src/daos/docker
                     export ARTIFACTS_FOLDER=/opt/$RUN_DATE
-					cd $DOCKER_RUN && sh test.sh --run-date=$RUN_DATE --artifacts-folder=$ARTIFACTS_FOLDER
-					ls -l /tmp/*.csv
+					cd $DOCKER_RUN && sh test.sh --artifacts-folder=$ARTIFACTS_FOLDER
+					ls -l $ARTIFACTS_FOLDER/*.csv
 					cp $ARTIFACTS_FOLDER/test_diff.csv $WORKSPACE
 					cp $ARTIFACTS_FOLDER/test_output.csv $WORKSPACE
 					cp $ARTIFACTS_FOLDER/test_summary.csv $WORKSPACE
@@ -31,7 +31,7 @@ pipeline {
     post {
         cleanup {
             sh label: 'Collect Artifacts', script: '''
-				# reboot the node in 30 seconds
+				# reboot the node in 30 seconds, hugepages need to be cleared between runs
 				(sudo bash -c "(sleep 30 && sudo shutdown -r now) &") &
             '''
             script {
@@ -49,7 +49,7 @@ pipeline {
                     body: '''${SCRIPT, template="cluster-setup-email.template"}''',
                     mimeType: 'text/html',
                     subject: "[Jenkins Build ${currentBuild.currentResult}] : ${env.JOB_NAME}",
-                    attachLog: true,
+                    attachLog: false,
                     to: "${mailRecipients}",
                     recipientProviders: recipientProvidersClass
                 )
