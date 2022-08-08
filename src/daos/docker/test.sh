@@ -35,6 +35,8 @@ function usage()
     echo -e "\t-c --cleanup-container=$BOOLEAN_VALUES default=TRUE"
     echo -e "\t-b --build-docker-images=$BOOLEAN_VALUES default=TRUE"
     echo -e "\t-a --artifacts-folder=<folder> default=/opt"
+    echo -e "\t--ceph-image-name= default=dgw-single-host"
+    echo -e "\t--s3tests-image-name= default=dgw-s3-tests"
     echo ""
 }
 
@@ -45,6 +47,8 @@ UPDATE_CONFLUENCE=true
 ARTIFACTS_FOLDER=/opt
 START_DAOS=true
 START_RADOSGW=true
+CEPH_IMAGE_NAME='dgw-single-host'
+S3TESTS_IMAGE_NAME='dgw-s3-tests'
 
 while [ "$1" != "" ]; do
     PARAM=`echo $1 | awk -F= '{print $1}'`
@@ -75,6 +79,12 @@ while [ "$1" != "" ]; do
         -u | --update-confluence)
             set_boolean UPDATE_CONFLUENCE $VALUE
             ;;
+        --ceph-image-name)
+            CEPH_IMAGE_NAME=$VALUE
+            ;;
+        --s3tests-image-name)
+            S3TESTS_IMAGE_NAME=$VALUE
+            ;;
         *)
             echo "ERROR: unknown parameter \"$PARAM\""
             usage
@@ -102,7 +112,7 @@ function start_docker_container()
             if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
         fi
         # run your container
-        docker run -it -d --privileged --cap-add=ALL -h docker-$CONTAINER_NAME --name $CONTAINER_NAME -v /dev:/dev dgw-s3-tests
+        docker run -it -d --privileged --cap-add=ALL -h docker-$CONTAINER_NAME --name $CONTAINER_NAME -v /dev:/dev $S3TESTS_IMAGE_NAME
         if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
     fi
 
@@ -243,22 +253,22 @@ function build_docker_images()
     fi
     get_git_status $CEPH_PATH
     CEPH_GIT=$?
-    docker inspect -f '{{ .Created }}' dgw-single-host
+    docker inspect -f '{{ .Created }}' $CEPH_IMAGE_NAME
     DGW_SINGLE=$?
     if [[ $DAOS_BUILT != 0 ]] || [[ $CEPH_GIT == $PULL_NEEDED ]] || [[ $DGW_SINGLE != 0 ]]; then
         pushd ceph
-        docker build . -t "dgw-single-host"
+        docker build . -t "$CEPH_IMAGE_NAME"
         error_handler $? $(basename $0) FUNCNAME LINENO
         CEPH_BUILT=1
         popd
     fi
     get_git_status $S3TESTS_PATH
     S3TESTS_GIT=$?
-    docker inspect -f '{{ .Created }}' dgw-s3-tests
+    docker inspect -f '{{ .Created }}' $S3TESTS_IMAGE_NAME
     DGW_S3TESTS=$?
     if [[ $CEPH_BUILT != 0 ]] || [[ $S3TESTS_GIT == $PULL_NEEDED ]] || [[ $DGW_S3TESTS != 0 ]]; then
         pushd s3-tests
-        docker build . -t "dgw-s3-tests"
+        docker build . -t "$S3TESTS_IMAGE_NAME"
         error_handler $? $(basename $0) FUNCNAME LINENO
         popd
     fi
