@@ -1,5 +1,108 @@
 #!/bin/bash
+# Prerequisites:
+#   create folders /opt/daos, /opt/ceph, /opt/s3-tests making sure there is about 50gb free
+#   install git, docker
+#   move docker storage to a location with about 250gb free
+#   git clone daos, ceph & s3-tests (used for determining if docker images need to be rebuilt)
+#   export CEPH_PATH=/opt/ceph
+#   export DAOS_PATH=/opt/daos
+#   export S3TESTS_PATH=/opt/s3-tests
+#   (CEPH_PATH, DAOS_PATH & S3TESTS_PATH can be located in different folders on docker host)
+
 set -x
+source $CEPH_PATH/src/daos/error_handler.sh
+source $CEPH_PATH/src/daos/set_boolean.sh
+source $CEPH_PATH/src/daos/require_variables.sh
+source $CEPH_PATH/src/daos/daos_format.sh
+source $CEPH_PATH/src/daos/daos_pool_create.sh
+source $CEPH_PATH/src/daos/radosgw_start.sh
+source $CEPH_PATH/src/daos/radosgw_stop.sh
+source $CEPH_PATH/src/daos/radosgw_create_s3bucket.sh
+
+require_variables DAOS_PATH S3TESTS_PATH
+
+function usage()
+{
+    # turn off echo
+    set +x
+
+    local BOOLEAN_VALUES="T[RUE]|Y[ES]|F[ALSE]|N[O]|1|0"
+    echo ""
+    echo "./test.sh"
+    echo -e "\t-h --help"
+    echo -e "\t-s --summary=$BOOLEAN_VALUES default=FALSE"
+    echo -e "\t-u --update-confluence=$BOOLEAN_VALUES default=TRUE"
+    echo -e "\t-c --cleanup-container=$BOOLEAN_VALUES default=TRUE"
+    echo -e "\t-b --build-docker-images=$BOOLEAN_VALUES default=TRUE"
+    echo -e "\t-a --artifacts-folder=<folder> default=/opt"
+    echo -e "\t--ceph-image-name=<image-name> default=dgw-single-host"
+    echo -e "\t--daos-image-name=<image-name> default=daos-single-host"
+    echo -e "\t--s3tests-image-name=<image-name> default=dgw-s3-tests"
+    echo -e "\t--ceph-branch=<branch-to-use> default=add-daos-rgw-sal"
+    echo ""
+}
+
+BUILDDOCKERIMAGES=true
+SUMMARY=false
+CLEANUP_CONTAINER=true
+UPDATE_CONFLUENCE=true
+ARTIFACTS_FOLDER=/opt
+START_DAOS=true
+START_RADOSGW=true
+CEPH_IMAGE_NAME='dgw-single-host'
+DAOS_IMAGE_NAME='daos-single-host'
+S3TESTS_IMAGE_NAME='dgw-s3-tests'
+CEPH_BRANCH='add-daos-rgw-sal'
+
+while [ "$1" != "" ]; do
+    PARAM=`echo $1 | awk -F= '{print $1}'`
+    VALUE=`echo $1 | awk -F= '{print $2}'`
+    case $PARAM in
+        -h | --help)
+            usage
+            exit 0
+            ;;
+        --start-daos)
+            set_boolean START_DAOS $VALUE
+            ;;
+        --start-radosgw)
+            set_boolean START_RADOSGW $VALUE
+            ;;
+        --artifacts-folder)
+            ARTIFACTS_FOLDER=$VALUE
+            ;;
+        -b | --build-docker-images)
+            set_boolean BUILDDOCKERIMAGES $VALUE
+            ;;
+        -y | --summary)
+            set_boolean SUMMARY $VALUE
+            ;;
+        -c | --cleanup-container)
+            set_boolean CLEANUP_CONTAINER $VALUE
+            ;;
+        -u | --update-confluence)
+            set_boolean UPDATE_CONFLUENCE $VALUE
+            ;;
+        --ceph-image-name)
+            CEPH_IMAGE_NAME=$VALUE
+            ;;
+        --daos-image-name)
+            DAOS_IMAGE_NAME=$VALUE
+            ;;
+        --s3tests-image-name)
+            S3TESTS_IMAGE_NAME=$VALUE
+            ;;
+        --ceph-branch)
+            CEPH_BRANCH=$VALUE
+            ;;
+        *)
+            echo "ERROR: unknown parameter \"$PARAM\""
+            usage
+            exit 1
+            ;;
+    esac
+    shift
+done
 
 function usage()
 {
@@ -77,6 +180,8 @@ fi
 if [[ $CONTAINER_NAME == "" ]]; then
     export CONTAINER_NAME="dgws3-$RUN_DATE"
 fi
+COMMAND_PREFIX="docker exec -u 0 $CONTAINER_NAME"
+DAOS_BIN="/opt/daos/bin"
 
 function start_docker_container()
 {
@@ -87,7 +192,7 @@ function start_docker_container()
             if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
         fi
         # run your container
-        docker run -it -d --privileged --cap-add=ALL -h docker-$CONTAINER_NAME --name $CONTAINER_NAME -v /dev:/dev dgw-s3-tests
+        docker run -it -d --privileged --cap-add=ALL -h docker-$CONTAINER_NAME --name $CONTAINER_NAME -v /dev:/dev $S3TESTS_IMAGE_NAME
         if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
     fi
 
@@ -97,29 +202,31 @@ function start_docker_container()
 
 function start_daos_cortx_s3tests()
 {
-    # check for anything running as this may be a re-run
-    PROCESSES=$(docker exec $CONTAINER_NAME  ps -e)
-    if [[ ! $PROCESSES =~ daos_server ]] && [[ $SUMMARY == false ]]; then
-        docker exec -u 0 $CONTAINER_NAME /opt/daos/bin/daos_server start &
+    if [[ $SUMMARY == false ]]; then
+        if [[ $START_DAOS == true ]]; then
+            docker exec -u 0 $CONTAINER_NAME /opt/daos/bin/daos_server start &
+            if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
+            docker exec -u 0 $CONTAINER_NAME /opt/daos/bin/daos_agent &
+            if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
+            sleep 5
+
+            daos_format
+            daos_pool_create
+        fi
+
+        if [[ $START_RADOSGW == true ]]; then
+            radosgw_start
+        fi
+
+        radosgw_create_s3bucket
+
+        docker exec -u 0 $CONTAINER_NAME bash -c "sh /opt/ceph/src/daos/docker/s3-tests/run_tests.sh --artifacts-folder=$ARTIFACTS_FOLDER --cleandaos=true --restart=50 --stop-on-test-result=MISSING --run-on-test-result=MISSING,NOT_RUNNING"
         if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
-        docker exec -u 0 $CONTAINER_NAME /opt/daos/bin/daos_agent &
-        if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
-        sleep 5
-        docker exec -u 0 $CONTAINER_NAME /opt/daos/bin/dmg -i storage format
-        if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
-        sleep 20
-        docker exec -u 0 $CONTAINER_NAME /opt/daos/bin/dmg pool create --size=4GB tank
-        if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
-        sleep 10
-        docker exec -u 0 $CONTAINER_NAME bash -c 'cd /opt/ceph/build && sudo RGW=1 ../src/vstart.sh'
-        if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
-        sleep 5
-        docker exec -u 0 $CONTAINER_NAME bash -c 'cd /opt/s3-tests && sh setup.sh'
-        if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
-        docker exec -u 0 $CONTAINER_NAME bash -c 'cd /opt/s3-tests && sh run_tests.sh cleandaos restart 50 stop MISSING'
-        if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
+
+        radosgw_stop
+        daos_stop
     else
-        docker exec -u 0 $CONTAINER_NAME bash -c 'cd /opt/s3-tests && sh run_tests.sh summary'
+        docker exec -u 0 $CONTAINER_NAME bash -c "sh /opt/ceph/src/daos/docker/s3-tests/run_tests.sh --artifacts-folder=$ARTIFACTS_FOLDER --summary"
         if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
     fi
 }
@@ -129,7 +236,7 @@ function copy_artifact()
     if [[ -e $RUN_DATE/$1 ]]; then
         sudo chmod 666 $RUN_DATE/$1
     fi
-    docker cp $CONTAINER_NAME:/opt/s3-tests/$1 $RUN_DATE/
+    docker cp $CONTAINER_NAME:$ARTIFACTS_FOLDER/$1 $RUN_DATE/
     if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
 }
 
@@ -209,40 +316,40 @@ function build_docker_images()
 {
     DAOS_BUILT=0
     CEPH_BUILT=0
-    get_git_status /opt/daos
+    get_git_status $DAOS_PATH
     DAOS_GIT=$?
     docker inspect -f '{{ .Created }}' daos-rocky
     DAOS_ROCKY=$?
-    docker inspect -f '{{ .Created }}' daos-single-host
+    docker inspect -f '{{ .Created }}' $DAOS_IMAGE_NAME
     DAOS_SINGLE_HOST=$?
     if [[ $DAOS_GIT == $PULL_NEEDED ]] || [[ $DAOS_ROCKY != 0 ]] || [[ $DAOS_SINGLE_HOST != 0 ]]; then
         pushd daos
         docker build https://github.com/daos-stack/daos.git#master -f utils/docker/Dockerfile.el.8 -t daos-rocky
-        if [[ ! $? == 0 ]]; then exit 1; fi
-        docker build . -t "daos-single-host"
-        if [[ ! $? == 0 ]]; then exit 1; fi
+        error_handler $? $(basename $0) FUNCNAME LINENO
+        docker build . -t "$DAOS_IMAGE_NAME"
+        error_handler $? $(basename $0) FUNCNAME LINENO
         DAOS_BUILT=1
         popd
     fi
-    get_git_status /opt/ceph
+    get_git_status $CEPH_PATH
     CEPH_GIT=$?
-    docker inspect -f '{{ .Created }}' dgw-single-host
+    docker inspect -f '{{ .Created }}' $CEPH_IMAGE_NAME
     DGW_SINGLE=$?
     if [[ $DAOS_BUILT != 0 ]] || [[ $CEPH_GIT == $PULL_NEEDED ]] || [[ $DGW_SINGLE != 0 ]]; then
         pushd ceph
-        docker build . -t "dgw-single-host"
-        if [[ ! $? == 0 ]]; then exit 1; fi
+        docker build . -t "$CEPH_IMAGE_NAME"
+        error_handler $? $(basename $0) FUNCNAME LINENO
         CEPH_BUILT=1
         popd
     fi
-    get_git_status /opt/s3-tests
+    get_git_status $S3TESTS_PATH
     S3TESTS_GIT=$?
-    docker inspect -f '{{ .Created }}' dgw-s3-tests
+    docker inspect -f '{{ .Created }}' $S3TESTS_IMAGE_NAME
     DGW_S3TESTS=$?
     if [[ $CEPH_BUILT != 0 ]] || [[ $S3TESTS_GIT == $PULL_NEEDED ]] || [[ $DGW_S3TESTS != 0 ]]; then
         pushd s3-tests
-        docker build . -t "dgw-s3-tests"
-        if [[ ! $? == 0 ]]; then exit 1; fi
+        docker build . -t "$S3TESTS_IMAGE_NAME"
+        error_handler $? $(basename $0) FUNCNAME LINENO
         popd
     fi
 

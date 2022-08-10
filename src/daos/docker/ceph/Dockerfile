@@ -11,6 +11,7 @@ LABEL maintainer="seagate-daos@seagate.com"
 
 # get & build the ceph source
 COPY ccache.conf /etc/ccache.conf
+ENV SOURCE_DATE_EPOCH=946684800
 RUN cd /opt && sudo mkdir -p ceph && sudo chmod 777 ceph && git clone --recurse https://github.com/zalsader/ceph --branch add-daos-rgw-sal
 RUN cd /opt/ceph && ./install-deps.sh
 RUN pip3 install cython prettytable
@@ -19,3 +20,4 @@ RUN cd /opt/ceph/build && sudo MDS=0 RGW=1 ../src/vstart.sh -f -n --without-dash
 RUN cd /opt/ceph/build && sudo ../src/stop.sh
 COPY ceph.sed /opt/ceph/build
 RUN cd /opt/ceph/build && sed -i -f ceph.sed ceph.conf
+ENV CEPH_PATH=/opt/ceph
