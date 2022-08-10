@@ -1179,8 +1179,22 @@ int DaosObject::DaosReadOp::prepare(optional_yield y,
 int DaosObject::DaosReadOp::read(int64_t off, int64_t end, bufferlist& bl,
                                  optional_yield y,
                                  const DoutPrefixProvider* dpp) {
-  ldpp_dout(dpp, 20) << "DaosReadOp::read(): sync read." << dendl;
-  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
+  ldpp_dout(dpp, 20) << __func__ << ": off=" << off << " end=" << end << dendl;
+  int ret = source->lookup(dpp);
+  if (ret != 0) {
+    return ret;
+  }
+  
+  // Calculate size, end is inclusive
+  uint64_t size = end - off + 1;
+
+  // Read
+  ret = source->read(dpp, bl, off, size);
+  if (ret != 0) {
+    return ret;
+  }
+
+  return ret;
 }
 
 // RGWGetObj::execute() calls ReadOp::iterate() to read object from 'off' to
@@ -1388,13 +1402,9 @@ int DaosObject::close(const DoutPrefixProvider* dpp) {
 int DaosObject::write(const DoutPrefixProvider* dpp, bufferlist&& data,
                       uint64_t offset) {
   ldpp_dout(dpp, 20) << "DEBUG: write" << dendl;
-  d_sg_list_t wsgl;
-  d_iov_t iov;
-  d_iov_set(&iov, data.c_str(), data.length());
-  wsgl.sg_nr = 1;
-  wsgl.sg_iovs = &iov;
-  int ret =
-      dfs_write(get_daos_bucket()->ds3b->dfs, ds3o->dfs_obj, &wsgl, offset, nullptr);
+  uint64_t size = data.length();
+  int ret = ds3_obj_write(data.c_str(), offset, &size, get_daos_bucket()->ds3b,
+                          ds3o, nullptr);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to write into daos object ("
                       << get_bucket()->get_name() << ", " << get_key().to_str()
@@ -1406,15 +1416,8 @@ int DaosObject::write(const DoutPrefixProvider* dpp, bufferlist&& data,
 int DaosObject::read(const DoutPrefixProvider* dpp, bufferlist& data,
                      uint64_t offset, uint64_t& size) {
   ldpp_dout(dpp, 20) << "DEBUG: read" << dendl;
-  d_iov_t iov;
-  d_iov_set(&iov, data.append_hole(size).c_str(), size);
-
-  d_sg_list_t rsgl;
-  rsgl.sg_nr = 1;
-  rsgl.sg_iovs = &iov;
-  rsgl.sg_nr_out = 1;
-  int ret = dfs_read(get_daos_bucket()->ds3b->dfs, ds3o->dfs_obj, &rsgl, offset,
-                     &size, nullptr);
+  int ret = ds3_obj_read(data.append_hole(size).c_str(), offset, &size,
+                         get_daos_bucket()->ds3b, ds3o, nullptr);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to read from daos object ("
                       << get_bucket()->get_name() << ", " << get_key().to_str()
