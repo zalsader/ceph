@@ -659,13 +659,13 @@ int DaosBucket::list(const DoutPrefixProvider* dpp, ListParams& params, int max,
     values.push_back(std::move(value));
     object_infos[i].encoded = values[i].data();
   }
-  
+
   vector<struct ds3_common_prefix_info> common_prefixes(max);
   uint32_t ncp = common_prefixes.size();
-  
+
   char daos_marker[DS3_MAX_KEY];
   strcpy(daos_marker, params.marker.to_str().c_str());
-  
+
   ret = ds3_bucket_list_obj(
       &nobj, object_infos.data(), &ncp, common_prefixes.data(),
       params.prefix.c_str(), params.delim.c_str(), daos_marker,
@@ -1258,7 +1258,7 @@ int DaosObject::DaosDeleteOp::delete_obj(const DoutPrefixProvider* dpp,
                      << source->get_bucket()->get_name() << dendl;
   // Open bucket
   int ret = 0;
-  std::string path = source->get_key().to_str();
+  std::string key = source->get_key().to_str();
   DaosBucket* daos_bucket = source->get_daos_bucket();
   ret = daos_bucket->open(dpp);
   if (ret != 0) {
@@ -1266,35 +1266,13 @@ int DaosObject::DaosDeleteOp::delete_obj(const DoutPrefixProvider* dpp,
   }
 
   // Remove the daos object
-  dfs_obj_t* parent = nullptr;
-  std::string file_name = path;
-
-  size_t file_start = path.rfind("/");
-
-  if (file_start != std::string::npos) {
-    // Open parent dir
-    std::string parent_path = "/" + path.substr(0, file_start);
-    file_name = path.substr(file_start + 1);
-    ret = dfs_lookup(daos_bucket->ds3b->dfs, parent_path.c_str(), O_RDWR,
-                     &parent, nullptr, nullptr);
-    ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup parent_path=" << parent_path
-                       << " ret=" << ret << dendl;
-    if (ret != 0) {
-      return ret;
-    }
-  }
-
-  ret = dfs_remove(daos_bucket->ds3b->dfs, parent, file_name.c_str(), false,
-                   nullptr);
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_remove file_name=" << file_name
-                     << " ret=" << ret << dendl;
+  ret = ds3_obj_destroy(key.c_str(), daos_bucket->ds3b);
+  ldpp_dout(dpp, 20) << "DEBUG: ds3_obj_destroy key=" << key << " ret=" << ret
+                     << dendl;
 
   // result.delete_marker = parent_op.result.delete_marker;
   // result.version_id = parent_op.result.version_id;
 
-  // Finalize
-  dfs_release(parent);
-  daos_bucket->close(dpp);
   return ret;
 }
 
@@ -1461,7 +1439,7 @@ int DaosObject::get_dir_entry_attrs(const DoutPrefixProvider* dpp,
   object_info->encoded_length = value.size();
   ret = ds3_obj_get_info(object_info.get(), get_daos_bucket()->ds3b, ds3o);
   if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: failed to get dirent of daos object ("
+    ldpp_dout(dpp, 0) << "ERROR: failed to get info of daos object ("
                       << get_bucket()->get_name() << ", " << get_key().to_str()
                       << "): ret=" << ret << dendl;
     return ret;
@@ -1529,7 +1507,7 @@ int DaosObject::set_dir_entry_attrs(const DoutPrefixProvider* dpp,
   object_info->encoded_length = wbl.length();
   ret = ds3_obj_get_info(object_info.get(), get_daos_bucket()->ds3b, ds3o);
   if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: failed to set dirent of daos object ("
+    ldpp_dout(dpp, 0) << "ERROR: failed to set info of daos object ("
                       << get_bucket()->get_name() << ", " << get_key().to_str()
                       << "): ret=" << ret << dendl;
   }
@@ -1571,7 +1549,8 @@ int DaosObject::mark_as_latest(const DoutPrefixProvider* dpp,
 
   // Get or create the link [latest], make it link to the current latest
   // version.
-  ret = ds3_obj_mark_latest(get_key().to_str().c_str(), get_daos_bucket()->ds3b);
+  ret =
+      ds3_obj_mark_latest(get_key().to_str().c_str(), get_daos_bucket()->ds3b);
   ldpp_dout(dpp, 20) << "DEBUG: ds3_obj_mark_latest ret=" << ret << dendl;
   return ret;
 }
