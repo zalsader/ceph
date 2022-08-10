@@ -18,7 +18,6 @@ COPY docker_daos_server.yml /opt/daos/etc/daos_server.yml
 COPY docker_daos_agent.yml /opt/daos/etc/daos_agent.yml
 COPY docker_daos_control.yml /opt/daos/etc/daos_control.yml
 ENV DAOS_PATH=/opt/daos
-ENV SOURCE_DATE_EPOCH=946684800
 RUN sudo bash -c 'echo "vm.nr_hugepages = 513" >> /etc/sysctl.conf'
 
 # create the certificates that will be used by daos

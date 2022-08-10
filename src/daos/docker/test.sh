@@ -35,8 +35,10 @@ function usage()
     echo -e "\t-c --cleanup-container=$BOOLEAN_VALUES default=TRUE"
     echo -e "\t-b --build-docker-images=$BOOLEAN_VALUES default=TRUE"
     echo -e "\t-a --artifacts-folder=<folder> default=/opt"
-    echo -e "\t--ceph-image-name= default=dgw-single-host"
-    echo -e "\t--s3tests-image-name= default=dgw-s3-tests"
+    echo -e "\t--ceph-image-name=<image-name> default=dgw-single-host"
+    echo -e "\t--daos-image-name=<image-name> default=daos-single-host"
+    echo -e "\t--s3tests-image-name=<image-name> default=dgw-s3-tests"
+    echo -e "\t--ceph-branch=<branch-to-use> default=add-daos-rgw-sal"
     echo ""
 }
 
@@ -48,7 +50,9 @@ ARTIFACTS_FOLDER=/opt
 START_DAOS=true
 START_RADOSGW=true
 CEPH_IMAGE_NAME='dgw-single-host'
+DAOS_IMAGE_NAME='daos-single-host'
 S3TESTS_IMAGE_NAME='dgw-s3-tests'
+CEPH_BRANCH='add-daos-rgw-sal'
 
 while [ "$1" != "" ]; do
     PARAM=`echo $1 | awk -F= '{print $1}'`
@@ -82,8 +86,14 @@ while [ "$1" != "" ]; do
         --ceph-image-name)
             CEPH_IMAGE_NAME=$VALUE
             ;;
+        --daos-image-name)
+            DAOS_IMAGE_NAME=$VALUE
+            ;;
         --s3tests-image-name)
             S3TESTS_IMAGE_NAME=$VALUE
+            ;;
+        --ceph-branch)
+            CEPH_BRANCH=$VALUE
             ;;
         *)
             echo "ERROR: unknown parameter \"$PARAM\""
@@ -240,13 +250,13 @@ function build_docker_images()
     DAOS_GIT=$?
     docker inspect -f '{{ .Created }}' daos-rocky
     DAOS_ROCKY=$?
-    docker inspect -f '{{ .Created }}' daos-single-host
+    docker inspect -f '{{ .Created }}' $DAOS_IMAGE_NAME
     DAOS_SINGLE_HOST=$?
     if [[ $DAOS_GIT == $PULL_NEEDED ]] || [[ $DAOS_ROCKY != 0 ]] || [[ $DAOS_SINGLE_HOST != 0 ]]; then
         pushd daos
         docker build https://github.com/daos-stack/daos.git#master -f utils/docker/Dockerfile.el.8 -t daos-rocky
         error_handler $? $(basename $0) FUNCNAME LINENO
-        docker build . -t "daos-single-host"
+        docker build . -t "$DAOS_IMAGE_NAME"
         error_handler $? $(basename $0) FUNCNAME LINENO
         DAOS_BUILT=1
         popd
