@@ -1456,9 +1456,10 @@ int DaosObject::get_dir_entry_attrs(const DoutPrefixProvider* dpp,
   }
 
   vector<uint8_t> value(DFS_MAX_XATTR_LEN);
-  size_t size = value.size();
-  ret = dfs_getxattr(get_daos_bucket()->ds3b->dfs, ds3o->dfs_obj, RGW_DIR_ENTRY_XATTR,
-                     value.data(), &size);
+  auto object_info = std::make_unique<struct ds3_object_info>();
+  object_info->encoded = value.data();
+  object_info->encoded_length = value.size();
+  ret = ds3_obj_get_info(object_info.get(), get_daos_bucket()->ds3b, ds3o);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to get dirent of daos object ("
                       << get_bucket()->get_name() << ", " << get_key().to_str()
@@ -1479,7 +1480,7 @@ int DaosObject::get_dir_entry_attrs(const DoutPrefixProvider* dpp,
   }
 
   bufferlist bl;
-  bl.append(reinterpret_cast<char*>(value.data()), size);
+  bl.append(reinterpret_cast<char*>(value.data()), object_info->encoded_length);
   auto iter = bl.cbegin();
   ent->decode(iter);
   decode(*getattrs, iter);
@@ -1523,8 +1524,10 @@ int DaosObject::set_dir_entry_attrs(const DoutPrefixProvider* dpp,
   encode(*upload_info, wbl);
 
   // Write rgw_bucket_dir_entry into object xattr
-  ret = dfs_setxattr(get_daos_bucket()->ds3b->dfs, ds3o->dfs_obj, RGW_DIR_ENTRY_XATTR,
-                     wbl.c_str(), wbl.length(), 0);
+  auto object_info = std::make_unique<struct ds3_object_info>();
+  object_info->encoded = wbl.c_str();
+  object_info->encoded_length = wbl.length();
+  ret = ds3_obj_get_info(object_info.get(), get_daos_bucket()->ds3b, ds3o);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to set dirent of daos object ("
                       << get_bucket()->get_name() << ", " << get_key().to_str()
