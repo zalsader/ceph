@@ -34,10 +34,75 @@
 #include "rgw_role.h"
 #include "rgw_sal.h"
 
+inline bool IsDebuggerAttached()
+{
+#ifdef DEBUG
+    char buf[4096];
+
+    const int status_fd = ::open("/proc/self/status", O_RDONLY);
+    if (status_fd == -1)
+        return false;
+
+    const ssize_t num_read = ::read(status_fd, buf, sizeof(buf) - 1);
+    ::close(status_fd);
+
+    if (num_read <= 0)
+        return false;
+
+    buf[num_read] = '\0';
+    constexpr char tracerPidString[] = "TracerPid:";
+    const auto tracer_pid_ptr = ::strstr(buf, tracerPidString);
+    if (!tracer_pid_ptr)
+        return false;
+
+    for (const char* characterPtr = tracer_pid_ptr + sizeof(tracerPidString) - 1; characterPtr <= buf + num_read; ++characterPtr)
+    {
+        if (::isspace(*characterPtr))
+            continue;
+        else
+            return ::isdigit(*characterPtr) != 0 && *characterPtr != '0';
+    }
+#endif  // DEBUG
+    return false;
+}
+
+inline void DebugBreak() {
+#ifdef DEBUG
+  // only break into the debugger if the debugger is attached
+  if (IsDebuggerAttached())
+    raise(SIGINT);  // breaks into GDB and stops, can be continued
+#endif  // DEBUG
+}
+
+inline int NotImplementedLog(const DoutPrefixProvider* ldpp, const char* filename, int linenumber, const char* functionname) {
+  if (ldpp)
+    ldpp_dout(ldpp, 20) << filename << "(" << linenumber << ") " << functionname << ": Not implemented" << dendl;
+  return 0;
+}
+
+inline int NotImplementedGdbBreak(const DoutPrefixProvider* ldpp, const char* filename, int linenumber, const char* functionname) {
+  NotImplementedLog(ldpp, filename, linenumber, functionname);
+  DebugBreak();
+  return 0;
+}
+
+#define DAOS_NOT_IMPLEMENTED_GDB_BREAK(ldpp) NotImplementedGdbBreak(ldpp, __FILE__, __LINE__, __FUNCTION__)
+#define DAOS_NOT_IMPLEMENTED_LOG(ldpp) NotImplementedLog(ldpp, __FILE__, __LINE__, __FUNCTION__)
+
 namespace rgw::sal {
 
 class DaosStore;
 class DaosObject;
+
+#ifdef DEBUG
+// Prepends each log entry with the "filename(source_line) function_name".  Makes it simple to 
+//  associate log entries with the source that generated the log entry
+#undef ldpp_dout
+#define ldpp_dout(dpp, v) 						\
+  if (decltype(auto) pdpp = (dpp); pdpp) /* workaround -Wnonnull-compare for 'this' */ \
+    dout_impl(pdpp->get_cct(), ceph::dout::need_dynamic(pdpp->get_subsys()), v) \
+      pdpp->gen_prefix(*_dout) << __FILE__ << "(" << __LINE__ << ") " << __FUNCTION__ << " - "
+#endif // DEBUG
 
 struct DaosUserInfo {
   RGWUserInfo info;
@@ -70,13 +135,13 @@ class DaosNotification : public Notification {
 
   virtual int publish_reserve(const DoutPrefixProvider* dpp,
                               RGWObjTags* obj_tags = nullptr) override {
-    return 0;
+    return DAOS_NOT_IMPLEMENTED_LOG(dpp);
   }
   virtual int publish_commit(const DoutPrefixProvider* dpp, uint64_t size,
                              const ceph::real_time& mtime,
                              const std::string& etag,
                              const std::string& version) override {
-    return 0;
+    return DAOS_NOT_IMPLEMENTED_LOG(dpp);
   }
 };
 
@@ -429,14 +494,17 @@ class DaosLuaScriptManager : public LuaScriptManager {
 
   virtual int get(const DoutPrefixProvider* dpp, optional_yield y,
                   const std::string& key, std::string& script) override {
+    DAOS_NOT_IMPLEMENTED_LOG(dpp);
     return -ENOENT;
   }
   virtual int put(const DoutPrefixProvider* dpp, optional_yield y,
                   const std::string& key, const std::string& script) override {
+    DAOS_NOT_IMPLEMENTED_LOG(dpp);
     return -ENOENT;
   }
   virtual int del(const DoutPrefixProvider* dpp, optional_yield y,
                   const std::string& key) override {
+    DAOS_NOT_IMPLEMENTED_LOG(dpp);
     return -ENOENT;
   }
 };
@@ -450,15 +518,15 @@ class DaosOIDCProvider : public RGWOIDCProvider {
 
   virtual int store_url(const DoutPrefixProvider* dpp, const std::string& url,
                         bool exclusive, optional_yield y) override {
-    return 0;
+    return DAOS_NOT_IMPLEMENTED_LOG(dpp);
   }
   virtual int read_url(const DoutPrefixProvider* dpp, const std::string& url,
                        const std::string& tenant) override {
-    return 0;
+    return DAOS_NOT_IMPLEMENTED_LOG(dpp);
   }
   virtual int delete_obj(const DoutPrefixProvider* dpp,
                          optional_yield y) override {
-    return 0;
+    return DAOS_NOT_IMPLEMENTED_LOG(dpp);
   }
 
   void encode(bufferlist& bl) const { RGWOIDCProvider::encode(bl); }
@@ -632,13 +700,14 @@ class DaosObject : public Object {
 class MPDaosSerializer : public MPSerializer {
  public:
   MPDaosSerializer(const DoutPrefixProvider* dpp, DaosStore* store,
-                   DaosObject* obj, const std::string& lock_name) {}
+                   DaosObject* obj, const std::string& lock_name) {
+  }
 
   virtual int try_lock(const DoutPrefixProvider* dpp, utime_t dur,
                        optional_yield y) override {
-    return 0;
+    return DAOS_NOT_IMPLEMENTED_LOG(dpp);
   }
-  virtual int unlock() override { return 0; }
+  virtual int unlock() override { return DAOS_NOT_IMPLEMENTED_LOG(nullptr); }
 };
 
 class DaosAtomicWriter : public Writer {
@@ -883,7 +952,7 @@ class DaosStore : public Store {
   virtual int set_buckets_enabled(const DoutPrefixProvider* dpp,
                                   std::vector<rgw_bucket>& buckets,
                                   bool enabled) override;
-  virtual uint64_t get_new_req_id() override { return 0; }
+  virtual uint64_t get_new_req_id() override { return DAOS_NOT_IMPLEMENTED_LOG(nullptr); }
   virtual int get_sync_policy_handler(const DoutPrefixProvider* dpp,
                                       std::optional<rgw_zone_id> zone,
                                       std::optional<rgw_bucket> bucket,
@@ -899,7 +968,7 @@ class DaosStore : public Store {
       std::map<int, std::set<std::string>>& shard_ids) override {
     return;
   }
-  virtual int clear_usage(const DoutPrefixProvider* dpp) override { return 0; }
+  virtual int clear_usage(const DoutPrefixProvider* dpp) override { return DAOS_NOT_IMPLEMENTED_LOG(dpp); }
   virtual int read_all_usage(
       const DoutPrefixProvider* dpp, uint64_t start_epoch, uint64_t end_epoch,
       uint32_t max_entries, bool* is_truncated, RGWUsageIter& usage_iter,

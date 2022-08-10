@@ -104,6 +104,76 @@ while [ "$1" != "" ]; do
     shift
 done
 
+function usage()
+{
+    local BOOLEAN_VALUES="T[RUE]|Y[ES]|F[ALSE]|N[O]|1|0"
+    echo ""
+    echo "./test.sh"
+    echo "\t-h --help"
+    echo "\t-s --summary=$BOOLEAN_VALUES default=FALSE"
+    echo "\t-u --update-confluence=$BOOLEAN_VALUES default=TRUE"
+    echo "\t-c --cleanup-container=$BOOLEAN_VALUES default=TRUE"
+    echo "\t-b --build-docker-images=$BOOLEAN_VALUES default=TRUE"
+    echo ""
+}
+
+function set_boolean()
+{
+    declare -n foo=$1
+    case ${2^^} in
+        TRUE | T | YES | Y | 1)
+            foo=true
+            ;;
+        FALSE | F | NO | N | 0)
+            foo=false
+            ;;
+        *)
+            if [[ "$2" == "" ]]; then
+                # just flip the meaning
+                foo=$(($foo ^ true))
+            else
+                echo "ERROR: unknown value \"$VALUE\""
+                usage
+                exit 1
+            fi
+            ;;
+    esac
+}
+
+BUILDDOCKERIMAGES=true
+SUMMARY=false
+CLEANUP_CONTAINER=true
+UPDATE_CONFLUENCE=true
+
+while [ "$1" != "" ]; do
+    PARAM=`echo $1 | awk -F= '{print $1}'`
+    VALUE=`echo $1 | awk -F= '{print $2}'`
+    case $PARAM in
+        -h | --help)
+            usage
+            exit 0
+            ;;
+        -b | --build-docker-images)
+            set_boolean BUILDDOCKERIMAGES $VALUE
+            ;;
+        -s | --summary)
+            set_boolean SUMMARY $VALUE
+            ;;
+        -c | --cleanup-container)
+            set_boolean CLEANUP_CONTAINER $VALUE
+            ;;
+        -u | --update-confluence)
+            set_boolean UPDATE_CONFLUENCE $VALUE
+            ;;
+        *)
+            echo "ERROR: unknown parameter \"$PARAM\""
+            usage
+            exit 1
+            ;;
+    esac
+    shift
+done
+
 if [[ $RUN_DATE == "" ]]; then
     export RUN_DATE="$(date +"%Y-%m-%d")"
 fi
