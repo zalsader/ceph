@@ -22,8 +22,19 @@ function usage()
     echo ""
 }
 
-BRANCH='add-daos-rgw-sal'
+function ceph_get()
+{
+    # wget --output-document=folder_free_space.sh https://github.com/zalsader/ceph/blob/docker-build/src/daos/folder_free_space.sh?raw=true
+    while (( $# )); do
+        local output_file=$(basename -- $1)
+        local repo_path=$1
+        wget --output-document=${output_file} $CEPH_REPO/blob/$BRANCH/${repo_path}?raw=true
+        CLEANUP_FILES+=( ${output_file} )
+        shift
+    done
+}
 
+BRANCH='add-daos-rgw-sal'
 CEPH_PATH='/opt/ceph'
 DAOS_PATH='/opt/daos'
 CLEANUP_FILES=()
@@ -58,7 +69,7 @@ while (( $# ))
         -cr | --ceph-repo)
             CEPH_REPO=$VALUE
             ;;
-        --enable-passwordless-sudo)
+        -ep | --enable-passwordless-sudo)
             # lets hope it actually finds the shell script
             ceph_get src/daos/set_integer.sh
             source set_integer.sh
@@ -72,18 +83,6 @@ while (( $# ))
     esac
     shift
 done
-
-function ceph_get()
-{
-    # wget --output-document=folder_free_space.sh https://github.com/zalsader/ceph/blob/docker-build/src/daos/folder_free_space.sh?raw=true
-    while (( $# )); do
-        local output_file=$(basename -- $1)
-        local repo_path=$1
-        wget --output-document=${output_file} $CEPH_REPO/blob/$BRANCH/${repo_path}?raw=true
-        CLEANUP_FILES+=( ${output_file} )
-        shift
-    done
-}
 
 ceph_get src/daos/folder_free_space.sh
 source ./folder_free_space.sh
