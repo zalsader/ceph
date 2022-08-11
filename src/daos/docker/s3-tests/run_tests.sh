@@ -4,11 +4,11 @@
 source $CEPH_PATH/src/daos/color_output.sh
 source $CEPH_PATH/src/daos/set_boolean.sh
 source $CEPH_PATH/src/daos/set_integer.sh
-source $CEPH_PATH/src/daos/restart_daos.sh
-source $CEPH_PATH/src/daos/isRadosgwRunning.sh
+source $CEPH_PATH/src/daos/daos/restart_daos.sh
+source $CEPH_PATH/src/daos/radosgw/radosgw_run_state.sh
 source $CEPH_PATH/src/daos/silent_pushd_popd.sh
-source $CEPH_PATH/src/daos/docker/s3-tests/testresults.sh
-source $CEPH_PATH/src/daos/radosgw_start.sh
+source $CEPH_PATH/src/daos/docker/s3-tests/test_results.sh
+source $CEPH_PATH/src/daos/radosgw/radosgw_start.sh
 
 if [[ ! "$CEPH_PATH" =~ . ]];
 then
@@ -53,6 +53,8 @@ function usage()
     echo -e "\t\tStart the test run at numbered test"
     echo -e "\t--end=$ACCEPTABLE_INTEGER_REGEX default=1000000"
     echo -e "\t\tEnd the test run at numbered test"
+    echo -e "\t-t--debug-script=$BOOLEAN_VALUES default=0"
+    echo -e "\t\tSkip execution of each test"
     echo -e "\t--verbose"
     echo -e "\t\tEcho commands"
     echo ""
@@ -70,6 +72,7 @@ clean_daos=true
 color_output=true
 ARTIFACTS_FOLDER=/opt
 COMMAND_PREFIX='sudo'
+DEBUG_SCRIPT=false;
 
 while (( $# ))
     do
@@ -111,6 +114,9 @@ while (( $# ))
             ;;
         --color-output)
             set_boolean color_output $VALUE
+            ;;
+        --debug-script)
+            set_boolean DEBUG_SCRIPT $VALUE
             ;;
         --verbose)
             set -x
@@ -252,7 +258,7 @@ isTestScheduledToRun()
 
 checkRestartNeeded()
 {
-    if [[ $summary == true ]] && [ $restart_count -gt 0 ]; then
+    if [[ $summary == false ]] && [ $restart_count -gt 0 ]; then
         local execution_count=$(($test_count-$skipped-1))
         local mod=$(expr $execution_count % $restart_count)
         if [ $execution_count -gt 0 ] && [ $mod -eq 0 ]; then
@@ -277,8 +283,14 @@ run_test()
         isTestScheduledToRun
         if [[ $? == 1 ]]; then
             if [[ $summary == false ]]; then
-                echo "S3TEST_CONF=s3tests.conf virtualenv/bin/nosetests -v $testcommand" > $testfile
-                S3TEST_CONF=s3tests.conf virtualenv/bin/nosetests -v $testcommand 2>> $testfile
+                if [[ $DEBUG_SCRIPT == false ]]; then
+                    echo "S3TEST_CONF=s3tests.conf virtualenv/bin/nosetests -v $testcommand" > $testfile
+                    S3TEST_CONF=s3tests.conf virtualenv/bin/nosetests -v $testcommand 2>> $testfile
+                else
+                    # debugging script, don't execute tests
+                    echo "$testname ... ok" >> $testfile
+                    # read -p "Paused: DEBUG_SCRIPT == true"
+                fi
             else
                 ((skipped++))
             fi

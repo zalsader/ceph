@@ -4,29 +4,6 @@
 set -e
 set -x
 
-function set_boolean()
-{
-    declare -n foo=$1
-    case ${2^^} in
-        TRUE | T | YES | Y | 1)
-            foo=true
-            ;;
-        FALSE | F | NO | N | 0)
-            foo=false
-            ;;
-        *)
-            if [[ "$2" == "" ]]; then
-                # just flip the meaning
-                foo=$(($foo ^ true))
-            else
-                echo "ERROR: unknown value \"$VALUE\""
-                usage
-                exit 1
-            fi
-            ;;
-    esac
-}
-
 function usage()
 {
     # turn off echo
@@ -45,8 +22,19 @@ function usage()
     echo ""
 }
 
-BRANCH='add-daos-rgw-sal'
+function ceph_get()
+{
+    # wget --output-document=folder_free_space.sh https://github.com/zalsader/ceph/blob/docker-build/src/daos/folder_free_space.sh?raw=true
+    while (( $# )); do
+        local output_file=$(basename -- $1)
+        local repo_path=$1
+        wget --output-document=${output_file} $CEPH_REPO/blob/$BRANCH/${repo_path}?raw=true
+        CLEANUP_FILES+=( ${output_file} )
+        shift
+    done
+}
 
+BRANCH='add-daos-rgw-sal'
 CEPH_PATH='/opt/ceph'
 DAOS_PATH='/opt/daos'
 CLEANUP_FILES=()
@@ -81,6 +69,12 @@ while (( $# ))
         -cr | --ceph-repo)
             CEPH_REPO=$VALUE
             ;;
+        -ep | --enable-passwordless-sudo)
+            # lets hope it actually finds the shell script
+            ceph_get src/daos/set_boolean.sh
+            source ./set_boolean.sh
+            set_boolean PASSWORDLESS_SUDO $VALUE
+            ;;
         *)
             echo "Unknown option $1"
             usage
@@ -89,18 +83,6 @@ while (( $# ))
     esac
     shift
 done
-
-function ceph_get()
-{
-    # wget --output-document=folder_free_space.sh https://github.com/zalsader/ceph/blob/docker-build/src/daos/folder_free_space.sh?raw=true
-    while (( $# )); do
-        local output_file=$(basename -- $1)
-        local repo_path=$1
-        wget --output-document=${output_file} $CEPH_REPO/blob/$BRANCH/${repo_path}?raw=true
-        CLEANUP_FILES+=( ${output_file} )
-        shift
-    done
-}
 
 ceph_get src/daos/folder_free_space.sh
 source ./folder_free_space.sh

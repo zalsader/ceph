@@ -17,6 +17,9 @@ pipeline {
 					export RUN_DATE="$(date +"%Y-%m-%d")"
 					export DOCKER_RUN=/opt/ceph/src/daos/docker
                     export ARTIFACTS_FOLDER=/opt/$RUN_DATE
+                    export CEPH_PATH=/opt/ceph
+                    export DAOS_PATH=/opt/daos
+                    export S3TESTS_PATH=/opt/s3-tests
 					cd $DOCKER_RUN && sh test.sh --artifacts-folder=$ARTIFACTS_FOLDER
 					ls -l $ARTIFACTS_FOLDER/*.csv
 					cp $ARTIFACTS_FOLDER/test_diff.csv $WORKSPACE

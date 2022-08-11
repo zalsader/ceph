@@ -13,11 +13,11 @@ set -x
 source $CEPH_PATH/src/daos/error_handler.sh
 source $CEPH_PATH/src/daos/set_boolean.sh
 source $CEPH_PATH/src/daos/require_variables.sh
-source $CEPH_PATH/src/daos/daos_format.sh
-source $CEPH_PATH/src/daos/daos_pool_create.sh
-source $CEPH_PATH/src/daos/radosgw_start.sh
-source $CEPH_PATH/src/daos/radosgw_stop.sh
-source $CEPH_PATH/src/daos/radosgw_create_s3bucket.sh
+source $CEPH_PATH/src/daos/daos/daos_format.sh
+source $CEPH_PATH/src/daos/daos/daos_pool_create.sh
+source $CEPH_PATH/src/daos/radosgw/radosgw/radosgw_start.sh
+source $CEPH_PATH/src/daos/radosgw/radosgw/radosgw_stop.sh
+source $CEPH_PATH/src/daos/radosgw/radosgw_create_s3bucket.sh
 
 require_variables DAOS_PATH S3TESTS_PATH
 
@@ -220,13 +220,13 @@ function start_daos_cortx_s3tests()
 
         radosgw_create_s3bucket
 
-        docker exec -u 0 $CONTAINER_NAME bash -c "sh /opt/ceph/src/daos/docker/s3-tests/run_tests.sh --artifacts-folder=$ARTIFACTS_FOLDER --cleandaos=true --restart=50 --stop-on-test-result=MISSING --run-on-test-result=MISSING,NOT_RUNNING"
+        docker exec -u 0 $CONTAINER_NAME bash -c "sh /opt/ceph/src/daos/docker/s3-tests/run_tests.sh --color-output=false --artifacts-folder=$ARTIFACTS_FOLDER --cleandaos=true --restart=50 --stop-on-test-result=MISSING --run-on-test-result=MISSING,NOT_RUNNING"
         if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
 
         radosgw_stop
         daos_stop
     else
-        docker exec -u 0 $CONTAINER_NAME bash -c "sh /opt/ceph/src/daos/docker/s3-tests/run_tests.sh --artifacts-folder=$ARTIFACTS_FOLDER --summary"
+        docker exec -u 0 $CONTAINER_NAME bash -c "sh /opt/ceph/src/daos/docker/s3-tests/run_tests.sh --color-output=false --artifacts-folder=$ARTIFACTS_FOLDER --summary"
         if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
     fi
 }
