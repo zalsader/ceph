@@ -13,11 +13,11 @@ set -x
 source $CEPH_PATH/src/daos/error_handler.sh
 source $CEPH_PATH/src/daos/set_boolean.sh
 source $CEPH_PATH/src/daos/require_variables.sh
-source $CEPH_PATH/src/daos/daos_format.sh
-source $CEPH_PATH/src/daos/daos_pool_create.sh
-source $CEPH_PATH/src/daos/radosgw_start.sh
-source $CEPH_PATH/src/daos/radosgw_stop.sh
-source $CEPH_PATH/src/daos/radosgw_create_s3bucket.sh
+source $CEPH_PATH/src/daos/daos/daos_format.sh
+source $CEPH_PATH/src/daos/daos/daos_pool_create.sh
+source $CEPH_PATH/src/daos/radosgw/radosgw/radosgw_start.sh
+source $CEPH_PATH/src/daos/radosgw/radosgw/radosgw_stop.sh
+source $CEPH_PATH/src/daos/radosgw/radosgw_create_s3bucket.sh
 
 require_variables DAOS_PATH S3TESTS_PATH
 

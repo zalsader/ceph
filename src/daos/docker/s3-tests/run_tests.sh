@@ -4,11 +4,11 @@
 source $CEPH_PATH/src/daos/color_output.sh
 source $CEPH_PATH/src/daos/set_boolean.sh
 source $CEPH_PATH/src/daos/set_integer.sh
-source $CEPH_PATH/src/daos/restart_daos.sh
-source $CEPH_PATH/src/daos/isRadosgwRunning.sh
+source $CEPH_PATH/src/daos/daos/restart_daos.sh
+source $CEPH_PATH/src/daos/radosgw/radosgw_run_state.sh
 source $CEPH_PATH/src/daos/silent_pushd_popd.sh
-source $CEPH_PATH/src/daos/docker/s3-tests/testresults.sh
-source $CEPH_PATH/src/daos/radosgw_start.sh
+source $CEPH_PATH/src/daos/docker/s3-tests/test_results.sh
+source $CEPH_PATH/src/daos/radosgw/radosgw/radosgw_start.sh
 
 if [[ ! "$CEPH_PATH" =~ . ]];
 then

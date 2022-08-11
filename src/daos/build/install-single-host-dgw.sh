@@ -4,29 +4,6 @@
 set -e
 set -x
 
-function set_boolean()
-{
-    declare -n foo=$1
-    case ${2^^} in
-        TRUE | T | YES | Y | 1)
-            foo=true
-            ;;
-        FALSE | F | NO | N | 0)
-            foo=false
-            ;;
-        *)
-            if [[ "$2" == "" ]]; then
-                # just flip the meaning
-                foo=$(($foo ^ true))
-            else
-                echo "ERROR: unknown value \"$VALUE\""
-                usage
-                exit 1
-            fi
-            ;;
-    esac
-}
-
 function usage()
 {
     # turn off echo
@@ -80,6 +57,12 @@ while (( $# ))
             ;;
         -cr | --ceph-repo)
             CEPH_REPO=$VALUE
+            ;;
+        --enable-passwordless-sudo)
+            # lets hope it actually finds the shell script
+            ceph_get src/daos/set_integer.sh
+            source set_integer.sh
+            set_boolean PASSWORDLESS_SUDO $VALUE
             ;;
         *)
             echo "Unknown option $1"
