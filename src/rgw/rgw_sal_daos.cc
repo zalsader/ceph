@@ -50,7 +50,6 @@ using ::ceph::encode;
 #define METADATA_BUCKET "_METADATA"
 #define MULTIPART_MAX_PARTS 10000
 #define LATEST_INSTANCE "latest"
-#define LATEST_INSTANCE_SUFFIX "[latest]"
 
 /**
  * Combines the vector to return a path
@@ -666,10 +665,10 @@ int DaosBucket::list(const DoutPrefixProvider* dpp, ListParams& params, int max,
   char daos_marker[DS3_MAX_KEY];
   strcpy(daos_marker, params.marker.to_str().c_str());
 
-  ret = ds3_bucket_list_obj(
-      &nobj, object_infos.data(), &ncp, common_prefixes.data(),
-      params.prefix.c_str(), params.delim.c_str(), daos_marker,
-      params.list_versions, &results.is_truncated, ds3b, nullptr);
+  ret = ds3_bucket_list_obj(&nobj, object_infos.data(), &ncp,
+                            common_prefixes.data(), params.prefix.c_str(),
+                            params.delim.c_str(), daos_marker,
+                            params.list_versions, &results.is_truncated, ds3b);
 
   if (ret != 0) {
     return ret;
@@ -711,115 +710,56 @@ int DaosBucket::list_multiparts(
     vector<std::unique_ptr<MultipartUpload>>& uploads,
     map<string, bool>* common_prefixes, bool* is_truncated) {
   ldpp_dout(dpp, 20) << "DEBUG: list_multiparts" << dendl;
-  // TODO handle markers
-  // TODO: handle more than max
-
   // End of uploading
   if (max_uploads == 0) {
     return 0;
   }
 
-  int ret = open(dpp);
-  if (ret != 0) {
-    return ret;
-  }
-
-  dfs_obj_t* multipart_dir;
-  ret = dfs_lookup_rel(store->ds3->meta_dfs,
-                       store->ds3->meta_dirs[MULTIPART_DIR], get_name().c_str(),
-                       O_RDWR, &multipart_dir, nullptr, nullptr);
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel bucket=" << get_name()
-                     << " ret=" << ret << dendl;
-  if (ret != 0) {
-    dfs_release(multipart_dir);
-    return ret;
-  }
-
-  vector<struct dirent> dirents(max_uploads);
-  daos_anchor_t anchor;
-  daos_anchor_init(&anchor, 0);
-
-  uint32_t nr = dirents.size();
-  ret = dfs_readdir(store->ds3->meta_dfs, multipart_dir, &anchor, &nr,
-                    dirents.data());
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_readdir bucket=" << get_name()
-                     << " nr=" << nr << " ret=" << ret << dendl;
-  if (ret != 0) {
-    return ret;
-  }
-
-  if (is_truncated && !daos_anchor_is_eof(&anchor)) {
-    *is_truncated = true;
-  }
-
-  for (uint32_t i = 0; i < nr; i++) {
-    const auto& upload_id = dirents[i].d_name;
-
-    // Open upload dir
-    dfs_obj_t* upload_dir;
-    ret = dfs_lookup_rel(store->ds3->meta_dfs, multipart_dir, upload_id, O_RDWR,
-                         &upload_dir, nullptr, nullptr);
-    ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel i=" << i
-                       << " upload_id=" << upload_id << " ret=" << ret << dendl;
-    if (ret != 0) {
-      return ret;
-    }
-
-    // Read the xattr
+  // Init needed structures
+  vector<struct ds3_multipart_upload_info> multipart_upload_infos(max_uploads);
+  uint32_t nmp = multipart_upload_infos.size();
+  vector<vector<uint8_t>> values;
+  for (uint32_t i = 0; i < nmp; i++) {
     vector<uint8_t> value(DFS_MAX_XATTR_LEN);
-    size_t size = value.size();
-    ret = dfs_getxattr(store->ds3->meta_dfs, upload_dir, RGW_DIR_ENTRY_XATTR,
-                       value.data(), &size);
-    ldpp_dout(dpp, 20) << "DEBUG: dfs_getxattr upload_id=" << upload_id
-                       << " xattr=" << RGW_DIR_ENTRY_XATTR << dendl;
+    values.push_back(std::move(value));
+    multipart_upload_infos[i].encoded = values[i].data();
+  }
 
-    // Skip if file has no dirent
-    if (ret != 0) {
-      ldpp_dout(dpp, 0) << "ERROR: no dirent, skipping upload_id=" << upload_id
-                        << dendl;
-      ret = dfs_release(upload_dir);
-      continue;
-    }
+  vector<struct ds3_common_prefix_info> cps(max_uploads);
+  uint32_t ncp = cps.size();
 
+  char daos_marker[DS3_MAX_KEY];
+  strcpy(daos_marker, marker.c_str());
+
+  int ret = ds3_bucket_list_multipart(
+      get_name().c_str(), &nmp, multipart_upload_infos.data(), &ncp, cps.data(),
+      prefix.c_str(), delim.c_str(), daos_marker, is_truncated, store->ds3);
+
+  multipart_upload_infos.resize(nmp);
+  cps.resize(ncp);
+
+  // Fill common prefixes
+  for (auto cp : cps) {
+    (*common_prefixes)[cp.prefix] = true;
+  }
+
+  for (auto mp : multipart_upload_infos) {
     // Decode the xattr
     bufferlist bl;
     rgw_bucket_dir_entry ent;
-    bl.append(reinterpret_cast<char*>(value.data()), size);
+    bl.append(reinterpret_cast<char*>(mp.encoded), mp.encoded_length);
     auto iter = bl.cbegin();
     ent.decode(iter);
     string name = ent.key.name;
 
-    // Only add entries that start with prefix
-    // TODO handle how this affects max
-    if (name.compare(0, prefix.length(), prefix) == 0) {
-      ACLOwner owner(rgw_user(ent.meta.owner));
-      owner.set_name(ent.meta.owner_display_name);
-      uploads.push_back(this->get_multipart_upload(
-          name, upload_id, std::move(owner), ent.meta.mtime));
-
-      // Add common prefixes
-      if (common_prefixes && !delim.empty()) {
-        // Name key has delim after the prefix
-        const size_t delim_pos = name.find(delim, prefix.size());
-        if (delim_pos != std::string::npos) {
-          string prefix_key = name.substr(0, delim_pos + delim.length());
-          (*common_prefixes)[prefix_key] = true;
-        }
-      }
-    }
-
-    // Close handles
-    ret = dfs_release(upload_dir);
-    ldpp_dout(dpp, 20) << "DEBUG: dfs_release upload_dir ret=" << ret << dendl;
+    ACLOwner owner(rgw_user(ent.meta.owner));
+    owner.set_name(ent.meta.owner_display_name);
+    uploads.push_back(this->get_multipart_upload(
+        name, mp.upload_id, std::move(owner), ent.meta.mtime));
   }
 
   // Sort uploads
   std::sort(uploads.begin(), uploads.end(), compare_multipart_upload);
-
-  ret = dfs_release(multipart_dir);
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_release multipart_dir ret=" << ret << dendl;
-
-  ret = close(dpp);
 
   return ret;
 }
@@ -1184,7 +1124,7 @@ int DaosObject::DaosReadOp::read(int64_t off, int64_t end, bufferlist& bl,
   if (ret != 0) {
     return ret;
   }
-  
+
   // Calculate size, end is inclusive
   uint64_t size = end - off + 1;
 
@@ -2248,7 +2188,7 @@ int DaosMultipartWriter::prepare(optional_yield y) {
   part_obj = get_daos_bucket()->get_part_object(upload_id, part_num);
   // XXX: we should just create the file, and not the whole path
   // TODO implement part creation
-  int ret = 0; //part_obj->create(dpp, false);
+  int ret = 0;  // part_obj->create(dpp, false);
   if (ret == -ENOENT) {
     ret = -ERR_NO_SUCH_UPLOAD;
   }
@@ -2315,8 +2255,8 @@ int DaosMultipartWriter::complete(
   ldpp_dout(dpp, 20) << "DaosMultipartWriter::complete(): entry size"
                      << bl.length() << dendl;
 
-  ret = dfs_setxattr(store->ds3->meta_dfs, part_obj->ds3o->dfs_obj, RGW_PART_XATTR,
-                     bl.c_str(), bl.length(), 0);
+  ret = dfs_setxattr(store->ds3->meta_dfs, part_obj->ds3o->dfs_obj,
+                     RGW_PART_XATTR, bl.c_str(), bl.length(), 0);
 
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to set xattr part (" << upload_id << "/"
