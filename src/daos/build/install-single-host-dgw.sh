@@ -72,7 +72,7 @@ while (( $# ))
         -ep | --enable-passwordless-sudo)
             # lets hope it actually finds the shell script
             ceph_get src/daos/set_boolean.sh
-            source set_boolean.sh
+            source ./set_boolean.sh
             set_boolean PASSWORDLESS_SUDO $VALUE
             ;;
         *)
