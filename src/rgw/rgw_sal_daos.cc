@@ -678,12 +678,12 @@ int DaosBucket::list(const DoutPrefixProvider* dpp, ListParams& params, int max,
   common_prefixes.resize(ncp);
 
   // Fill common prefixes
-  for (auto cp : common_prefixes) {
+  for (auto const& cp : common_prefixes) {
     results.common_prefixes[cp.prefix] = true;
   }
 
   // Decode objs
-  for (auto obj : object_infos) {
+  for (auto const& obj : object_infos) {
     bufferlist bl;
     rgw_bucket_dir_entry ent;
     bl.append(reinterpret_cast<char*>(obj.encoded), obj.encoded_length);
@@ -712,6 +712,7 @@ int DaosBucket::list_multiparts(
   ldpp_dout(dpp, 20) << "DEBUG: list_multiparts" << dendl;
   // End of uploading
   if (max_uploads == 0) {
+    *is_truncated = false;
     return 0;
   }
 
@@ -739,11 +740,11 @@ int DaosBucket::list_multiparts(
   cps.resize(ncp);
 
   // Fill common prefixes
-  for (auto cp : cps) {
+  for (auto const& cp : cps) {
     (*common_prefixes)[cp.prefix] = true;
   }
 
-  for (auto mp : multipart_upload_infos) {
+  for (auto const& mp : multipart_upload_infos) {
     // Decode the xattr
     bufferlist bl;
     rgw_bucket_dir_entry ent;
@@ -1706,119 +1707,45 @@ int DaosMultipartUpload::list_parts(const DoutPrefixProvider* dpp,
                                     int* next_marker, bool* truncated,
                                     bool assume_unsorted) {
   ldpp_dout(dpp, 20) << "DEBUG: list_parts" << dendl;
-  dfs_obj_t* multipart_dir;
-  dfs_obj_t* upload_dir;
-  int ret = dfs_lookup_rel(
-      store->ds3->meta_dfs, store->ds3->meta_dirs[MULTIPART_DIR],
-      bucket->get_name().c_str(), O_RDWR, &multipart_dir, nullptr, nullptr);
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel entry=" << bucket->get_name()
-                     << " ret=" << ret << dendl;
-  ret = dfs_lookup_rel(store->ds3->meta_dfs, multipart_dir,
-                       get_upload_id().c_str(), O_RDWR, &upload_dir, nullptr,
-                       nullptr);
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel entry=" << get_upload_id()
-                     << " ret=" << ret << dendl;
+  // Init needed structures
+  vector<struct ds3_multipart_part_info> multipart_part_infos(num_parts);
+  uint32_t npart = multipart_part_infos.size();
+  vector<vector<uint8_t>> values;
+  for (uint32_t i = 0; i < npart; i++) {
+    vector<uint8_t> value(DFS_MAX_XATTR_LEN);
+    values.push_back(std::move(value));
+    multipart_part_infos[i].encoded = values[i].data();
+  }
+
+  uint32_t daos_marker = marker;
+  int ret = ds3_upload_list_parts(
+      bucket->get_name().c_str(), get_upload_id().c_str(), &npart,
+      multipart_part_infos.data(), &daos_marker, truncated, store->ds3);
+
   if (ret != 0) {
-    if (ret == ENOENT) {
+    if (ret == -ENOENT) {
       ret = -ERR_NO_SUCH_UPLOAD;
     }
-    dfs_release(multipart_dir);
     return ret;
   }
 
-  vector<struct dirent> dirents(MULTIPART_MAX_PARTS);
-  daos_anchor_t anchor;
-  daos_anchor_init(&anchor, 0);
+  multipart_part_infos.resize(npart);
+  parts.clear();
 
-  uint32_t nr = dirents.size();
-  ret = dfs_readdir(store->ds3->meta_dfs, upload_dir, &anchor, &nr,
-                    dirents.data());
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_readdir name=" << get_upload_id()
-                     << " nr=" << nr << " ret=" << ret << dendl;
-  if (ret != 0) {
-    dfs_release(upload_dir);
-    dfs_release(multipart_dir);
-    return ret;
-  }
-
-  for (uint32_t i = 0; i < nr; i++) {
-    const auto& part_name = dirents[i].d_name;
-    std::string err;
-    const int part_num = strict_strtol(part_name, 10, &err);
-    if (!err.empty()) {
-      ldpp_dout(dpp, 10) << "bad part number: " << part_name << ": " << err
-                         << dendl;
-      dfs_release(upload_dir);
-      dfs_release(multipart_dir);
-      return -EINVAL;
-    }
-
-    // Skip entries that are not larger than marker
-    if (part_num <= marker) {
-      continue;
-    }
-
-    dfs_obj_t* part_obj;
-    ret = dfs_lookup_rel(store->ds3->meta_dfs, upload_dir, part_name, O_RDWR,
-                         &part_obj, nullptr, nullptr);
-    ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel i=" << i
-                       << " entry=" << part_name << " ret=" << ret << dendl;
-    if (ret != 0) {
-      return ret;
-    }
-
-    // The entry is a regular file, read the xattr and add to objs
-    vector<uint8_t> value(DFS_MAX_XATTR_LEN);
-    size_t size = value.size();
-    ret = dfs_getxattr(store->ds3->meta_dfs, part_obj, RGW_PART_XATTR,
-                       value.data(), &size);
-    ldpp_dout(dpp, 20) << "DEBUG: dfs_getxattr entry=" << part_name
-                       << " xattr=" << RGW_PART_XATTR << dendl;
-    // Skip if the part has no info
-    if (ret != 0) {
-      ldpp_dout(dpp, 0) << "ERROR: no part info, skipping part=" << part_name
-                        << dendl;
-      ret = dfs_release(part_obj);
-      continue;
-    }
-
+  for (auto const& pi : multipart_part_infos) {
     bufferlist bl;
-    bl.append(reinterpret_cast<char*>(value.data()), size);
+    bl.append(reinterpret_cast<char*>(pi.encoded), pi.encoded_length);
 
     std::unique_ptr<DaosMultipartPart> part =
         std::make_unique<DaosMultipartPart>();
     auto iter = bl.cbegin();
     decode(part->info, iter);
-    parts[part->info.num] = std::move(part);
-
-    // Close handles
-    ret = dfs_release(part_obj);
-    ldpp_dout(dpp, 20) << "DEBUG: dfs_release part_obj ret=" << ret << dendl;
+    parts[pi.part_num] = std::move(part);
   }
-
-  // rebuild a map with only num_parts entries
-  int last_num = 0;
-  std::map<uint32_t, std::unique_ptr<MultipartPart>> new_parts;
-  std::map<uint32_t, std::unique_ptr<MultipartPart>>::iterator piter;
-  int i;
-  for (i = 0, piter = parts.begin(); i < num_parts && piter != parts.end();
-       ++i, ++piter) {
-    last_num = piter->first;
-    new_parts[piter->first] = std::move(piter->second);
-  }
-
-  if (truncated) {
-    *truncated = (piter != parts.end());
-  }
-
-  parts.swap(new_parts);
 
   if (next_marker) {
-    *next_marker = last_num;
+    *next_marker = daos_marker;
   }
-
-  ret = dfs_release(upload_dir);
-  ret = dfs_release(multipart_dir);
   return ret;
 }
 
