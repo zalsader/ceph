@@ -13,6 +13,7 @@ set -x
 source $CEPH_PATH/src/daos/error_handler.sh
 source $CEPH_PATH/src/daos/set_boolean.sh
 source $CEPH_PATH/src/daos/require_variables.sh
+source $CEPH_PATH/src/daos/daos/daos_start.sh
 source $CEPH_PATH/src/daos/daos/daos_format.sh
 source $CEPH_PATH/src/daos/daos/daos_pool_create.sh
 source $CEPH_PATH/src/daos/radosgw/radosgw/radosgw_start.sh
@@ -204,12 +205,7 @@ function start_daos_cortx_s3tests()
 {
     if [[ $SUMMARY == false ]]; then
         if [[ $START_DAOS == true ]]; then
-            docker exec -u 0 $CONTAINER_NAME /opt/daos/bin/daos_server start &
-            if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
-            docker exec -u 0 $CONTAINER_NAME /opt/daos/bin/daos_agent &
-            if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
-            sleep 5
-
+            daos_start
             daos_format
             daos_pool_create
         fi

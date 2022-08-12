@@ -9,23 +9,11 @@ source $CEPH_PATH/src/daos/radosgw/radosgw_run_state.sh
 source $CEPH_PATH/src/daos/silent_pushd_popd.sh
 source $CEPH_PATH/src/daos/docker/s3-tests/test_results.sh
 source $CEPH_PATH/src/daos/radosgw/radosgw_start.sh
+source $CEPH_PATH/src/daos/daos/initialize_daos_bin.sh
 
 if [[ ! "$CEPH_PATH" =~ . ]];
 then
     CEPH_PATH=/opt/ceph
-fi
-
-if [[ "$DAOS_BIN" == "" ]]; then
-    if [[ -e $DAOS_PATH/install/bin/dmg ]]; then
-        DAOS_BIN="$DAOS_PATH/install/bin/"
-    fi
-    if [[ -e $DAOS_PATH/bin/dmg ]]; then
-        DAOS_BIN="$DAOS_PATH/bin/"
-    fi
-fi
-if [[ "$DAOS_BIN" == "" ]]; then
-    echo "dmg was not found in the usual places, exiting"
-    exit 1
 fi
 
 function usage()
@@ -437,6 +425,7 @@ summarize()
 
 run_all_tests()
 {
+    initialize_daos_bin
     pushd ${S3TESTS_PATH}
     create_test_array $input
     test_each
