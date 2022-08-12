@@ -1612,14 +1612,8 @@ int DaosMultipartUpload::abort(const DoutPrefixProvider* dpp,
                                CephContext* cct) {
   // Remove upload from bucket multipart index
   ldpp_dout(dpp, 20) << "DEBUG: abort" << dendl;
-  dfs_obj_t* multipart_dir;
-  int ret = dfs_lookup_rel(
-      store->ds3->meta_dfs, store->ds3->meta_dirs[MULTIPART_DIR],
-      bucket->get_name().c_str(), O_RDWR, &multipart_dir, nullptr, nullptr);
-  ret = dfs_remove(store->ds3->meta_dfs, multipart_dir, get_upload_id().c_str(),
-                   true, nullptr);
-  dfs_release(multipart_dir);
-  return ret;
+  return ds3_upload_abort(bucket->get_name().c_str(), get_upload_id().c_str(),
+                          store->ds3);
 }
 
 static string mp_ns = RGW_OBJ_NS_MULTIPART;
