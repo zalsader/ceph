@@ -357,8 +357,6 @@ class DaosBucket : public Bucket {
   int open(const DoutPrefixProvider* dpp);
   int close(const DoutPrefixProvider* dpp);
   bool is_open() { return ds3b != nullptr; }
-  std::unique_ptr<DaosObject> get_part_object(std::string upload_id,
-                                              uint64_t part_num);
   std::unique_ptr<struct ds3_bucket_info> get_encoded_info(
       ceph::real_time mtime);
 
@@ -571,7 +569,7 @@ class DaosObject : public Object {
                            optional_yield y) override;
   };
 
-  ds3_obj_t *ds3o = nullptr;
+  ds3_obj_t* ds3o = nullptr;
 
   DaosObject() = default;
 
@@ -750,15 +748,15 @@ class DaosMultipartWriter : public Writer {
  protected:
   rgw::sal::DaosStore* store;
   MultipartUpload* upload;
-
-  // Uploaded Object.
-  std::unique_ptr<DaosObject> part_obj;
   std::string upload_id;
 
   // Part parameters.
   const uint64_t part_num;
   const std::string part_num_str;
   uint64_t actual_part_size = 0;
+
+  ds3_part_t* ds3p = nullptr;
+  bool is_open() { return ds3p != nullptr; };
 
  public:
   DaosMultipartWriter(const DoutPrefixProvider* dpp, optional_yield y,
@@ -773,7 +771,7 @@ class DaosMultipartWriter : public Writer {
         upload_id(_upload->get_upload_id()),
         part_num(_part_num),
         part_num_str(part_num_str) {}
-  ~DaosMultipartWriter() = default;
+  virtual ~DaosMultipartWriter();
 
   // prepare to start processing object data
   virtual int prepare(optional_yield y) override;
@@ -790,7 +788,7 @@ class DaosMultipartWriter : public Writer {
                        rgw_zone_set* zones_trace, bool* canceled,
                        optional_yield y) override;
 
-  DaosBucket* get_daos_bucket();
+  const std::string& get_bucket_name();
 };
 
 class DaosMultipartPart : public MultipartPart {
@@ -860,7 +858,7 @@ class DaosMultipartUpload : public MultipartUpload {
       std::unique_ptr<rgw::sal::Object> _head_obj, const rgw_user& owner,
       const rgw_placement_rule* ptail_placement_rule, uint64_t part_num,
       const std::string& part_num_str) override;
-  DaosBucket* get_daos_bucket() { return static_cast<DaosBucket*>(bucket); }
+  const std::string& get_bucket_name() { return bucket->get_name(); }
 };
 
 class DaosStore : public Store {

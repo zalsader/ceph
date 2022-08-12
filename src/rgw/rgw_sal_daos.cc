@@ -75,7 +75,7 @@ int DaosUser::list_buckets(const DoutPrefixProvider* dpp, const string& marker,
   vector<struct ds3_bucket_info> bucket_infos(max);
 
   char daos_marker[DS3_MAX_KEY];
-  strcpy(daos_marker, marker.c_str());
+  std::strcpy(daos_marker, marker.c_str());
   ret = ds3_bucket_list(&bcount, bucket_infos.data(), daos_marker,
                         &is_truncated, store->ds3, nullptr);
   ldpp_dout(dpp, 20) << "DEBUG: ds3_bucket_list: bcount=" << bcount
@@ -380,16 +380,6 @@ int DaosBucket::close(const DoutPrefixProvider* dpp) {
   return ret;
 }
 
-std::unique_ptr<DaosObject> DaosBucket::get_part_object(std::string upload_id,
-                                                        uint64_t part_num) {
-  // XXX: create a util for path build
-  fs::path part_path =
-      make_path({"multipart", get_name(), upload_id, std::to_string(part_num)});
-  rgw_obj_key k;
-  k.name = part_path.string();
-  return std::make_unique<DaosObject>(store, k, store->get_metadata_bucket());
-}
-
 std::unique_ptr<struct ds3_bucket_info> DaosBucket::get_encoded_info(
     ceph::real_time _mtime) {
   bufferlist bl;
@@ -663,7 +653,7 @@ int DaosBucket::list(const DoutPrefixProvider* dpp, ListParams& params, int max,
   uint32_t ncp = common_prefixes.size();
 
   char daos_marker[DS3_MAX_KEY];
-  strcpy(daos_marker, params.marker.to_str().c_str());
+  std::strcpy(daos_marker, params.marker.to_str().c_str());
 
   ret = ds3_bucket_list_obj(&nobj, object_infos.data(), &ncp,
                             common_prefixes.data(), params.prefix.c_str(),
@@ -730,7 +720,7 @@ int DaosBucket::list_multiparts(
   uint32_t ncp = cps.size();
 
   char daos_marker[DS3_MAX_KEY];
-  strcpy(daos_marker, marker.c_str());
+  std::strcpy(daos_marker, marker.c_str());
 
   int ret = ds3_bucket_list_multipart(
       get_name().c_str(), &nmp, multipart_upload_infos.data(), &ncp, cps.data(),
@@ -1649,8 +1639,8 @@ int DaosMultipartUpload::init(const DoutPrefixProvider* dpp, optional_yield y,
   encode(upload_info, bl);
 
   struct ds3_multipart_upload_info ui;
-  strcpy(ui.upload_id, MULTIPART_UPLOAD_ID_PREFIX);
-  strcpy(ui.key, oid.c_str());
+  std::strcpy(ui.upload_id, MULTIPART_UPLOAD_ID_PREFIX);
+  std::strcpy(ui.key, oid.c_str());
   ui.encoded = bl.c_str();
   ui.encoded_length = bl.length();
   int prefix_length = strlen(ui.upload_id);
@@ -1940,9 +1930,9 @@ int DaosMultipartUpload::complete(
   uint64_t write_off = 0;
   for (auto const& [part_num, part] : get_parts()) {
     // TODO DRY
-    std::unique_ptr<DaosObject> part_obj =
-        get_daos_bucket()->get_part_object(get_upload_id(), part_num);
-    ret = part_obj->lookup(dpp);
+    // std::unique_ptr<DaosObject> part_obj =
+    //     get_daos_bucket()->get_part_object(get_upload_id(), part_num);
+    // ret = part_obj->lookup(dpp);
     if (ret != 0) {
       obj->close(dpp);
       dfs_release(multipart_dir);
@@ -1952,9 +1942,9 @@ int DaosMultipartUpload::complete(
     // Reserve buffers and read
     uint64_t size = part->get_size();
     bufferlist bl;
-    ret = part_obj->read(dpp, bl, 0, size);
+    // ret = part_obj->read(dpp, bl, 0, size);
     if (ret != 0) {
-      part_obj->close(dpp);
+      // part_obj->close(dpp);
       obj->close(dpp);
       dfs_release(multipart_dir);
       return ret;
@@ -1962,7 +1952,7 @@ int DaosMultipartUpload::complete(
 
     // write to obj
     obj->write(dpp, std::move(bl), write_off);
-    part_obj->close(dpp);
+    // part_obj->close(dpp);
     write_off += part->get_size();
   }
 
@@ -2008,9 +1998,10 @@ int DaosMultipartUpload::get_info(const DoutPrefixProvider* dpp,
   // Read the multipart upload dirent from index
   bufferlist bl;
   uint64_t size = DFS_MAX_XATTR_LEN;
-  struct ds3_multipart_upload_info ui = {.encoded = bl.append_hole(size).c_str(),
-                                    .encoded_length = size};
-  int ret = ds3_upload_get_info(&ui, bucket->get_name().c_str(), get_upload_id().c_str(), store->ds3);
+  struct ds3_multipart_upload_info ui = {
+      .encoded = bl.append_hole(size).c_str(), .encoded_length = size};
+  int ret = ds3_upload_get_info(&ui, bucket->get_name().c_str(),
+                                get_upload_id().c_str(), store->ds3);
 
   if (ret != 0) {
     if (ret == -ENOENT) {
@@ -2055,22 +2046,23 @@ std::unique_ptr<Writer> DaosMultipartUpload::get_writer(
       part_num, part_num_str);
 }
 
+DaosMultipartWriter::~DaosMultipartWriter() {
+  if (is_open()) ds3_part_close(ds3p);
+}
+
 int DaosMultipartWriter::prepare(optional_yield y) {
   ldpp_dout(dpp, 20) << "DaosMultipartWriter::prepare(): enter part="
                      << part_num_str << dendl;
-
-  part_obj = get_daos_bucket()->get_part_object(upload_id, part_num);
-  // XXX: we should just create the file, and not the whole path
-  // TODO implement part creation
-  int ret = 0;  // part_obj->create(dpp, false);
+  int ret = ds3_part_create(get_bucket_name().c_str(), upload_id.c_str(),
+                            part_num, &ds3p, store->ds3);
   if (ret == -ENOENT) {
     ret = -ERR_NO_SUCH_UPLOAD;
   }
   return ret;
 }
 
-DaosBucket* DaosMultipartWriter::get_daos_bucket() {
-  return static_cast<DaosMultipartUpload*>(upload)->get_daos_bucket();
+const std::string& DaosMultipartWriter::get_bucket_name() {
+  return static_cast<DaosMultipartUpload*>(upload)->get_bucket_name();
 }
 
 int DaosMultipartWriter::process(bufferlist&& data, uint64_t offset) {
@@ -2080,19 +2072,16 @@ int DaosMultipartWriter::process(bufferlist&& data, uint64_t offset) {
     return 0;
   }
 
-  int ret = 0;
-  if (!part_obj->is_open()) {
-    ret = part_obj->lookup(dpp);
-    if (ret != 0) {
-      return ret;
-    }
-  }
-
-  // XXX: Combine multiple streams into one as motr does
-  uint64_t data_size = data.length();
-  ret = part_obj->write(dpp, std::move(data), offset);
+  uint64_t size = data.length();
+  int ret =
+      ds3_part_write(data.c_str(), offset, &size, ds3p, store->ds3, nullptr);
   if (ret == 0) {
-    actual_part_size += data_size;
+    // XXX: Combine multiple streams into one as motr does
+    actual_part_size += size;
+  } else {
+    ldpp_dout(dpp, 0) << "ERROR: failed to write into part ("
+                      << get_bucket_name() << ", " << upload_id << ", "
+                      << part_num << "): ret=" << ret << dendl;
   }
   return ret;
 }
@@ -2121,7 +2110,6 @@ int DaosMultipartWriter::complete(
                      << ret << dendl;
   if (ret != 0) {
     ldpp_dout(dpp, 1) << "cannot get compression info" << dendl;
-    part_obj->close(dpp);
     return ret;
   }
   encode(info, bl);
@@ -2129,18 +2117,21 @@ int DaosMultipartWriter::complete(
   ldpp_dout(dpp, 20) << "DaosMultipartWriter::complete(): entry size"
                      << bl.length() << dendl;
 
-  ret = dfs_setxattr(store->ds3->meta_dfs, part_obj->ds3o->dfs_obj,
-                     RGW_PART_XATTR, bl.c_str(), bl.length(), 0);
+  struct ds3_multipart_part_info part_info = {.part_num = part_num,
+                                              .encoded = bl.c_str(),
+                                              .encoded_length = bl.length()};
+
+  ret = ds3_part_set_info(&part_info, ds3p, store->ds3, nullptr);
 
   if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: failed to set xattr part (" << upload_id << "/"
-                      << part_num_str << "): ret=" << ret << dendl;
+    ldpp_dout(dpp, 0) << "ERROR: failed to set part info (" << get_bucket_name()
+                      << ", " << upload_id << ", " << part_num
+                      << "): ret=" << ret << dendl;
     if (ret == ENOENT) {
       ret = -ERR_NO_SUCH_UPLOAD;
     }
   }
 
-  part_obj->close(dpp);
   return ret;
 }
 
