@@ -1636,33 +1636,6 @@ int DaosMultipartUpload::init(const DoutPrefixProvider* dpp, optional_yield y,
   ldpp_dout(dpp, 20) << "DEBUG: init" << dendl;
   int ret;
   std::string oid = mp_obj.get_key();
-  dfs_obj_t* multipart_dir;
-  ret = dfs_lookup_rel(
-      store->ds3->meta_dfs, store->ds3->meta_dirs[MULTIPART_DIR],
-      bucket->get_name().c_str(), O_RDWR, &multipart_dir, nullptr, nullptr);
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel multipart dir for bucket="
-                     << bucket->get_name() << " ret=" << ret << dendl;
-
-  do {
-    char buf[33];
-    gen_rand_alphanumeric(store->ctx(), buf, sizeof(buf) - 1);
-    std::string upload_id = MULTIPART_UPLOAD_ID_PREFIX; /* v2 upload id */
-    upload_id.append(buf);
-
-    mp_obj.init(oid, upload_id);
-
-    // Create meta index
-    ret = dfs_mkdir(store->ds3->meta_dfs, multipart_dir, upload_id.c_str(),
-                    DEFFILEMODE, 0);
-  } while (ret == EEXIST);
-
-  if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: failed to create multipart upload dir ("
-                      << bucket->get_name() << "/" << get_upload_id()
-                      << "): ret=" << ret << dendl;
-    dfs_release(multipart_dir);
-    return ret;
-  }
 
   // Create an initial entry in the bucket. The entry will be
   // updated when multipart upload is completed, for example,
@@ -1681,24 +1654,25 @@ int DaosMultipartUpload::init(const DoutPrefixProvider* dpp, optional_yield y,
   encode(attrs, bl);
   encode(upload_info, bl);
 
-  // Insert an entry into bucket multipart index
-  dfs_obj_t* upload_dir;
-  ret = dfs_lookup_rel(store->ds3->meta_dfs, multipart_dir,
-                       get_upload_id().c_str(), O_RDWR, &upload_dir, nullptr,
-                       nullptr);
+  struct ds3_multipart_upload_info ui;
+  strcpy(ui.upload_id, MULTIPART_UPLOAD_ID_PREFIX);
+  strcpy(ui.key, oid.c_str());
+  ui.encoded = bl.c_str();
+  ui.encoded_length = bl.length();
+  int prefix_length = strlen(ui.upload_id);
 
-  ret = dfs_setxattr(store->ds3->meta_dfs, upload_dir, RGW_DIR_ENTRY_XATTR,
-                     bl.c_str(), bl.length(), 0);
+  do {
+    gen_rand_alphanumeric(store->ctx(), ui.upload_id + prefix_length,
+                          sizeof(ui.upload_id) - 1 - prefix_length);
+    mp_obj.init(oid, ui.upload_id);
+    ret = ds3_upload_init(&ui, bucket->get_name().c_str(), store->ds3);
+  } while (ret == -EEXIST);
+
   if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: failed to set xattr of multipart upload dir ("
+    ldpp_dout(dpp, 0) << "ERROR: failed to create multipart upload dir ("
                       << bucket->get_name() << "/" << get_upload_id()
                       << "): ret=" << ret << dendl;
-    dfs_release(multipart_dir);
-    return ret;
   }
-
-  dfs_release(upload_dir);
-  dfs_release(multipart_dir);
   return ret;
 }
 
