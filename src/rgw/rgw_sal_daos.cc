@@ -2006,43 +2006,22 @@ int DaosMultipartUpload::get_info(const DoutPrefixProvider* dpp,
   }
 
   // Read the multipart upload dirent from index
+  bufferlist bl;
+  uint64_t size = DFS_MAX_XATTR_LEN;
+  struct ds3_multipart_upload_info ui = {.encoded = bl.append_hole(size).c_str(),
+                                    .encoded_length = size};
+  int ret = ds3_upload_get_info(&ui, bucket->get_name().c_str(), get_upload_id().c_str(), store->ds3);
 
-  dfs_obj_t* multipart_dir;
-  dfs_obj_t* upload_dir;
-  int ret = dfs_lookup_rel(
-      store->ds3->meta_dfs, store->ds3->meta_dirs[MULTIPART_DIR],
-      bucket->get_name().c_str(), O_RDWR, &multipart_dir, nullptr, nullptr);
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel entry=" << bucket->get_name()
-                     << " ret=" << ret << dendl;
-  ret = dfs_lookup_rel(store->ds3->meta_dfs, multipart_dir,
-                       get_upload_id().c_str(), O_RDWR, &upload_dir, nullptr,
-                       nullptr);
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel entry=" << get_upload_id()
-                     << " ret=" << ret << dendl;
   if (ret != 0) {
-    if (ret == ENOENT) {
+    if (ret == -ENOENT) {
       ret = -ERR_NO_SUCH_UPLOAD;
     }
-    dfs_release(multipart_dir);
     return ret;
   }
-
-  vector<uint8_t> value(DFS_MAX_XATTR_LEN);
-  size_t size = value.size();
-  ret = dfs_getxattr(store->ds3->meta_dfs, upload_dir, RGW_DIR_ENTRY_XATTR,
-                     value.data(), &size);
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_getxattr entry=" << bucket->get_name()
-                     << "/" << get_upload_id()
-                     << " xattr=" << RGW_DIR_ENTRY_XATTR << " ret=" << ret
-                     << dendl;
-  dfs_release(upload_dir);
-  dfs_release(multipart_dir);
 
   multipart_upload_info upload_info;
   rgw_bucket_dir_entry ent;
   Attrs decoded_attrs;
-  bufferlist bl;
-  bl.append(reinterpret_cast<char*>(value.data()), size);
   auto iter = bl.cbegin();
   ent.decode(iter);
   decode(decoded_attrs, iter);
