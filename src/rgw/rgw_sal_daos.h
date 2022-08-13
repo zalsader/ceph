@@ -154,6 +154,7 @@ class DaosNotification : public Notification {
 class DaosUser : public User {
  private:
   DaosStore* store;
+  std::vector<const char*> access_ids;
 
  public:
   DaosUser(DaosStore* _st, const rgw_user& _u) : User(_u), store(_st) {}

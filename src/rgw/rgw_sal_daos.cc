@@ -312,7 +312,7 @@ std::unique_ptr<struct ds3_user_info> DaosUser::get_encoded_info(
   duinfo.encode(bl);
 
   // Initialize ds3_user_info
-  vector<const char*> access_ids;
+  access_ids.clear();
   for (auto const& [id, key] : info.access_keys) {
     access_ids.push_back(id.c_str());
   }
@@ -432,7 +432,6 @@ int DaosBucket::put_info(const DoutPrefixProvider* dpp, bool exclusive,
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: ds3_bucket_set_info failed: " << ret << dendl;
   }
-  ret = close(dpp);
   return ret;
 }
 
@@ -935,9 +934,6 @@ int DaosObject::get_obj_attrs(optional_yield y, const DoutPrefixProvider* dpp,
   // Get object's metadata (those stored in rgw_bucket_dir_entry)
   rgw_bucket_dir_entry ent;
   int ret = get_dir_entry_attrs(dpp, &ent, &attrs);
-  if (ret != 0) {
-    return ret;
-  }
   return ret;
 }
 
@@ -2179,6 +2175,7 @@ int DaosStore::get_user_by_access_key(const DoutPrefixProvider* dpp,
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "Error: ds3_user_get_by_key failed, key=" << key
                       << " ret=" << ret << dendl;
+    return ret;
   }
 
   // Decode
@@ -2210,6 +2207,7 @@ int DaosStore::get_user_by_email(const DoutPrefixProvider* dpp,
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "Error: ds3_user_get_by_email failed, email=" << email
                       << " ret=" << ret << dendl;
+    return ret;
   }
 
   // Decode
