@@ -45,23 +45,6 @@ namespace rgw::sal {
 using ::ceph::decode;
 using ::ceph::encode;
 
-#define RGW_DIR_ENTRY_XATTR "rgw_entry"
-#define RGW_PART_XATTR "rgw_part"
-#define METADATA_BUCKET "_METADATA"
-#define MULTIPART_MAX_PARTS 10000
-#define LATEST_INSTANCE "latest"
-
-/**
- * Combines the vector to return a path
- */
-fs::path make_path(std::vector<std::string>&& components) {
-  fs::path p;
-  for (auto comp : components) {
-    p /= comp;
-  }
-  return p;
-}
-
 int DaosUser::list_buckets(const DoutPrefixProvider* dpp, const string& marker,
                            const string& end_marker, uint64_t max,
                            bool need_stats, BucketList& buckets,
@@ -290,7 +273,7 @@ int DaosUser::read_user(const DoutPrefixProvider* dpp, std::string name,
                         DaosUserInfo* duinfo) {
   // Initialize ds3_user_info
   bufferlist bl;
-  uint64_t size = DFS_MAX_XATTR_LEN;
+  uint64_t size = DS3_MAX_ENCODED_LEN;
   struct ds3_user_info user_info = {.encoded = bl.append_hole(size).c_str(),
                                     .encoded_length = size};
 
@@ -440,14 +423,6 @@ int DaosBucket::load_bucket(const DoutPrefixProvider* dpp, optional_yield y,
                             bool get_stats) {
   ldpp_dout(dpp, 20) << "DEBUG: load_bucket(): bucket name=" << get_name()
                      << dendl;
-
-  // Prevent attempting to load metadata bucket
-  // TODO move inside ds3_bucket_open
-  if (get_name() == METADATA_BUCKET) {
-    ldpp_dout(dpp, 0) << "ERROR: Cannot load metadata bucket" << dendl;
-    return -ENOENT;
-  }
-
   int ret = open(dpp);
   if (ret != 0) {
     return ret;
@@ -455,7 +430,7 @@ int DaosBucket::load_bucket(const DoutPrefixProvider* dpp, optional_yield y,
 
   bufferlist bl;
   DaosBucketInfo dbinfo;
-  uint64_t size = DFS_MAX_XATTR_LEN;
+  uint64_t size = DS3_MAX_ENCODED_LEN;
   struct ds3_bucket_info bucket_info = {.encoded = bl.append_hole(size).c_str(),
                                         .encoded_length = size};
 
@@ -644,7 +619,7 @@ int DaosBucket::list(const DoutPrefixProvider* dpp, ListParams& params, int max,
   uint32_t nobj = object_infos.size();
   vector<vector<uint8_t>> values;
   for (uint32_t i = 0; i < nobj; i++) {
-    vector<uint8_t> value(DFS_MAX_XATTR_LEN);
+    vector<uint8_t> value(DS3_MAX_ENCODED_LEN);
     values.push_back(std::move(value));
     object_infos[i].encoded = values[i].data();
   }
@@ -711,7 +686,7 @@ int DaosBucket::list_multiparts(
   uint32_t nmp = multipart_upload_infos.size();
   vector<vector<uint8_t>> values;
   for (uint32_t i = 0; i < nmp; i++) {
-    vector<uint8_t> value(DFS_MAX_XATTR_LEN);
+    vector<uint8_t> value(DS3_MAX_ENCODED_LEN);
     values.push_back(std::move(value));
     multipart_upload_infos[i].encoded = values[i].data();
   }
@@ -1084,7 +1059,7 @@ int DaosObject::DaosReadOp::prepare(optional_yield y,
   if (source->get_bucket()->versioned() && !source->have_instance()) {
     // If the bucket is versioned and no version is specified, get the latest
     // version
-    source->set_instance(LATEST_INSTANCE);
+    source->set_instance(DS3_LATEST_INSTANCE);
   }
 
   rgw_bucket_dir_entry ent;
@@ -1276,13 +1251,7 @@ int DaosObject::lookup(const DoutPrefixProvider* dpp) {
     return ret;
   }
 
-  // TODO: cache open file handles
-  std::string path = get_key().to_str();
-  if (path.front() != '/') path = "/" + path;
-  ret = dfs_lookup(daos_bucket->ds3b->dfs, path.c_str(), O_RDWR, &dfs_obj, mode,
-                   nullptr);
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup path=" << path << " ret=" << ret
-                     << dendl;
+  ret = ds3_obj_open(get_key().to_str().c_str(), &ds3o, daos_bucket->ds3b);
 
   if (ret == -ENOENT) {
     ldpp_dout(dpp, 20) << "DEBUG: daos object (" << get_bucket()->get_name()
@@ -1367,7 +1336,7 @@ int DaosObject::get_dir_entry_attrs(const DoutPrefixProvider* dpp,
     return ret;
   }
 
-  vector<uint8_t> value(DFS_MAX_XATTR_LEN);
+  vector<uint8_t> value(DS3_MAX_ENCODED_LEN);
   auto object_info = std::make_unique<struct ds3_object_info>();
   object_info->encoded = value.data();
   object_info->encoded_length = value.size();
@@ -1456,7 +1425,7 @@ int DaosObject::mark_as_latest(const DoutPrefixProvider* dpp,
 
   // Get latest version so far
   std::unique_ptr<DaosObject> latest_object = std::make_unique<DaosObject>(
-      store, rgw_obj_key(get_name(), LATEST_INSTANCE), get_bucket());
+      store, rgw_obj_key(get_name(), DS3_LATEST_INSTANCE), get_bucket());
 
   ldpp_dout(dpp, 20) << __func__ << ": key=" << get_key().to_str()
                      << " latest_object_key= "
@@ -1670,7 +1639,7 @@ int DaosMultipartUpload::list_parts(const DoutPrefixProvider* dpp,
   uint32_t npart = multipart_part_infos.size();
   vector<vector<uint8_t>> values;
   for (uint32_t i = 0; i < npart; i++) {
-    vector<uint8_t> value(DFS_MAX_XATTR_LEN);
+    vector<uint8_t> value(DS3_MAX_ENCODED_LEN);
     values.push_back(std::move(value));
     multipart_part_infos[i].encoded = values[i].data();
   }
@@ -1866,14 +1835,13 @@ int DaosMultipartUpload::complete(
   // Different from rgw_sal_rados.cc starts here
   // Read the object's multipart info
   bufferlist bl;
-  uint64_t size = DFS_MAX_XATTR_LEN;
+  uint64_t size = DS3_MAX_ENCODED_LEN;
   struct ds3_multipart_upload_info ui = {
       .encoded = bl.append_hole(size).c_str(), .encoded_length = size};
   ret = ds3_upload_get_info(&ui, bucket->get_name().c_str(),
                                 get_upload_id().c_str(), store->ds3);
   ldpp_dout(dpp, 20) << "DEBUG: ds3_upload_get_info entry=" << bucket->get_name()
-                     << "/" << get_upload_id()
-                     << " xattr=" << RGW_DIR_ENTRY_XATTR << dendl;
+                     << "/" << get_upload_id() << dendl;
   if (ret != 0) {
     if (ret == -ENOENT) {
       ret = -ERR_NO_SUCH_UPLOAD;
@@ -1973,7 +1941,7 @@ int DaosMultipartUpload::get_info(const DoutPrefixProvider* dpp,
 
   // Read the multipart upload dirent from index
   bufferlist bl;
-  uint64_t size = DFS_MAX_XATTR_LEN;
+  uint64_t size = DS3_MAX_ENCODED_LEN;
   struct ds3_multipart_upload_info ui = {
       .encoded = bl.append_hole(size).c_str(), .encoded_length = size};
   int ret = ds3_upload_get_info(&ui, bucket->get_name().c_str(),
@@ -2189,7 +2157,7 @@ int DaosStore::get_user_by_access_key(const DoutPrefixProvider* dpp,
                                       std::unique_ptr<User>* user) {
   // Initialize ds3_user_info
   bufferlist bl;
-  uint64_t size = DFS_MAX_XATTR_LEN;
+  uint64_t size = DS3_MAX_ENCODED_LEN;
   struct ds3_user_info user_info = {.encoded = bl.append_hole(size).c_str(),
                                     .encoded_length = size};
 
@@ -2220,7 +2188,7 @@ int DaosStore::get_user_by_email(const DoutPrefixProvider* dpp,
                                  std::unique_ptr<User>* user) {
   // Initialize ds3_user_info
   bufferlist bl;
-  uint64_t size = DFS_MAX_XATTR_LEN;
+  uint64_t size = DS3_MAX_ENCODED_LEN;
   struct ds3_user_info user_info = {.encoded = bl.append_hole(size).c_str(),
                                     .encoded_length = size};
 
@@ -2306,8 +2274,6 @@ int DaosStore::get_bucket(const DoutPrefixProvider* dpp, User* u,
 
   return get_bucket(dpp, u, b, bucket, y);
 }
-
-DaosBucket* DaosStore::get_metadata_bucket() { return metadata_bucket.get(); }
 
 bool DaosStore::is_meta_master() { return true; }
 

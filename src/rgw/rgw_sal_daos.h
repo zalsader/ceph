@@ -18,7 +18,6 @@
 #pragma once
 
 #include <daos.h>
-#include <daos_fs.h>
 #include <daos_s3.h>
 #include <uuid/uuid.h>
 
@@ -866,7 +865,6 @@ class DaosStore : public Store {
   std::string luarocks_path;
   DaosZone zone;
   RGWSyncModuleInstanceRef sync_module;
-  std::unique_ptr<DaosBucket> metadata_bucket;
 
  public:
   ds3_t* ds3 = nullptr;
@@ -1027,8 +1025,6 @@ class DaosStore : public Store {
 
   virtual int initialize(CephContext* cct,
                          const DoutPrefixProvider* dpp) override;
-
-  DaosBucket* get_metadata_bucket();
 };
 
 }  // namespace rgw::sal
