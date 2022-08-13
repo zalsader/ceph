@@ -54,8 +54,14 @@ int DaosUser::list_buckets(const DoutPrefixProvider* dpp, const string& marker,
   int ret = 0;
   bool is_truncated = false;
   buckets.clear();
-  daos_size_t bcount = max;
   vector<struct ds3_bucket_info> bucket_infos(max);
+  daos_size_t bcount = bucket_infos.size();
+  vector<vector<uint8_t>> values;
+  for (daos_size_t i = 0; i < bcount; i++) {
+    vector<uint8_t> value(DS3_MAX_ENCODED_LEN);
+    values.push_back(std::move(value));
+    bucket_infos[i].encoded = values[i].data();
+  }
 
   char daos_marker[DS3_MAX_KEY];
   std::strcpy(daos_marker, marker.c_str());
@@ -71,12 +77,12 @@ int DaosUser::list_buckets(const DoutPrefixProvider* dpp, const string& marker,
   bucket_infos.resize(bcount);
 
   for (const auto& bi : bucket_infos) {
-    RGWBucketEnt ent = {};
-    ent.bucket.name = bi.name;
-    DaosBucket* daos_bucket = new DaosBucket(this->store, ent, this);
-    // XXX: Get rid of this since all bucket info should be loaded in bi
-    daos_bucket->load_bucket(dpp, y);
-    buckets.add(std::unique_ptr<DaosBucket>(daos_bucket));
+    DaosBucketInfo dbinfo;
+    bufferlist bl;
+    bl.append(reinterpret_cast<char*>(bi.encoded), bi.encoded_length);
+    auto iter = bl.cbegin();
+    dbinfo.decode(iter);
+    buckets.add(std::make_unique<DaosBucket>(this->store, dbinfo.info, this));
   }
 
   buckets.set_truncated(is_truncated);
