@@ -208,7 +208,8 @@ class DaosUser : public User {
   int read_user(const DoutPrefixProvider* dpp, std::string name,
                 DaosUserInfo* duinfo);
 
-  std::unique_ptr<struct ds3_user_info> get_encoded_info(obj_version& obj_ver);
+  std::unique_ptr<struct ds3_user_info> get_encoded_info(bufferlist& bl,
+                                                         obj_version& obj_ver);
 
   friend class DaosBucket;
 };
@@ -363,7 +364,7 @@ class DaosBucket : public Bucket {
   int close(const DoutPrefixProvider* dpp);
   bool is_open() { return ds3b != nullptr; }
   std::unique_ptr<struct ds3_bucket_info> get_encoded_info(
-      ceph::real_time mtime);
+      bufferlist& bl, ceph::real_time mtime);
 
   friend class DaosStore;
 };

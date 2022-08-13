@@ -146,8 +146,9 @@ int DaosUser::create_bucket(
 
     // Create a new bucket:
     DaosBucket* daos_bucket = static_cast<DaosBucket*>(bucket.get());
+    bufferlist bl;
     std::unique_ptr<struct ds3_bucket_info> bucket_info =
-        daos_bucket->get_encoded_info(ceph::real_time());
+        daos_bucket->get_encoded_info(bl, ceph::real_time());
     ret = ds3_bucket_create(bucket->get_name().c_str(), bucket_info.get(),
                             nullptr, store->ds3, nullptr);
     if (ret != 0) {
@@ -218,7 +219,8 @@ int DaosUser::load_user(const DoutPrefixProvider* dpp, optional_yield y) {
 
 int DaosUser::merge_and_store_attrs(const DoutPrefixProvider* dpp,
                                     Attrs& new_attrs, optional_yield y) {
-  ldpp_dout(dpp, 20) << "DEBUG: merge_and_store_attrs, new_attrs=" << new_attrs << dendl;
+  ldpp_dout(dpp, 20) << "DEBUG: merge_and_store_attrs, new_attrs=" << new_attrs
+                     << dendl;
   for (auto& it : new_attrs) {
     attrs[it.first] = it.second;
   }
@@ -263,7 +265,9 @@ int DaosUser::store_user(const DoutPrefixProvider* dpp, optional_yield y,
     obj_ver.tag = "UserTAG";
   }
 
-  std::unique_ptr<struct ds3_user_info> user_info = get_encoded_info(obj_ver);
+  bufferlist bl;
+  std::unique_ptr<struct ds3_user_info> user_info =
+      get_encoded_info(bl, obj_ver);
 
   ret = ds3_user_set(name.c_str(), user_info.get(), store->ds3, nullptr);
 
@@ -299,9 +303,8 @@ int DaosUser::read_user(const DoutPrefixProvider* dpp, std::string name,
 }
 
 std::unique_ptr<struct ds3_user_info> DaosUser::get_encoded_info(
-    obj_version& obj_ver) {
+    bufferlist& bl, obj_version& obj_ver) {
   // Encode user data
-  bufferlist bl;
   struct DaosUserInfo duinfo;
   duinfo.info = info;
   duinfo.attrs = attrs;
@@ -329,7 +332,9 @@ int DaosUser::remove_user(const DoutPrefixProvider* dpp, optional_yield y) {
   // method arg see int DB::remove_user(const DoutPrefixProvider *dpp,
   // RGWUserInfo& uinfo, RGWObjVersionTracker *pobjv)
   obj_version obj_ver;
-  std::unique_ptr<struct ds3_user_info> user_info = get_encoded_info(obj_ver);
+  bufferlist bl;
+  std::unique_ptr<struct ds3_user_info> user_info =
+      get_encoded_info(bl, obj_ver);
 
   // Remove user
   int ret = ds3_user_remove(name.c_str(), user_info.get(), store->ds3, nullptr);
@@ -343,7 +348,8 @@ int DaosUser::remove_user(const DoutPrefixProvider* dpp, optional_yield y) {
 DaosBucket::~DaosBucket() { close(nullptr); }
 
 int DaosBucket::open(const DoutPrefixProvider* dpp) {
-  ldpp_dout(dpp, 20) << "DEBUG: open, name=" << info.bucket.name.c_str() << dendl;
+  ldpp_dout(dpp, 20) << "DEBUG: open, name=" << info.bucket.name.c_str()
+                     << dendl;
   // Idempotent
   if (is_open()) {
     return 0;
@@ -370,8 +376,7 @@ int DaosBucket::close(const DoutPrefixProvider* dpp) {
 }
 
 std::unique_ptr<struct ds3_bucket_info> DaosBucket::get_encoded_info(
-    ceph::real_time _mtime) {
-  bufferlist bl;
+    bufferlist& bl, ceph::real_time _mtime) {
   DaosBucketInfo dbinfo;
   dbinfo.info = info;
   dbinfo.bucket_attrs = attrs;
@@ -390,7 +395,9 @@ int DaosBucket::remove_bucket(const DoutPrefixProvider* dpp,
                               bool delete_children, bool forward_to_master,
                               req_info* req_info, optional_yield y) {
   // TODO implement
-  ldpp_dout(dpp, 20) << "DEBUG: remove_bucket, delete_children=" << delete_children << " forward_to_master=" << forward_to_master << dendl;
+  ldpp_dout(dpp, 20) << "DEBUG: remove_bucket, delete_children="
+                     << delete_children
+                     << " forward_to_master=" << forward_to_master << dendl;
 
   return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
@@ -400,7 +407,10 @@ int DaosBucket::remove_bucket_bypass_gc(int concurrent_max,
                                         optional_yield y,
                                         const DoutPrefixProvider* dpp) {
   // TODO implement
-  ldpp_dout(dpp, 20) << "DEBUG: remove_bucket_bypass_gc, concurrent_max=" << concurrent_max << " keep_index_consistent=" << keep_index_consistent << dendl;
+  ldpp_dout(dpp, 20) << "DEBUG: remove_bucket_bypass_gc, concurrent_max="
+                     << concurrent_max
+                     << " keep_index_consistent=" << keep_index_consistent
+                     << dendl;
   return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
@@ -414,8 +424,9 @@ int DaosBucket::put_info(const DoutPrefixProvider* dpp, bool exclusive,
     return ret;
   }
 
+  bufferlist bl;
   std::unique_ptr<struct ds3_bucket_info> bucket_info =
-      get_encoded_info(ceph::real_time());
+      get_encoded_info(bl, ceph::real_time());
 
   ret = ds3_bucket_set_info(bucket_info.get(), ds3b, nullptr);
   if (ret != 0) {
@@ -515,7 +526,8 @@ int DaosBucket::check_quota(const DoutPrefixProvider* dpp,
 
 int DaosBucket::merge_and_store_attrs(const DoutPrefixProvider* dpp,
                                       Attrs& new_attrs, optional_yield y) {
-  ldpp_dout(dpp, 20) << "DEBUG: merge_and_store_attrs, new_attrs=" << new_attrs << dendl;
+  ldpp_dout(dpp, 20) << "DEBUG: merge_and_store_attrs, new_attrs=" << new_attrs
+                     << dendl;
   for (auto& it : new_attrs) {
     attrs[it.first] = it.second;
   }
@@ -830,9 +842,7 @@ int DaosZoneGroup::get_placement_tier(const rgw_placement_rule& rule,
   return 0;
 }
 
-ZoneGroup& DaosZone::get_zonegroup() {
-  return zonegroup;
-}
+ZoneGroup& DaosZone::get_zonegroup() { return zonegroup; }
 
 int DaosZone::get_zonegroup(const std::string& id,
                             std::unique_ptr<ZoneGroup>* group) {
@@ -844,9 +854,7 @@ int DaosZone::get_zonegroup(const std::string& id,
   return 0;
 }
 
-const rgw_zone_id& DaosZone::get_id() {
-  return cur_zone_id;
-}
+const rgw_zone_id& DaosZone::get_id() { return cur_zone_id; }
 
 const std::string& DaosZone::get_name() const {
   return zone_params->get_name();
@@ -1475,9 +1483,7 @@ DaosAtomicWriter::DaosAtomicWriter(
       ptail_placement_rule(_ptail_placement_rule),
       olh_epoch(_olh_epoch),
       unique_tag(_unique_tag),
-      obj(_store, _head_obj->get_key(), _head_obj->get_bucket())
-{
-}
+      obj(_store, _head_obj->get_key(), _head_obj->get_bucket()) {}
 
 int DaosAtomicWriter::prepare(optional_yield y) {
   ldpp_dout(dpp, 20) << "DEBUG: prepare" << dendl;
@@ -1578,7 +1584,7 @@ int DaosMultipartUpload::abort(const DoutPrefixProvider* dpp,
   // Remove upload from bucket multipart index
   ldpp_dout(dpp, 20) << "DEBUG: abort" << dendl;
   return ds3_upload_remove(bucket->get_name().c_str(), get_upload_id().c_str(),
-                          store->ds3);
+                           store->ds3);
 }
 
 static string mp_ns = RGW_OBJ_NS_MULTIPART;
@@ -1845,9 +1851,9 @@ int DaosMultipartUpload::complete(
   struct ds3_multipart_upload_info ui = {
       .encoded = bl.append_hole(size).c_str(), .encoded_length = size};
   ret = ds3_upload_get_info(&ui, bucket->get_name().c_str(),
-                                get_upload_id().c_str(), store->ds3);
-  ldpp_dout(dpp, 20) << "DEBUG: ds3_upload_get_info entry=" << bucket->get_name()
-                     << "/" << get_upload_id() << dendl;
+                            get_upload_id().c_str(), store->ds3);
+  ldpp_dout(dpp, 20) << "DEBUG: ds3_upload_get_info entry="
+                     << bucket->get_name() << "/" << get_upload_id() << dendl;
   if (ret != 0) {
     if (ret == -ENOENT) {
       ret = -ERR_NO_SUCH_UPLOAD;
@@ -1887,7 +1893,7 @@ int DaosMultipartUpload::complete(
   for (auto const& [part_num, part] : get_parts()) {
     ds3_part_t* ds3p;
     ret = ds3_part_open(get_bucket_name().c_str(), get_upload_id().c_str(),
-                            part_num, true, &ds3p, store->ds3);
+                        part_num, true, &ds3p, store->ds3);
     if (ret != 0) {
       return ret;
     }
@@ -1895,8 +1901,8 @@ int DaosMultipartUpload::complete(
     // Reserve buffers and read
     uint64_t size = part->get_size();
     bufferlist bl;
-    ret = ds3_part_read(bl.append_hole(size).c_str(), 0, &size,
-                         ds3p, store->ds3, nullptr);
+    ret = ds3_part_read(bl.append_hole(size).c_str(), 0, &size, ds3p,
+                        store->ds3, nullptr);
     if (ret != 0) {
       ds3_part_close(ds3p);
       return ret;
@@ -1921,7 +1927,8 @@ int DaosMultipartUpload::complete(
   obj->close(dpp);
 
   // Remove upload from bucket multipart index
-  ret = ds3_upload_remove(get_bucket_name().c_str(), get_upload_id().c_str(), store->ds3);
+  ret = ds3_upload_remove(get_bucket_name().c_str(), get_upload_id().c_str(),
+                          store->ds3);
   return ret;
 }
 
@@ -2004,7 +2011,7 @@ int DaosMultipartWriter::prepare(optional_yield y) {
   ldpp_dout(dpp, 20) << "DaosMultipartWriter::prepare(): enter part="
                      << part_num_str << dendl;
   int ret = ds3_part_open(get_bucket_name().c_str(), upload_id.c_str(),
-                            part_num, true, &ds3p, store->ds3);
+                          part_num, true, &ds3p, store->ds3);
   if (ret == -ENOENT) {
     ret = -ERR_NO_SUCH_UPLOAD;
   }
@@ -2296,11 +2303,19 @@ std::string DaosStore::zone_unique_trans_id(const uint64_t unique_num) {
   return "";
 }
 
-int DaosStore::cluster_stat(RGWClusterStat& stats) { return DAOS_NOT_IMPLEMENTED_LOG(nullptr); }
+int DaosStore::cluster_stat(RGWClusterStat& stats) {
+  return DAOS_NOT_IMPLEMENTED_LOG(nullptr);
+}
 
-std::unique_ptr<Lifecycle> DaosStore::get_lifecycle(void) { DAOS_NOT_IMPLEMENTED_LOG(nullptr); return 0; }
+std::unique_ptr<Lifecycle> DaosStore::get_lifecycle(void) {
+  DAOS_NOT_IMPLEMENTED_LOG(nullptr);
+  return 0;
+}
 
-std::unique_ptr<Completions> DaosStore::get_completions(void) { DAOS_NOT_IMPLEMENTED_LOG(nullptr); return 0; }
+std::unique_ptr<Completions> DaosStore::get_completions(void) {
+  DAOS_NOT_IMPLEMENTED_LOG(nullptr);
+  return 0;
+}
 
 std::unique_ptr<Notification> DaosStore::get_notification(
     rgw::sal::Object* obj, rgw::sal::Object* src_obj, struct req_state* s,
@@ -2377,7 +2392,9 @@ int DaosStore::trim_all_usage(const DoutPrefixProvider* dpp,
   return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
-int DaosStore::get_config_key_val(string name, bufferlist* bl) { return DAOS_NOT_IMPLEMENTED_LOG(nullptr); }
+int DaosStore::get_config_key_val(string name, bufferlist* bl) {
+  return DAOS_NOT_IMPLEMENTED_LOG(nullptr);
+}
 
 int DaosStore::meta_list_keys_init(const DoutPrefixProvider* dpp,
                                    const string& section, const string& marker,
