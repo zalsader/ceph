@@ -15,6 +15,7 @@ function wait_for()
         fi
         sleep 1
         $2
+        ((counter++))
     done
 }
 
