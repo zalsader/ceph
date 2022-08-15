@@ -53,8 +53,10 @@ function usage()
     echo -e "\t\tStart the test run at numbered test"
     echo -e "\t--end=$ACCEPTABLE_INTEGER_REGEX default=1000000"
     echo -e "\t\tEnd the test run at numbered test"
-    echo -e "\t-t--debug-script=$BOOLEAN_VALUES default=0"
+    echo -e "\t--debug-script=$BOOLEAN_VALUES default=false"
     echo -e "\t\tSkip execution of each test"
+    echo -e "\t--color-output=$BOOLEAN_VALUES default=TRUE"
+    echo -e "\t\tShow ANSI color codes for status/execution time"
     echo -e "\t--verbose"
     echo -e "\t\tEcho commands"
     echo ""
@@ -331,8 +333,9 @@ run_test()
     EXECUTIONTIMECOLOR=$(get_execution_time_color $execution_time)
     execution_count=`echo $count_time | sed "s/^\(.*\),.*$/\1/"`
     COUNTCOLOR=$(get_count_color $execution_count)
+    RESTORECOLOR=$(get_restore_color)
 
-    echo -e " ${COUNTCOLOR}count=$execution_count$NOCCOLOR ${EXECUTIONTIMECOLOR}time=$execution_time$NOCCOLOR ${RESULTCOLOR}result=$testresult$NOCCOLOR $testfile"
+    echo -e " ${COUNTCOLOR}count=$execution_count${RESTORECOLOR} ${EXECUTIONTIMECOLOR}time=$execution_time${RESTORECOLOR} ${RESULTCOLOR}result=$testresult${RESTORECOLOR} $testfile"
     if [[ $count_time == '' ]];
     then
         echo "Test failed - count_time should never be empty: $testfile"
