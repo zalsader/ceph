@@ -20,7 +20,7 @@ function get_daos_pools_state()
 function daos_wait_create_pool()
 {
     local result=$(get_daos_pools_status)
-    if [ $result -eq 0 ]; do
+    if [ $result -eq 0 ]; then
         result=$(get_daos_pools_state)
         if [[ $result == 'joined' ]] || [[ $result == 'Ready' ]]; then
             return 0

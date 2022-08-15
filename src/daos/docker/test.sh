@@ -17,8 +17,8 @@ source $CEPH_PATH/src/daos/daos/daos_start.sh
 source $CEPH_PATH/src/daos/daos/daos_stop.sh
 source $CEPH_PATH/src/daos/daos/daos_format.sh
 source $CEPH_PATH/src/daos/daos/daos_pool_create.sh
-source $CEPH_PATH/src/daos/radosgw/radosgw/radosgw_start.sh
-source $CEPH_PATH/src/daos/radosgw/radosgw/radosgw_stop.sh
+source $CEPH_PATH/src/daos/radosgw/radosgw_start.sh
+source $CEPH_PATH/src/daos/radosgw/radosgw_stop.sh
 source $CEPH_PATH/src/daos/radosgw/radosgw_create_s3bucket.sh
 
 require_variables DAOS_PATH S3TESTS_PATH

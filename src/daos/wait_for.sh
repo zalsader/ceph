@@ -5,9 +5,6 @@
 # parameter 3: message to be displayed upon timeout
 function wait_for()
 {
-test $1, $2 & $3
-exit 1
-
     local timeout_limit=$1
     local counter=0
     $2
