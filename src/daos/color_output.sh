@@ -107,6 +107,14 @@ get_status_color()
     fi
 }
 
+get_restore_color()
+{
+    require_variables color_output
+    if [[ $color_output == true ]]; then
+        echo $NOCCOLOR
+    fi
+}
+
 get_count_color()
 {
     require_variables color_output
