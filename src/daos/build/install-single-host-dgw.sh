@@ -9,6 +9,8 @@ function usage()
     # turn off echo
     set +x
 
+    # BOOLEAN_VALUES is copied from src/daos/set_boolean.sh because it may not be available.  The idea is that
+    # this script is completely standalone until the repo/branch is set
     local BOOLEAN_VALUES="T[RUE]|Y[ES]|F[ALSE]|N[O]|1|0"
     echo ""
     echo "./install-single-host-dgw.sh"

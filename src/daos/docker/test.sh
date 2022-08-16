@@ -28,11 +28,11 @@ function usage()
     # turn off echo
     set +x
 
-    local BOOLEAN_VALUES="T[RUE]|Y[ES]|F[ALSE]|N[O]|1|0"
+    require_variables BOOLEAN_VALUES
     echo ""
     echo "./test.sh"
     echo -e "\t-h --help"
-    echo -e "\t-s --summary=$BOOLEAN_VALUES default=FALSE"
+    echo -e "\t-y --summary=$BOOLEAN_VALUES default=FALSE"
     echo -e "\t-u --update-confluence=$BOOLEAN_VALUES default=TRUE"
     echo -e "\t-c --cleanup-container=$BOOLEAN_VALUES default=TRUE"
     echo -e "\t-b --build-docker-images=$BOOLEAN_VALUES default=TRUE"
@@ -111,19 +111,6 @@ while [ "$1" != "" ]; do
     shift
 done
 
-function usage()
-{
-    local BOOLEAN_VALUES="T[RUE]|Y[ES]|F[ALSE]|N[O]|1|0"
-    echo ""
-    echo "./test.sh"
-    echo "\t-h --help"
-    echo "\t-s --summary=$BOOLEAN_VALUES default=FALSE"
-    echo "\t-u --update-confluence=$BOOLEAN_VALUES default=TRUE"
-    echo "\t-c --cleanup-container=$BOOLEAN_VALUES default=TRUE"
-    echo "\t-b --build-docker-images=$BOOLEAN_VALUES default=TRUE"
-    echo ""
-}
-
 function set_boolean()
 {
     declare -n foo=$1
@@ -146,11 +133,6 @@ function set_boolean()
             ;;
     esac
 }
-
-BUILDDOCKERIMAGES=true
-SUMMARY=false
-CLEANUP_CONTAINER=true
-UPDATE_CONFLUENCE=true
 
 while [ "$1" != "" ]; do
     PARAM=`echo $1 | awk -F= '{print $1}'`

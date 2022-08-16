@@ -21,7 +21,7 @@ function usage()
     # turn off echo
     set +x
 
-    local BOOLEAN_VALUES="T[RUE]|Y[ES]|F[ALSE]|N[O]|1|0"
+    require_variables BOOLEAN_VALUES
     echo ""
     echo "./run_tests.sh"
     echo -e "\t-h --help"
