@@ -254,8 +254,8 @@ class DaosBucket : public Bucket {
   RGWAccessControlPolicy acls;
 
  public:
-  /** Container dfs handle */
-  ds3_bucket_t* ds3b;
+  /** Container ds3b handle */
+  ds3_bucket_t* ds3b = nullptr;
 
   DaosBucket(DaosStore* _st) : store(_st), acls() {}
 

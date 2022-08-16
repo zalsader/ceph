@@ -369,6 +369,7 @@ int DaosBucket::close(const DoutPrefixProvider* dpp) {
   }
 
   int ret = ds3_bucket_close(ds3b, nullptr);
+  ds3b = nullptr;
   ldpp_dout(dpp, 20) << "DEBUG: ds3_bucket_close ret=" << ret << dendl;
 
   return ret;
@@ -466,8 +467,6 @@ int DaosBucket::load_bucket(const DoutPrefixProvider* dpp, optional_yield y,
   attrs = dbinfo.bucket_attrs;
   mtime = dbinfo.mtime;
   bucket_version = dbinfo.bucket_version;
-
-  ret = close(dpp);
   return ret;
 }
 
@@ -650,6 +649,8 @@ int DaosBucket::list(const DoutPrefixProvider* dpp, ListParams& params, int max,
                             params.list_versions, &results.is_truncated, ds3b);
 
   if (ret != 0) {
+    ldpp_dout(dpp, 0) << "ERROR: ds3_bucket_list_obj failed, name=" << get_name()
+                     << ", ret=" << ret << dendl;
     return ret;
   }
 
@@ -678,8 +679,6 @@ int DaosBucket::list(const DoutPrefixProvider* dpp, ListParams& params, int max,
     std::sort(results.objs.begin(), results.objs.end(),
               compare_rgw_bucket_dir_entry);
   }
-
-  ret = close(dpp);
 
   return ret;
 }
@@ -757,6 +756,7 @@ void DaosStore::finalize(void) {
   if (ret != 0) {
     ldout(cctx, 0) << "ERROR: ds3_disconnect() failed: " << ret << dendl;
   }
+  ds3 = nullptr;
 
   ret = ds3_fini();
   if (ret != 0) {
@@ -1302,6 +1302,7 @@ int DaosObject::close(const DoutPrefixProvider* dpp) {
   }
 
   int ret = ds3_obj_close(ds3o);
+  ds3o = nullptr;
   ldpp_dout(dpp, 20) << "DEBUG: ds3_obj_close ret=" << ret << dendl;
   return ret;
 }
@@ -1568,7 +1569,6 @@ int DaosAtomicWriter::complete(
     }
   }
 
-  obj.close(dpp);
   return ret;
 }
 
@@ -1915,8 +1915,6 @@ int DaosMultipartUpload::complete(
       return ret;
     }
   }
-
-  obj->close(dpp);
 
   // Remove upload from bucket multipart index
   ret = ds3_upload_remove(get_bucket_name().c_str(), get_upload_id().c_str(),
