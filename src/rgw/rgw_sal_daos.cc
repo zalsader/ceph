@@ -59,6 +59,7 @@ int DaosUser::list_buckets(const DoutPrefixProvider* dpp, const string& marker,
   vector<vector<uint8_t>> values(bcount, vector<uint8_t>(DS3_MAX_ENCODED_LEN));
   for (daos_size_t i = 0; i < bcount; i++) {
     bucket_infos[i].encoded = values[i].data();
+    bucket_infos[i].encoded_length = values[i].size();
   }
 
   char daos_marker[DS3_MAX_KEY];
@@ -635,6 +636,7 @@ int DaosBucket::list(const DoutPrefixProvider* dpp, ListParams& params, int max,
   vector<vector<uint8_t>> values(nobj, vector<uint8_t>(DS3_MAX_ENCODED_LEN));
   for (uint32_t i = 0; i < nobj; i++) {
     object_infos[i].encoded = values[i].data();
+    object_infos[i].encoded_length = values[i].size();
   }
 
   vector<struct ds3_common_prefix_info> common_prefixes(max);
@@ -701,6 +703,7 @@ int DaosBucket::list_multiparts(
   vector<vector<uint8_t>> values(nmp, vector<uint8_t>(DS3_MAX_ENCODED_LEN));
   for (uint32_t i = 0; i < nmp; i++) {
     multipart_upload_infos[i].encoded = values[i].data();
+    multipart_upload_infos[i].encoded_length = values[i].size();
   }
 
   vector<struct ds3_common_prefix_info> cps(max_uploads);
@@ -1644,6 +1647,7 @@ int DaosMultipartUpload::list_parts(const DoutPrefixProvider* dpp,
   vector<vector<uint8_t>> values(npart, vector<uint8_t>(DS3_MAX_ENCODED_LEN));
   for (uint32_t i = 0; i < npart; i++) {
     multipart_part_infos[i].encoded = values[i].data();
+    multipart_part_infos[i].encoded_length = values[i].size();
   }
 
   uint32_t daos_marker = marker;
