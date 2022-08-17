@@ -688,12 +688,10 @@ class DaosObject : public Object {
            uint64_t& size);
   // Get the object's dirent and attrs
   int get_dir_entry_attrs(const DoutPrefixProvider* dpp,
-                          rgw_bucket_dir_entry* ent, Attrs* getattrs = nullptr,
-                          multipart_upload_info* upload_info = nullptr);
+                          rgw_bucket_dir_entry* ent, Attrs* getattrs = nullptr);
   // Set the object's dirent and attrs
   int set_dir_entry_attrs(const DoutPrefixProvider* dpp,
-                          rgw_bucket_dir_entry* ent, Attrs* setattrs = nullptr,
-                          multipart_upload_info* upload_info = nullptr);
+                          rgw_bucket_dir_entry* ent, Attrs* setattrs = nullptr);
   // Marks this DAOS object as being the latest version and unmarks all other
   // versions as latest
   int mark_as_latest(const DoutPrefixProvider* dpp, ceph::real_time set_mtime);

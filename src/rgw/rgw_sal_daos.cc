@@ -651,8 +651,8 @@ int DaosBucket::list(const DoutPrefixProvider* dpp, ListParams& params, int max,
                             params.list_versions, &results.is_truncated, ds3b);
 
   if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: ds3_bucket_list_obj failed, name=" << get_name()
-                     << ", ret=" << ret << dendl;
+    ldpp_dout(dpp, 0) << "ERROR: ds3_bucket_list_obj failed, name="
+                      << get_name() << ", ret=" << ret << dendl;
     return ret;
   }
 
@@ -1339,19 +1339,31 @@ int DaosObject::read(const DoutPrefixProvider* dpp, bufferlist& data,
 
 // Get the object's dirent and attrs
 int DaosObject::get_dir_entry_attrs(const DoutPrefixProvider* dpp,
-                                    rgw_bucket_dir_entry* ent, Attrs* getattrs,
-                                    multipart_upload_info* upload_info) {
+                                    rgw_bucket_dir_entry* ent,
+                                    Attrs* getattrs) {
   ldpp_dout(dpp, 20) << "DEBUG: get_dir_entry_attrs" << dendl;
-  int ret = lookup(dpp);
-  if (ret != 0) {
-    return ret;
+  int ret = 0;
+  vector<uint8_t> value(DS3_MAX_ENCODED_LEN);
+  uint32_t size = value.size();
+
+  if (get_key().ns == RGW_OBJ_NS_MULTIPART) {
+    struct ds3_multipart_upload_info ui = {.encoded = value.data(),
+                                           .encoded_length = size};
+    ret = ds3_upload_get_info(&ui, bucket->get_name().c_str(),
+                              get_key().to_str().c_str(), store->ds3);
+  } else {
+    ret = lookup(dpp);
+    if (ret != 0) {
+      return ret;
+    }
+
+    auto object_info = std::make_unique<struct ds3_object_info>();
+    object_info->encoded = value.data();
+    object_info->encoded_length = size;
+    ret = ds3_obj_get_info(object_info.get(), get_daos_bucket()->ds3b, ds3o);
+    size = object_info->encoded_length;
   }
 
-  vector<uint8_t> value(DS3_MAX_ENCODED_LEN);
-  auto object_info = std::make_unique<struct ds3_object_info>();
-  object_info->encoded = value.data();
-  object_info->encoded_length = value.size();
-  ret = ds3_obj_get_info(object_info.get(), get_daos_bucket()->ds3b, ds3o);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to get info of daos object ("
                       << get_bucket()->get_name() << ", " << get_key().to_str()
@@ -1365,27 +1377,20 @@ int DaosObject::get_dir_entry_attrs(const DoutPrefixProvider* dpp,
     ent = &dummy_ent;
   }
 
-  Attrs dummy_attrs;
-  if (!getattrs) {
-    // if ent is not passed, use a dummy ent
-    getattrs = &dummy_attrs;
-  }
-
   bufferlist bl;
-  bl.append(reinterpret_cast<char*>(value.data()), object_info->encoded_length);
+  bl.append(reinterpret_cast<char*>(value.data()), size);
   auto iter = bl.cbegin();
   ent->decode(iter);
-  decode(*getattrs, iter);
-  if (upload_info) {
-    decode(*upload_info, iter);
+  if (getattrs) {
+    decode(*getattrs, iter);
   }
 
   return ret;
 }
 // Set the object's dirent and attrs
 int DaosObject::set_dir_entry_attrs(const DoutPrefixProvider* dpp,
-                                    rgw_bucket_dir_entry* ent, Attrs* setattrs,
-                                    multipart_upload_info* upload_info) {
+                                    rgw_bucket_dir_entry* ent,
+                                    Attrs* setattrs) {
   ldpp_dout(dpp, 20) << "DEBUG: set_dir_entry_attrs" << dendl;
   int ret = lookup(dpp);
   if (ret != 0) {
@@ -1403,16 +1408,9 @@ int DaosObject::set_dir_entry_attrs(const DoutPrefixProvider* dpp,
     setattrs = &attrs;
   }
 
-  multipart_upload_info dummy_upload_info;
-  if (!upload_info) {
-    // if upload_info is not passed, use dummy
-    upload_info = &dummy_upload_info;
-  }
-
   bufferlist wbl;
   ent->encode(wbl);
   encode(*setattrs, wbl);
-  encode(*upload_info, wbl);
 
   // Write rgw_bucket_dir_entry into object xattr
   auto object_info = std::make_unique<struct ds3_object_info>();
@@ -1582,11 +1580,10 @@ int DaosMultipartUpload::abort(const DoutPrefixProvider* dpp,
                            store->ds3);
 }
 
-static string mp_ns = RGW_OBJ_NS_MULTIPART;
-
 std::unique_ptr<rgw::sal::Object> DaosMultipartUpload::get_meta_obj() {
   // TODO fix this so it refers to the upload_dir
-  return bucket->get_object(rgw_obj_key(get_meta(), string(), mp_ns));
+  return bucket->get_object(
+      rgw_obj_key(get_upload_id(), string(), RGW_OBJ_NS_MULTIPART));
 }
 
 int DaosMultipartUpload::init(const DoutPrefixProvider* dpp, optional_yield y,
@@ -1768,7 +1765,7 @@ int DaosMultipartUpload::complete(
       RGWUploadPartInfo& obj_part = part->info;
       string oid = mp_obj.get_part(obj_part.num);
       rgw_obj src_obj;
-      src_obj.init_ns(bucket->get_key(), oid, mp_ns);
+      src_obj.init_ns(bucket->get_key(), oid, RGW_OBJ_NS_MULTIPART);
 
       bool part_compressed = (obj_part.cs_info.compression_type != "none");
       if ((handled_parts > 0) &&
