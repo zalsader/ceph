@@ -20,11 +20,12 @@ pipeline {
                     export CEPH_PATH=/opt/ceph
                     export DAOS_PATH=/opt/daos
                     export S3TESTS_PATH=/opt/s3-tests
-					cd $DOCKER_RUN && sh test.sh --artifacts-folder=$ARTIFACTS_FOLDER
+                    export LOCAL_ARTIFACTS=/opt/$RUN_DATE
+					cd $DOCKER_RUN && sh test.sh --artifacts-folder=$ARTIFACTS_FOLDER --local-artifacts=$LOCAL_ARTIFACTS
 					ls -l $ARTIFACTS_FOLDER/*.csv
-					cp $ARTIFACTS_FOLDER/test_diff.csv $WORKSPACE
-					cp $ARTIFACTS_FOLDER/test_output.csv $WORKSPACE
-					cp $ARTIFACTS_FOLDER/test_summary.csv $WORKSPACE
+					cp $LOCAL_ARTIFACTS/test_diff.csv $WORKSPACE
+					cp $LOCAL_ARTIFACTS/test_output.csv $WORKSPACE
+					cp $LOCAL_ARTIFACTS/test_summary.csv $WORKSPACE
                 '''
                 // archiveArtifacts artifacts: "*.csv", onlyIfSuccessful: false, allowEmptyArchive: true 
             }

@@ -1,5 +1,7 @@
 #!/bin/bash
 
+BOOLEAN_VALUES="T[RUE]|Y[ES]|F[ALSE]|N[O]|1|0"
+
 function set_boolean()
 {
     declare -n foo=$1

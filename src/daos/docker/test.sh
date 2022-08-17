@@ -13,6 +13,8 @@ set -x
 source $CEPH_PATH/src/daos/error_handler.sh
 source $CEPH_PATH/src/daos/set_boolean.sh
 source $CEPH_PATH/src/daos/require_variables.sh
+source $CEPH_PATH/src/daos/daos/daos_start.sh
+source $CEPH_PATH/src/daos/daos/daos_stop.sh
 source $CEPH_PATH/src/daos/daos/daos_format.sh
 source $CEPH_PATH/src/daos/daos/daos_pool_create.sh
 source $CEPH_PATH/src/daos/radosgw/radosgw_start.sh
@@ -26,15 +28,16 @@ function usage()
     # turn off echo
     set +x
 
-    local BOOLEAN_VALUES="T[RUE]|Y[ES]|F[ALSE]|N[O]|1|0"
+    require_variables BOOLEAN_VALUES
     echo ""
     echo "./test.sh"
     echo -e "\t-h --help"
-    echo -e "\t-s --summary=$BOOLEAN_VALUES default=FALSE"
+    echo -e "\t-y --summary=$BOOLEAN_VALUES default=FALSE"
     echo -e "\t-u --update-confluence=$BOOLEAN_VALUES default=TRUE"
     echo -e "\t-c --cleanup-container=$BOOLEAN_VALUES default=TRUE"
     echo -e "\t-b --build-docker-images=$BOOLEAN_VALUES default=TRUE"
-    echo -e "\t-a --artifacts-folder=<folder> default=/opt"
+    echo -e "\t-a --artifacts-folder=<folder_of_docker_container> default=/opt"
+    echo -e "\t--local-artifacts=<folder_of_host> default=/opt"
     echo -e "\t--ceph-image-name=<image-name> default=dgw-single-host"
     echo -e "\t--daos-image-name=<image-name> default=daos-single-host"
     echo -e "\t--s3tests-image-name=<image-name> default=dgw-s3-tests"
@@ -47,6 +50,7 @@ SUMMARY=false
 CLEANUP_CONTAINER=true
 UPDATE_CONFLUENCE=true
 ARTIFACTS_FOLDER=/opt
+LOCAL_ARTIFACTS=/opt
 START_DAOS=true
 START_RADOSGW=true
 CEPH_IMAGE_NAME='dgw-single-host'
@@ -70,6 +74,9 @@ while [ "$1" != "" ]; do
             ;;
         --artifacts-folder)
             ARTIFACTS_FOLDER=$VALUE
+            ;;
+        --local-artifacts)
+            LOCAL_ARTIFACTS=$VALUE
             ;;
         -b | --build-docker-images)
             set_boolean BUILDDOCKERIMAGES $VALUE
@@ -104,19 +111,6 @@ while [ "$1" != "" ]; do
     shift
 done
 
-function usage()
-{
-    local BOOLEAN_VALUES="T[RUE]|Y[ES]|F[ALSE]|N[O]|1|0"
-    echo ""
-    echo "./test.sh"
-    echo "\t-h --help"
-    echo "\t-s --summary=$BOOLEAN_VALUES default=FALSE"
-    echo "\t-u --update-confluence=$BOOLEAN_VALUES default=TRUE"
-    echo "\t-c --cleanup-container=$BOOLEAN_VALUES default=TRUE"
-    echo "\t-b --build-docker-images=$BOOLEAN_VALUES default=TRUE"
-    echo ""
-}
-
 function set_boolean()
 {
     declare -n foo=$1
@@ -139,11 +133,6 @@ function set_boolean()
             ;;
     esac
 }
-
-BUILDDOCKERIMAGES=true
-SUMMARY=false
-CLEANUP_CONTAINER=true
-UPDATE_CONFLUENCE=true
 
 while [ "$1" != "" ]; do
     PARAM=`echo $1 | awk -F= '{print $1}'`
@@ -204,12 +193,7 @@ function start_daos_cortx_s3tests()
 {
     if [[ $SUMMARY == false ]]; then
         if [[ $START_DAOS == true ]]; then
-            docker exec -u 0 $CONTAINER_NAME /opt/daos/bin/daos_server start &
-            if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
-            docker exec -u 0 $CONTAINER_NAME /opt/daos/bin/daos_agent &
-            if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
-            sleep 5
-
+            daos_start
             daos_format
             daos_pool_create
         fi
@@ -233,16 +217,16 @@ function start_daos_cortx_s3tests()
 
 function copy_artifact()
 {
-    if [[ -e $RUN_DATE/$1 ]]; then
-        sudo chmod 666 $RUN_DATE/$1
+    if [[ -e $LOCAL_ARTIFACTS/$1 ]]; then
+        sudo chmod 666 $LOCAL_ARTIFACTS/$1
     fi
-    docker cp $CONTAINER_NAME:$ARTIFACTS_FOLDER/$1 $RUN_DATE/
+    docker cp $CONTAINER_NAME:$ARTIFACTS_FOLDER/$1 $LOCAL_ARTIFACTS/
     if [[ ! $? == 0 ]]; then echo "failed"; exit 1; fi
 }
 
 function copy_s3tests_artifacts()
 {
-    mkdir -p $RUN_DATE
+    mkdir -p $LOCAL_ARTIFACTS
     copy_artifact "test_summary.csv"
     copy_artifact "test_output.csv"
     copy_artifact "test_diff.csv"
@@ -264,7 +248,7 @@ function update_confluence_s3tests_page()
         echo "python file not found in: $PWD"
         return
     fi
-    python3 update_confluence.py $RUN_DATE/test_summary.csv
+    python3 update_confluence.py $LOCAL_ARTIFACTS/test_summary.csv
 }
 
 function cleanup_hugepages()
