@@ -1186,6 +1186,10 @@ int DaosObject::DaosDeleteOp::delete_obj(const DoutPrefixProvider* dpp,
   ldpp_dout(dpp, 20) << "DaosDeleteOp::delete_obj "
                      << source->get_key().to_str() << " from "
                      << source->get_bucket()->get_name() << dendl;
+  if (source->get_instance() == "null") {
+    source->clear_instance();
+  }
+  
   // Open bucket
   int ret = 0;
   std::string key = source->get_key().to_str();
@@ -1254,6 +1258,10 @@ int DaosObject::lookup(const DoutPrefixProvider* dpp) {
     return 0;
   }
 
+  if (get_instance() == "null") {
+    clear_instance();
+  }
+
   int ret = 0;
   DaosBucket* daos_bucket = get_daos_bucket();
   ret = daos_bucket->open(dpp);
@@ -1279,6 +1287,10 @@ int DaosObject::create(const DoutPrefixProvider* dpp) {
   ldpp_dout(dpp, 20) << "DEBUG: create" << dendl;
   if (is_open()) {
     return 0;
+  }
+
+  if (get_instance() == "null") {
+    clear_instance();
   }
 
   int ret = 0;
@@ -1538,7 +1550,7 @@ int DaosAtomicWriter::complete(
   ent.meta.owner = owner.to_str();
   ent.meta.owner_display_name =
       obj.get_bucket()->get_owner()->get_display_name();
-  bool is_versioned = obj.have_instance();
+  bool is_versioned = obj.get_bucket()->versioned();
   if (is_versioned)
     ent.flags =
         rgw_bucket_dir_entry::FLAG_VER | rgw_bucket_dir_entry::FLAG_CURRENT;
@@ -1867,7 +1879,7 @@ int DaosMultipartUpload::complete(
                      << dendl;
   ent.meta.category = RGWObjCategory::Main;
   ent.meta.mtime = ceph::real_clock::now();
-  bool is_versioned = target_obj->have_instance();
+  bool is_versioned = target_obj->get_bucket()->versioned();
   if (is_versioned)
     ent.flags =
         rgw_bucket_dir_entry::FLAG_VER | rgw_bucket_dir_entry::FLAG_CURRENT;
