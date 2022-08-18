@@ -1593,7 +1593,6 @@ int DaosMultipartUpload::abort(const DoutPrefixProvider* dpp,
 }
 
 std::unique_ptr<rgw::sal::Object> DaosMultipartUpload::get_meta_obj() {
-  // TODO fix this so it refers to the upload_dir
   return bucket->get_object(
       rgw_obj_key(get_upload_id(), string(), RGW_OBJ_NS_MULTIPART));
 }
@@ -1897,7 +1896,7 @@ int DaosMultipartUpload::complete(
   for (auto const& [part_num, part] : get_parts()) {
     ds3_part_t* ds3p;
     ret = ds3_part_open(get_bucket_name().c_str(), get_upload_id().c_str(),
-                        part_num, true, &ds3p, store->ds3);
+                        part_num, false, &ds3p, store->ds3);
     if (ret != 0) {
       return ret;
     }
@@ -1911,6 +1910,10 @@ int DaosMultipartUpload::complete(
       ds3_part_close(ds3p);
       return ret;
     }
+
+    ldpp_dout(dpp, 20) << "DaosMultipartUpload::complete(): part " << part_num << " size is "
+                     << size
+                     << dendl;
 
     // write to obj
     obj->write(dpp, std::move(bl), write_off);
