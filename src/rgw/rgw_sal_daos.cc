@@ -395,24 +395,22 @@ std::unique_ptr<struct ds3_bucket_info> DaosBucket::get_encoded_info(
 int DaosBucket::remove_bucket(const DoutPrefixProvider* dpp,
                               bool delete_children, bool forward_to_master,
                               req_info* req_info, optional_yield y) {
-  // TODO implement
   ldpp_dout(dpp, 20) << "DEBUG: remove_bucket, delete_children="
                      << delete_children
                      << " forward_to_master=" << forward_to_master << dendl;
 
-  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
+  return ds3_bucket_destroy(get_name().c_str(), delete_children, store->ds3, nullptr);
 }
 
 int DaosBucket::remove_bucket_bypass_gc(int concurrent_max,
                                         bool keep_index_consistent,
                                         optional_yield y,
                                         const DoutPrefixProvider* dpp) {
-  // TODO implement
   ldpp_dout(dpp, 20) << "DEBUG: remove_bucket_bypass_gc, concurrent_max="
                      << concurrent_max
                      << " keep_index_consistent=" << keep_index_consistent
                      << dendl;
-  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
+  return ds3_bucket_destroy(get_name().c_str(), true, store->ds3, nullptr);
 }
 
 int DaosBucket::put_info(const DoutPrefixProvider* dpp, bool exclusive,
