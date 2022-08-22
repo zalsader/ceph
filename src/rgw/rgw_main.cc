@@ -360,12 +360,6 @@ int main(int argc, const char **argv)
   
   StoreManager::Config cfg = StoreManager::get_config(false, g_ceph_context);
 
-#ifdef WITH_RADOSGW_DAOS
-  if (config_store == "daos") {
-    rgw_store = "daos";
-  }
-#endif
-
   rgw::sal::Store* store =
     StoreManager::get_storage(&dp, g_ceph_context,
 				 cfg,

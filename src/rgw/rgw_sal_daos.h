@@ -32,38 +32,34 @@
 #include "rgw_putobj_processor.h"
 #include "rgw_rados.h"
 #include "rgw_role.h"
-#include "rgw_sal.h"
+#include "rgw_sal_store.h"
 
-inline bool IsDebuggerAttached()
-{
+inline bool IsDebuggerAttached() {
 #ifdef DEBUG
-    char buf[4096];
+  char buf[4096];
 
-    const int status_fd = ::open("/proc/self/status", O_RDONLY);
-    if (status_fd == -1)
-        return false;
+  const int status_fd = ::open("/proc/self/status", O_RDONLY);
+  if (status_fd == -1) return false;
 
-    const ssize_t num_read = ::read(status_fd, buf, sizeof(buf) - 1);
-    ::close(status_fd);
+  const ssize_t num_read = ::read(status_fd, buf, sizeof(buf) - 1);
+  ::close(status_fd);
 
-    if (num_read <= 0)
-        return false;
+  if (num_read <= 0) return false;
 
-    buf[num_read] = '\0';
-    constexpr char tracerPidString[] = "TracerPid:";
-    const auto tracer_pid_ptr = ::strstr(buf, tracerPidString);
-    if (!tracer_pid_ptr)
-        return false;
+  buf[num_read] = '\0';
+  constexpr char tracerPidString[] = "TracerPid:";
+  const auto tracer_pid_ptr = ::strstr(buf, tracerPidString);
+  if (!tracer_pid_ptr) return false;
 
-    for (const char* characterPtr = tracer_pid_ptr + sizeof(tracerPidString) - 1; characterPtr <= buf + num_read; ++characterPtr)
-    {
-        if (::isspace(*characterPtr))
-            continue;
-        else
-            return ::isdigit(*characterPtr) != 0 && *characterPtr != '0';
-    }
+  for (const char* characterPtr = tracer_pid_ptr + sizeof(tracerPidString) - 1;
+       characterPtr <= buf + num_read; ++characterPtr) {
+    if (::isspace(*characterPtr))
+      continue;
+    else
+      return ::isdigit(*characterPtr) != 0 && *characterPtr != '0';
+  }
 #endif  // DEBUG
-    return false;
+  return false;
 }
 
 inline void DebugBreak() {
@@ -71,23 +67,30 @@ inline void DebugBreak() {
   // only break into the debugger if the debugger is attached
   if (IsDebuggerAttached())
     raise(SIGINT);  // breaks into GDB and stops, can be continued
-#endif  // DEBUG
+#endif              // DEBUG
 }
 
-inline int NotImplementedLog(const DoutPrefixProvider* ldpp, const char* filename, int linenumber, const char* functionname) {
+inline int NotImplementedLog(const DoutPrefixProvider* ldpp,
+                             const char* filename, int linenumber,
+                             const char* functionname) {
   if (ldpp)
-    ldpp_dout(ldpp, 20) << filename << "(" << linenumber << ") " << functionname << ": Not implemented" << dendl;
+    ldpp_dout(ldpp, 20) << filename << "(" << linenumber << ") " << functionname
+                        << ": Not implemented" << dendl;
   return 0;
 }
 
-inline int NotImplementedGdbBreak(const DoutPrefixProvider* ldpp, const char* filename, int linenumber, const char* functionname) {
+inline int NotImplementedGdbBreak(const DoutPrefixProvider* ldpp,
+                                  const char* filename, int linenumber,
+                                  const char* functionname) {
   NotImplementedLog(ldpp, filename, linenumber, functionname);
   DebugBreak();
   return 0;
 }
 
-#define DAOS_NOT_IMPLEMENTED_GDB_BREAK(ldpp) NotImplementedGdbBreak(ldpp, __FILE__, __LINE__, __FUNCTION__)
-#define DAOS_NOT_IMPLEMENTED_LOG(ldpp) NotImplementedLog(ldpp, __FILE__, __LINE__, __FUNCTION__)
+#define DAOS_NOT_IMPLEMENTED_GDB_BREAK(ldpp) \
+  NotImplementedGdbBreak(ldpp, __FILE__, __LINE__, __FUNCTION__)
+#define DAOS_NOT_IMPLEMENTED_LOG(ldpp) \
+  NotImplementedLog(ldpp, __FILE__, __LINE__, __FUNCTION__)
 
 namespace rgw::sal {
 
@@ -95,14 +98,17 @@ class DaosStore;
 class DaosObject;
 
 #ifdef DEBUG
-// Prepends each log entry with the "filename(source_line) function_name".  Makes it simple to 
+// Prepends each log entry with the "filename(source_line) function_name". Makes
+// it simple to
 //  associate log entries with the source that generated the log entry
 #undef ldpp_dout
-#define ldpp_dout(dpp, v) 						\
-  if (decltype(auto) pdpp = (dpp); pdpp) /* workaround -Wnonnull-compare for 'this' */ \
-    dout_impl(pdpp->get_cct(), ceph::dout::need_dynamic(pdpp->get_subsys()), v) \
-      pdpp->gen_prefix(*_dout) << __FILE__ << "(" << __LINE__ << ") " << __FUNCTION__ << " - "
-#endif // DEBUG
+#define ldpp_dout(dpp, v)                                                     \
+  if (decltype(auto) pdpp = (dpp);                                            \
+      pdpp) /* workaround -Wnonnull-compare for 'this' */                     \
+  dout_impl(pdpp->get_cct(), ceph::dout::need_dynamic(pdpp->get_subsys()), v) \
+          pdpp->gen_prefix(*_dout)                                            \
+      << __FILE__ << "(" << __LINE__ << ") " << __FUNCTION__ << " - "
+#endif  // DEBUG
 
 struct DaosUserInfo {
   RGWUserInfo info;
@@ -127,10 +133,10 @@ struct DaosUserInfo {
 };
 WRITE_CLASS_ENCODER(DaosUserInfo);
 
-class DaosNotification : public Notification {
+class DaosNotification : public StoreNotification {
  public:
   DaosNotification(Object* _obj, Object* _src_obj, rgw::notify::EventType _type)
-      : Notification(_obj, _src_obj, _type) {}
+      : StoreNotification(_obj, _src_obj, _type) {}
   ~DaosNotification() = default;
 
   virtual int publish_reserve(const DoutPrefixProvider* dpp,
@@ -145,19 +151,19 @@ class DaosNotification : public Notification {
   }
 };
 
-class DaosUser : public User {
+class DaosUser : public StoreUser {
  private:
   DaosStore* store;
 
  public:
-  DaosUser(DaosStore* _st, const rgw_user& _u) : User(_u), store(_st) {}
-  DaosUser(DaosStore* _st, const RGWUserInfo& _i) : User(_i), store(_st) {}
+  DaosUser(DaosStore* _st, const rgw_user& _u) : StoreUser(_u), store(_st) {}
+  DaosUser(DaosStore* _st, const RGWUserInfo& _i) : StoreUser(_i), store(_st) {}
   DaosUser(DaosStore* _st) : store(_st) {}
   DaosUser(DaosUser& _o) = default;
   DaosUser() {}
 
   virtual std::unique_ptr<User> clone() override {
-    return std::unique_ptr<User>(new DaosUser(*this));
+    return std::make_unique<DaosUser>(*this);
   }
   int list_buckets(const DoutPrefixProvider* dpp, const std::string& marker,
                    const std::string& end_marker, uint64_t max, bool need_stats,
@@ -201,7 +207,7 @@ class DaosUser : public User {
   friend class DaosBucket;
 };
 
-class DaosBucket : public Bucket {
+class DaosBucket : public StoreBucket {
  private:
   DaosStore* store;
   RGWAccessControlPolicy acls;
@@ -250,30 +256,31 @@ class DaosBucket : public Bucket {
 
   DaosBucket(DaosStore* _st) : store(_st), acls() {}
 
-  DaosBucket(const DaosBucket& _daos_bucket) : store(_daos_bucket.store), acls(), coh(DAOS_HDL_INVAL), dfs(nullptr) {
-    //TODO: deep copy all objects
-    //daos_duplicate_handle(_daos_bucket.coh);
+  DaosBucket(const DaosBucket& _daos_bucket)
+      : store(_daos_bucket.store), acls(), coh(DAOS_HDL_INVAL), dfs(nullptr) {
+    // TODO: deep copy all objects
+    // daos_duplicate_handle(_daos_bucket.coh);
   }
 
-  DaosBucket(DaosStore* _st, User* _u) : Bucket(_u), store(_st), acls() {}
+  DaosBucket(DaosStore* _st, User* _u) : StoreBucket(_u), store(_st), acls() {}
 
   DaosBucket(DaosStore* _st, const rgw_bucket& _b)
-      : Bucket(_b), store(_st), acls() {}
+      : StoreBucket(_b), store(_st), acls() {}
 
   DaosBucket(DaosStore* _st, const RGWBucketEnt& _e)
-      : Bucket(_e), store(_st), acls() {}
+      : StoreBucket(_e), store(_st), acls() {}
 
   DaosBucket(DaosStore* _st, const RGWBucketInfo& _i)
-      : Bucket(_i), store(_st), acls() {}
+      : StoreBucket(_i), store(_st), acls() {}
 
   DaosBucket(DaosStore* _st, const rgw_bucket& _b, User* _u)
-      : Bucket(_b, _u), store(_st), acls() {}
+      : StoreBucket(_b, _u), store(_st), acls() {}
 
   DaosBucket(DaosStore* _st, const RGWBucketEnt& _e, User* _u)
-      : Bucket(_e, _u), store(_st), acls() {}
+      : StoreBucket(_e, _u), store(_st), acls() {}
 
   DaosBucket(DaosStore* _st, const RGWBucketInfo& _i, User* _u)
-      : Bucket(_i, _u), store(_st), acls() {}
+      : StoreBucket(_i, _u), store(_st), acls() {}
 
   ~DaosBucket();
 
@@ -292,12 +299,16 @@ class DaosBucket : public Bucket {
                       RGWAccessControlPolicy& acl, optional_yield y) override;
   virtual int load_bucket(const DoutPrefixProvider* dpp, optional_yield y,
                           bool get_stats = false) override;
-  virtual int read_stats(const DoutPrefixProvider* dpp, int shard_id,
-                         std::string* bucket_ver, std::string* master_ver,
+  virtual int read_stats(const DoutPrefixProvider* dpp,
+                         const bucket_index_layout_generation& idx_layout,
+                         int shard_id, std::string* bucket_ver,
+                         std::string* master_ver,
                          std::map<RGWObjCategory, RGWStorageStats>& stats,
                          std::string* max_marker = nullptr,
                          bool* syncstopped = nullptr) override;
-  virtual int read_stats_async(const DoutPrefixProvider* dpp, int shard_id,
+  virtual int read_stats_async(const DoutPrefixProvider* dpp,
+                               const bucket_index_layout_generation& idx_layout,
+                               int shard_id,
                                RGWGetBucketStats_CB* ctx) override;
   virtual int sync_user_stats(const DoutPrefixProvider* dpp,
                               optional_yield y) override;
@@ -311,8 +322,7 @@ class DaosBucket : public Bucket {
   virtual bool is_owner(User* user) override;
   virtual int check_empty(const DoutPrefixProvider* dpp,
                           optional_yield y) override;
-  virtual int check_quota(const DoutPrefixProvider* dpp,
-                          RGWQuotaInfo& user_quota, RGWQuotaInfo& bucket_quota,
+  virtual int check_quota(const DoutPrefixProvider* dpp, RGWQuota& quota,
                           uint64_t obj_size, optional_yield y,
                           bool check_size_only = false) override;
   virtual int merge_and_store_attrs(const DoutPrefixProvider* dpp, Attrs& attrs,
@@ -337,7 +347,7 @@ class DaosBucket : public Bucket {
                               uint64_t timeout) override;
   virtual int purge_instance(const DoutPrefixProvider* dpp) override;
   virtual std::unique_ptr<Bucket> clone() override {
-    return std::unique_ptr<DaosBucket>(new DaosBucket(*this));
+    return std::make_unique<DaosBucket>(*this);
   }
   virtual std::unique_ptr<MultipartUpload> get_multipart_upload(
       const std::string& oid,
@@ -361,7 +371,7 @@ class DaosBucket : public Bucket {
   friend class DaosStore;
 };
 
-class DaosPlacementTier : public PlacementTier {
+class DaosPlacementTier : public StorePlacementTier {
   DaosStore* store;
   RGWZoneGroupPlacementTier tier;
 
@@ -376,7 +386,7 @@ class DaosPlacementTier : public PlacementTier {
   RGWZoneGroupPlacementTier& get_rt() { return tier; }
 };
 
-class DaosZoneGroup : public ZoneGroup {
+class DaosZoneGroup : public StoreZoneGroup {
   DaosStore* store;
   const RGWZoneGroup group;
   std::string empty;
@@ -420,10 +430,13 @@ class DaosZoneGroup : public ZoneGroup {
   virtual int get_zone_count() const override { return group.zones.size(); }
   virtual int get_placement_tier(const rgw_placement_rule& rule,
                                  std::unique_ptr<PlacementTier>* tier);
+  virtual std::unique_ptr<ZoneGroup> clone() override {
+    return std::make_unique<DaosZoneGroup>(store, group);
+  }
   const RGWZoneGroup& get_group() { return group; }
 };
 
-class DaosZone : public Zone {
+class DaosZone : public StoreZone {
  protected:
   DaosStore* store;
   RGWRealm* realm{nullptr};
@@ -467,6 +480,9 @@ class DaosZone : public Zone {
   }
   ~DaosZone() = default;
 
+  virtual std::unique_ptr<Zone> clone() override {
+    return std::make_unique<DaosZone>(store);
+  }
   virtual ZoneGroup& get_zonegroup() override;
   virtual int get_zonegroup(const std::string& id,
                             std::unique_ptr<ZoneGroup>* zonegroup) override;
@@ -481,66 +497,64 @@ class DaosZone : public Zone {
   }
   virtual const std::string& get_realm_name() { return realm->get_name(); }
   virtual const std::string& get_realm_id() { return realm->get_id(); }
+  virtual const std::string_view get_tier_type() { return "rgw"; }
 
   friend class DaosStore;
 };
 
-class DaosLuaScriptManager : public LuaScriptManager {
+class DaosLuaManager : public StoreLuaManager {
   DaosStore* store;
 
  public:
-  DaosLuaScriptManager(DaosStore* _s) : store(_s) {}
-  virtual ~DaosLuaScriptManager() = default;
+  DaosLuaManager(DaosStore* _s) : store(_s) {}
+  virtual ~DaosLuaManager() = default;
 
-  virtual int get(const DoutPrefixProvider* dpp, optional_yield y,
-                  const std::string& key, std::string& script) override {
+  virtual int get_script(const DoutPrefixProvider* dpp, optional_yield y,
+                         const std::string& key, std::string& script) override {
     DAOS_NOT_IMPLEMENTED_LOG(dpp);
     return -ENOENT;
-  }
-  virtual int put(const DoutPrefixProvider* dpp, optional_yield y,
-                  const std::string& key, const std::string& script) override {
+  };
+
+  virtual int put_script(const DoutPrefixProvider* dpp, optional_yield y,
+                         const std::string& key,
+                         const std::string& script) override {
     DAOS_NOT_IMPLEMENTED_LOG(dpp);
     return -ENOENT;
-  }
-  virtual int del(const DoutPrefixProvider* dpp, optional_yield y,
-                  const std::string& key) override {
+  };
+
+  virtual int del_script(const DoutPrefixProvider* dpp, optional_yield y,
+                         const std::string& key) override {
     DAOS_NOT_IMPLEMENTED_LOG(dpp);
     return -ENOENT;
-  }
+  };
+
+  virtual int add_package(const DoutPrefixProvider* dpp, optional_yield y,
+                          const std::string& package_name) override {
+    DAOS_NOT_IMPLEMENTED_LOG(dpp);
+    return -ENOENT;
+  };
+
+  virtual int remove_package(const DoutPrefixProvider* dpp, optional_yield y,
+                             const std::string& package_name) override {
+    DAOS_NOT_IMPLEMENTED_LOG(dpp);
+    return -ENOENT;
+  };
+
+  virtual int list_packages(const DoutPrefixProvider* dpp, optional_yield y,
+                            rgw::lua::packages_t& packages) override {
+    DAOS_NOT_IMPLEMENTED_LOG(dpp);
+    return -ENOENT;
+  };
 };
 
-class DaosOIDCProvider : public RGWOIDCProvider {
-  DaosStore* store;
-
- public:
-  DaosOIDCProvider(DaosStore* _store) : store(_store) {}
-  ~DaosOIDCProvider() = default;
-
-  virtual int store_url(const DoutPrefixProvider* dpp, const std::string& url,
-                        bool exclusive, optional_yield y) override {
-    return DAOS_NOT_IMPLEMENTED_LOG(dpp);
-  }
-  virtual int read_url(const DoutPrefixProvider* dpp, const std::string& url,
-                       const std::string& tenant) override {
-    return DAOS_NOT_IMPLEMENTED_LOG(dpp);
-  }
-  virtual int delete_obj(const DoutPrefixProvider* dpp,
-                         optional_yield y) override {
-    return DAOS_NOT_IMPLEMENTED_LOG(dpp);
-  }
-
-  void encode(bufferlist& bl) const { RGWOIDCProvider::encode(bl); }
-  void decode(bufferlist::const_iterator& bl) { RGWOIDCProvider::decode(bl); }
-};
-
-class DaosObject : public Object {
+class DaosObject : public StoreObject {
  private:
   DaosStore* store;
   RGWAccessControlPolicy acls;
   bool _is_open = false;
 
  public:
-  struct DaosReadOp : public ReadOp {
+  struct DaosReadOp : public StoreReadOp {
    private:
     DaosObject* source;
 
@@ -557,7 +571,7 @@ class DaosObject : public Object {
                          bufferlist& dest, optional_yield y) override;
   };
 
-  struct DaosDeleteOp : public DeleteOp {
+  struct DaosDeleteOp : public StoreDeleteOp {
    private:
     DaosObject* source;
 
@@ -573,9 +587,9 @@ class DaosObject : public Object {
   DaosObject() = default;
 
   DaosObject(DaosStore* _st, const rgw_obj_key& _k)
-      : Object(_k), store(_st), acls() {}
+      : StoreObject(_k), store(_st), acls() {}
   DaosObject(DaosStore* _st, const rgw_obj_key& _k, Bucket* _b)
-      : Object(_k, _b), store(_st), acls() {}
+      : StoreObject(_k, _b), store(_st), acls() {}
 
   DaosObject(DaosObject& _o) = default;
 
@@ -620,10 +634,10 @@ class DaosObject : public Object {
   virtual bool is_expired() override;
   virtual void gen_rand_obj_instance_name() override;
   virtual std::unique_ptr<Object> clone() override {
-    return std::unique_ptr<Object>(new DaosObject(*this));
+    return std::make_unique<DaosObject>(*this);
   }
-  virtual MPSerializer* get_serializer(const DoutPrefixProvider* dpp,
-                                       const std::string& lock_name) override;
+  virtual std::unique_ptr<MPSerializer> get_serializer(
+      const DoutPrefixProvider* dpp, const std::string& lock_name) override;
   virtual int transition(Bucket* bucket,
                          const rgw_placement_rule& placement_rule,
                          const real_time& mtime, uint64_t olh_epoch,
@@ -638,7 +652,7 @@ class DaosObject : public Object {
   virtual bool placement_rules_match(rgw_placement_rule& r1,
                                      rgw_placement_rule& r2) override;
   virtual int dump_obj_layout(const DoutPrefixProvider* dpp, optional_yield y,
-                              Formatter* f ) override;
+                              Formatter* f) override;
 
   /* Swift versioning */
   virtual int swift_versioning_restore(bool& restored,
@@ -697,11 +711,10 @@ class DaosObject : public Object {
 };
 
 // A placeholder locking class for multipart upload.
-class MPDaosSerializer : public MPSerializer {
+class MPDaosSerializer : public StoreMPSerializer {
  public:
   MPDaosSerializer(const DoutPrefixProvider* dpp, DaosStore* store,
-                   DaosObject* obj, const std::string& lock_name) {
-  }
+                   DaosObject* obj, const std::string& lock_name) {}
 
   virtual int try_lock(const DoutPrefixProvider* dpp, utime_t dur,
                        optional_yield y) override {
@@ -710,7 +723,7 @@ class MPDaosSerializer : public MPSerializer {
   virtual int unlock() override { return DAOS_NOT_IMPLEMENTED_LOG(nullptr); }
 };
 
-class DaosAtomicWriter : public Writer {
+class DaosAtomicWriter : public StoreWriter {
  protected:
   rgw::sal::DaosStore* store;
   const rgw_user& owner;
@@ -744,7 +757,7 @@ class DaosAtomicWriter : public Writer {
                        optional_yield y) override;
 };
 
-class DaosMultipartWriter : public Writer {
+class DaosMultipartWriter : public StoreWriter {
  protected:
   rgw::sal::DaosStore* store;
   MultipartUpload* upload;
@@ -765,7 +778,7 @@ class DaosMultipartWriter : public Writer {
                       DaosStore* _store, const rgw_user& owner,
                       const rgw_placement_rule* ptail_placement_rule,
                       uint64_t _part_num, const std::string& part_num_str)
-      : Writer(dpp, y),
+      : StoreWriter(dpp, y),
         store(_store),
         upload(_upload),
         upload_id(_upload->get_upload_id()),
@@ -791,7 +804,7 @@ class DaosMultipartWriter : public Writer {
   DaosBucket* get_daos_bucket();
 };
 
-class DaosMultipartPart : public MultipartPart {
+class DaosMultipartPart : public StoreMultipartPart {
  protected:
   RGWUploadPartInfo info;
 
@@ -807,7 +820,7 @@ class DaosMultipartPart : public MultipartPart {
   friend class DaosMultipartUpload;
 };
 
-class DaosMultipartUpload : public MultipartUpload {
+class DaosMultipartUpload : public StoreMultipartUpload {
   DaosStore* store;
   RGWMPObj mp_obj;
   ACLOwner owner;
@@ -820,7 +833,7 @@ class DaosMultipartUpload : public MultipartUpload {
                       const std::string& oid,
                       std::optional<std::string> upload_id, ACLOwner _owner,
                       ceph::real_time _mtime)
-      : MultipartUpload(_bucket),
+      : StoreMultipartUpload(_bucket),
         store(_store),
         mp_obj(oid, upload_id),
         owner(_owner),
@@ -861,7 +874,7 @@ class DaosMultipartUpload : public MultipartUpload {
   DaosBucket* get_daos_bucket() { return static_cast<DaosBucket*>(bucket); }
 };
 
-class DaosStore : public Store {
+class DaosStore : public StoreStore {
  private:
   std::string luarocks_path;
   DaosZone zone;
@@ -915,6 +928,10 @@ class DaosStore : public Store {
                                         bufferlist& in_data, JSONParser* jp,
                                         req_info& info,
                                         optional_yield y) override;
+  virtual int forward_iam_request_to_master(
+      const DoutPrefixProvider* dpp, const RGWAccessKey& key, obj_version* objv,
+      bufferlist& in_data, RGWXMLDecoder::XMLParser* parser, req_info& info,
+      optional_yield y) override;
   virtual Zone* get_zone() { return &zone; }
   virtual std::string zone_unique_id(uint64_t unique_num) override;
   virtual std::string zone_unique_trans_id(const uint64_t unique_num) override;
@@ -944,15 +961,16 @@ class DaosStore : public Store {
   virtual int register_to_service_map(
       const DoutPrefixProvider* dpp, const std::string& daemon_type,
       const std::map<std::string, std::string>& meta) override;
-  virtual void get_quota(RGWQuotaInfo& bucket_quota,
-                         RGWQuotaInfo& user_quota) override;
+  virtual void get_quota(RGWQuota& quota) override;
   virtual void get_ratelimit(RGWRateLimitInfo& bucket_ratelimit,
                              RGWRateLimitInfo& user_ratelimit,
                              RGWRateLimitInfo& anon_ratelimit) override;
   virtual int set_buckets_enabled(const DoutPrefixProvider* dpp,
                                   std::vector<rgw_bucket>& buckets,
                                   bool enabled) override;
-  virtual uint64_t get_new_req_id() override { return DAOS_NOT_IMPLEMENTED_LOG(nullptr); }
+  virtual uint64_t get_new_req_id() override {
+    return DAOS_NOT_IMPLEMENTED_LOG(nullptr);
+  }
   virtual int get_sync_policy_handler(const DoutPrefixProvider* dpp,
                                       std::optional<rgw_zone_id> zone,
                                       std::optional<rgw_bucket> bucket,
@@ -965,10 +983,14 @@ class DaosStore : public Store {
   }
   virtual void wakeup_data_sync_shards(
       const DoutPrefixProvider* dpp, const rgw_zone_id& source_zone,
-      std::map<int, std::set<std::string>>& shard_ids) override {
+      boost::container::flat_map<
+          int, boost::container::flat_set<rgw_data_notify_entry>>& shard_ids)
+      override {
     return;
   }
-  virtual int clear_usage(const DoutPrefixProvider* dpp) override { return DAOS_NOT_IMPLEMENTED_LOG(dpp); }
+  virtual int clear_usage(const DoutPrefixProvider* dpp) override {
+    return DAOS_NOT_IMPLEMENTED_LOG(dpp);
+  }
   virtual int read_all_usage(
       const DoutPrefixProvider* dpp, uint64_t start_epoch, uint64_t end_epoch,
       uint32_t max_entries, bool* is_truncated, RGWUsageIter& usage_iter,
@@ -993,11 +1015,12 @@ class DaosStore : public Store {
   }
   virtual std::string get_host_id() { return ""; }
 
-  virtual std::unique_ptr<LuaScriptManager> get_lua_script_manager() override;
+  virtual std::unique_ptr<LuaManager> get_lua_manager() override;
   virtual std::unique_ptr<RGWRole> get_role(
       std::string name, std::string tenant, std::string path = "",
       std::string trust_policy = "", std::string max_session_duration_str = "",
       std::multimap<std::string, std::string> tags = {}) override;
+  virtual std::unique_ptr<RGWRole> get_role(const RGWRoleInfo& info) override;
   virtual std::unique_ptr<RGWRole> get_role(std::string id) override;
   virtual int get_roles(const DoutPrefixProvider* dpp, optional_yield y,
                         const std::string& path_prefix,

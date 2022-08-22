@@ -219,13 +219,12 @@ rgw::sal::Store* StoreManager::init_storage_provider(const DoutPrefixProvider* d
 #endif
 
 #ifdef WITH_RADOSGW_DAOS
-  if (svc.compare("daos") == 0) {
+  else if (cfg.store_name.compare("daos") == 0) {
     rgw::sal::Store* store = newDaosStore(cct);
     if (store == nullptr) {
       ldpp_dout(dpp, 0) << "newDaosStore() failed!" << dendl;
       return store;
     }
-    return store;
   }
 #endif
 
