@@ -399,7 +399,8 @@ int DaosBucket::remove_bucket(const DoutPrefixProvider* dpp,
                      << delete_children
                      << " forward_to_master=" << forward_to_master << dendl;
 
-  return ds3_bucket_destroy(get_name().c_str(), delete_children, store->ds3, nullptr);
+  return ds3_bucket_destroy(get_name().c_str(), delete_children, store->ds3,
+                            nullptr);
 }
 
 int DaosBucket::remove_bucket_bypass_gc(int concurrent_max,
@@ -1187,7 +1188,7 @@ int DaosObject::DaosDeleteOp::delete_obj(const DoutPrefixProvider* dpp,
   if (source->get_instance() == "null") {
     source->clear_instance();
   }
-  
+
   // Open bucket
   int ret = 0;
   std::string key = source->get_key().to_str();
@@ -1909,9 +1910,8 @@ int DaosMultipartUpload::complete(
       return ret;
     }
 
-    ldpp_dout(dpp, 20) << "DaosMultipartUpload::complete(): part " << part_num << " size is "
-                     << size
-                     << dendl;
+    ldpp_dout(dpp, 20) << "DaosMultipartUpload::complete(): part " << part_num
+                       << " size is " << size << dendl;
 
     // write to obj
     obj->write(dpp, std::move(bl), write_off);
