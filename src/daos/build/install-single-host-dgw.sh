@@ -138,13 +138,23 @@ function assign_path()
     export $1=$ASSIGN_PATH
 }
 
+function append_ccache_source_date()
+{
+    set +e
+    grep "SOURCE_DATE_EPOCH" ~/.bashrc
+    if [[ ! $? == 0 ]]; then
+        echo "export SOURCE_DATE_EPOCH=946684800" >> ~/.bashrc
+    fi
+    set -e
+}
+
 function search_first_word_and_append_to_ccache()
 {
     local first_word=$(echo $1 | cut -d " " -f 1)
     set +e
-    grep "^${firstword}" <<< $1
+    grep "^${first_word}" /etc/ccache.conf
     if [[ ! $? == 0 ]]; then
-        sudo bash -c 'echo "$1" >> /etc/ccache.conf'
+        sudo bash -c "echo \"$1\" >> /etc/ccache.conf"
     fi
     set -e
 }
@@ -232,7 +242,7 @@ build_ceph()
     search_first_word_and_append_to_ccache "max_size = 25G"
     search_first_word_and_append_to_ccache "sloppiness = time_macros"
     search_first_word_and_append_to_ccache "run_second_cpp = true"
-    echo "export SOURCE_DATE_EPOCH=946684800" >> ~/.bashrc
+    append_ccache_source_date
     cmake3 -GNinja -DPC_DAOS_INCLUDEDIR=${DAOS_PATH}/install/include -DPC_DAOS_LIBDIR=${DAOS_PATH}/install/lib64 -DWITH_PYTHON3=3.6 -DWITH_RADOSGW_DAOS=YES -DWITH_CCACHE=ON -DENABLE_GIT_VERSION=OFF -B build
     cd build
     ninja vstart
