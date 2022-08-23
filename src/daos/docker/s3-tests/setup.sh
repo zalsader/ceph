@@ -5,11 +5,6 @@
 
 source $CEPH_PATH/src/daos/silent_pushd_popd.sh
 
-if [[ ! "$CEPH_PATH" =~ . ]];
-then
-    CEPH_PATH=/opt/ceph
-fi
-
 user_file=$(mktemp /tmp/john.doe.XXXXXXXXX.json)
 
 pushd ${CEPH_PATH}/build
