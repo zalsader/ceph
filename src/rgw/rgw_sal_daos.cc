@@ -45,32 +45,6 @@ namespace rgw::sal {
 using ::ceph::decode;
 using ::ceph::encode;
 
-#define RGW_BUCKET_RGW_INFO "rgw_info"
-#define RGW_DIR_ENTRY_XATTR "rgw_entry"
-#define RGW_PART_XATTR "rgw_part"
-#define METADATA_BUCKET "_METADATA"
-#define USERS_DIR "users"
-#define EMAILS_DIR "emails"
-#define ACCESS_KEYS_DIR "access_keys"
-#define MULTIPART_DIR "multipart"
-#define MULTIPART_MAX_PARTS 10000
-#define LATEST_INSTANCE "latest"
-#define LATEST_INSTANCE_SUFFIX "[latest]"
-
-static const std::string METADATA_DIRS[] = {USERS_DIR, EMAILS_DIR,
-                                            ACCESS_KEYS_DIR, MULTIPART_DIR};
-
-/**
- * Combines the vector to return a path
- */
-fs::path make_path(std::vector<std::string>&& components) {
-  fs::path p;
-  for (auto comp : components) {
-    p /= comp;
-  }
-  return p;
-}
-
 int DaosUser::list_buckets(const DoutPrefixProvider* dpp, const string& marker,
                            const string& end_marker, uint64_t max,
                            bool need_stats, BucketList& buckets,
@@ -80,36 +54,35 @@ int DaosUser::list_buckets(const DoutPrefixProvider* dpp, const string& marker,
   int ret = 0;
   bool is_truncated = false;
   buckets.clear();
-  daos_size_t bcount = max;
-  vector<struct daos_pool_cont_info> daos_buckets(max);
+  vector<struct ds3_bucket_info> bucket_infos(max);
+  daos_size_t bcount = bucket_infos.size();
+  vector<vector<uint8_t>> values(bcount, vector<uint8_t>(DS3_MAX_ENCODED_LEN));
+  for (daos_size_t i = 0; i < bcount; i++) {
+    bucket_infos[i].encoded = values[i].data();
+    bucket_infos[i].encoded_length = values[i].size();
+  }
 
-  // XXX: Somehow handle markers and other bucket info
-  ret = daos_pool_list_cont(store->poh, &bcount, daos_buckets.data(), nullptr);
-  ldpp_dout(dpp, 20) << "DEBUG: daos_pool_list_cont: bcount=" << bcount
+  char daos_marker[DS3_MAX_BUCKET_NAME];
+  std::strncpy(daos_marker, marker.c_str(), sizeof(daos_marker));
+  ret = ds3_bucket_list(&bcount, bucket_infos.data(), daos_marker,
+                        &is_truncated, store->ds3, nullptr);
+  ldpp_dout(dpp, 20) << "DEBUG: ds3_bucket_list: bcount=" << bcount
                      << " ret=" << ret << dendl;
-  if (ret == -DER_TRUNC) {
-    is_truncated = true;
-  } else if (ret < 0) {
-    ldpp_dout(dpp, 0) << "ERROR: daos_pool_list_cont failed!" << ret << dendl;
+  if (ret != 0) {
+    ldpp_dout(dpp, 0) << "ERROR: ds3_bucket_list failed!" << ret << dendl;
     return ret;
   }
 
-  if (!is_truncated) {
-    daos_buckets.resize(bcount);
-  }
+  bucket_infos.resize(bcount);
+  values.resize(bcount);
 
-  for (const auto& db : daos_buckets) {
-    string name = db.pci_label;
-    if (name == METADATA_BUCKET) {
-      // Skip metadata bucket
-      continue;
-    }
-
-    RGWBucketEnt ent = {};
-    ent.bucket.name = name;
-    DaosBucket* daos_bucket = new DaosBucket(this->store, ent, this);
-    daos_bucket->load_bucket(dpp, y);
-    buckets.add(std::unique_ptr<DaosBucket>(daos_bucket));
+  for (const auto& bi : bucket_infos) {
+    DaosBucketInfo dbinfo;
+    bufferlist bl;
+    bl.append(reinterpret_cast<char*>(bi.encoded), bi.encoded_length);
+    auto iter = bl.cbegin();
+    dbinfo.decode(iter);
+    buckets.add(std::make_unique<DaosBucket>(this->store, dbinfo.info, this));
   }
 
   buckets.set_truncated(is_truncated);
@@ -129,7 +102,7 @@ int DaosUser::create_bucket(
 
   // Look up the bucket. Create it if it doesn't exist.
   ret = this->store->get_bucket(dpp, this, b, &bucket, y);
-  if (ret < 0 && ret != -ENOENT) {
+  if (ret != 0 && ret != -ENOENT) {
     return ret;
   }
 
@@ -173,31 +146,14 @@ int DaosUser::create_bucket(
 
     // Create a new bucket:
     DaosBucket* daos_bucket = static_cast<DaosBucket*>(bucket.get());
-    ret = dfs_cont_create_with_label(store->poh, bucket->get_name().c_str(),
-                                     nullptr, nullptr, nullptr, nullptr);
-    ldpp_dout(dpp, 20) << "DEBUG: dfs_cont_create_with_label ret=" << ret
-                       << " name=" << bucket->get_name() << dendl;
+    bufferlist bl;
+    std::unique_ptr<struct ds3_bucket_info> bucket_info =
+        daos_bucket->get_encoded_info(bl, ceph::real_time());
+    ret = ds3_bucket_create(bucket->get_name().c_str(), bucket_info.get(),
+                            nullptr, store->ds3, nullptr);
     if (ret != 0) {
-      ldpp_dout(dpp, 0) << "ERROR: dfs_cont_create_with_label failed! ret="
-                        << ret << dendl;
-      return ret;
-    }
-    ret = daos_bucket->put_info(dpp, y, ceph::real_time());
-    if (ret != 0) {
-      ldpp_dout(dpp, 0) << "ERROR: failed to put bucket info! ret=" << ret
+      ldpp_dout(dpp, 0) << "ERROR: ds3_bucket_create failed! ret=" << ret
                         << dendl;
-      return ret;
-    }
-
-    // Create multipart index
-    ret = dfs_mkdir(store->meta_dfs, store->dirs[MULTIPART_DIR],
-                    bucket->get_name().c_str(), DEFFILEMODE, 0);
-    ldpp_dout(dpp, 20) << "DEBUG: multipart index dfs_mkdir bucket="
-                       << bucket->get_name() << " ret=" << ret << dendl;
-    if (ret != 0 && ret != EEXIST) {
-      ldpp_dout(dpp, 20)
-          << "ERROR: multipart index creation failed! dfs_mkdir ret=" << ret
-          << dendl;
       return ret;
     }
   } else {
@@ -249,7 +205,7 @@ int DaosUser::load_user(const DoutPrefixProvider* dpp, optional_yield y) {
   ldpp_dout(dpp, 20) << "DEBUG: load_user, name=" << name << dendl;
 
   DaosUserInfo duinfo;
-  int ret = store->read_user(dpp, USERS_DIR, name, &duinfo);
+  int ret = read_user(dpp, name, &duinfo);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: load_user failed, name=" << name << dendl;
     return ret;
@@ -279,8 +235,10 @@ int DaosUser::store_user(const DoutPrefixProvider* dpp, optional_yield y,
   // Read user
   int ret = 0;
   struct DaosUserInfo duinfo;
-  ret = store->read_user(dpp, USERS_DIR, name, &duinfo);
+  ret = read_user(dpp, name, &duinfo);
   obj_version obj_ver = duinfo.user_version;
+  std::unique_ptr<struct ds3_user_info> old_user_info;
+  std::vector<const char*> old_access_ids;
 
   // Check if the user already exists
   if (ret == 0 && obj_ver.ver) {
@@ -304,100 +262,79 @@ int DaosUser::store_user(const DoutPrefixProvider* dpp, optional_yield y,
       return ret;
     }
     obj_ver.ver++;
+
+    for (auto const& [id, key] : duinfo.info.access_keys) {
+      old_access_ids.push_back(id.c_str());
+    }
+    old_user_info.reset(
+        new ds3_user_info{.name = duinfo.info.user_id.to_str().c_str(),
+                          .email = duinfo.info.user_email.c_str(),
+                          .access_ids = old_access_ids.data(),
+                          .access_ids_nr = old_access_ids.size()});
   } else {
     obj_ver.ver = 1;
     obj_ver.tag = "UserTAG";
   }
 
-  // Encode user data
   bufferlist bl;
+  std::unique_ptr<struct ds3_user_info> user_info =
+      get_encoded_info(bl, obj_ver);
+
+  ret = ds3_user_set(name.c_str(), user_info.get(), old_user_info.get(),
+                     store->ds3, nullptr);
+
+  if (ret != 0) {
+    ldpp_dout(dpp, 0) << "Error: ds3_user_set failed, name=" << name
+                      << " ret=" << ret << dendl;
+  }
+
+  return ret;
+}
+
+int DaosUser::read_user(const DoutPrefixProvider* dpp, std::string name,
+                        DaosUserInfo* duinfo) {
+  // Initialize ds3_user_info
+  bufferlist bl;
+  uint64_t size = DS3_MAX_ENCODED_LEN;
+  struct ds3_user_info user_info = {.encoded = bl.append_hole(size).c_str(),
+                                    .encoded_length = size};
+
+  int ret = ds3_user_get(name.c_str(), &user_info, store->ds3, nullptr);
+
+  if (ret != 0) {
+    ldpp_dout(dpp, 0) << "Error: ds3_user_get failed, name=" << name
+                      << " ret=" << ret << dendl;
+    return ret;
+  }
+
+  // Decode
+  bufferlist& blr = bl;
+  auto iter = blr.cbegin();
+  duinfo->decode(iter);
+  return ret;
+}
+
+std::unique_ptr<struct ds3_user_info> DaosUser::get_encoded_info(
+    bufferlist& bl, obj_version& obj_ver) {
+  // Encode user data
+  struct DaosUserInfo duinfo;
   duinfo.info = info;
   duinfo.attrs = attrs;
   duinfo.user_version = obj_ver;
   duinfo.encode(bl);
 
-  // Open user file
-  dfs_obj_t* user_obj;
-  mode_t mode = DEFFILEMODE;
-  ret = dfs_open(store->meta_dfs, store->dirs[USERS_DIR], name.c_str(),
-                 S_IFREG | mode, O_RDWR | O_CREAT | O_TRUNC, 0, 0, nullptr,
-                 &user_obj);
-  if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: failed to open user file, name=" << name
-                      << " ret=" << ret << dendl;
-    return ret;
+  // Initialize ds3_user_info
+  access_ids.clear();
+  for (auto const& [id, key] : info.access_keys) {
+    access_ids.push_back(id.c_str());
   }
-
-  // Write user data
-  d_sg_list_t wsgl;
-  d_iov_t iov;
-  d_iov_set(&iov, bl.c_str(), bl.length());
-  wsgl.sg_nr = 1;
-  wsgl.sg_iovs = &iov;
-  ret = dfs_write(store->meta_dfs, user_obj, &wsgl, 0, nullptr);
-  if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: failed to write to user file, name=" << name
-                      << " ret=" << ret << dendl;
-    return ret;
-  }
-
-  // Close file
-  ret = dfs_release(user_obj);
-  if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: dfs_release failed, user name=" << name
-                      << " ret=" << ret << dendl;
-    return ret;
-  }
-
-  if (ret == 0) {
-    objv_tracker.read_version = obj_ver;
-    objv_tracker.write_version = obj_ver;
-  }
-
-  fs::path user_path = make_path({"..", USERS_DIR, name});
-
-  // Store access key in access key index
-  if (!info.access_keys.empty()) {
-    for (auto const& [id, key] : info.access_keys) {
-      ret = dfs_open(store->meta_dfs, store->dirs[ACCESS_KEYS_DIR], id.c_str(),
-                     S_IFLNK | mode, O_RDWR | O_CREAT | O_TRUNC, 0, 0,
-                     user_path.c_str(), &user_obj);
-      if (ret != 0) {
-        ldpp_dout(dpp, 0) << "ERROR: failed to create user file, id=" << id
-                          << " ret=" << ret << dendl;
-        return ret;
-      }
-
-      ret = dfs_release(user_obj);
-      if (ret != 0) {
-        ldpp_dout(dpp, 0) << "ERROR: dfs_release failed, user file, id=" << id
-                          << " ret=" << ret << dendl;
-        return ret;
-      }
-    }
-  }
-
-  // Store email in email index
-  if (!info.user_email.empty()) {
-    string& email = info.user_email;
-    ret = dfs_open(store->meta_dfs, store->dirs[EMAILS_DIR], email.c_str(),
-                   S_IFLNK | mode, O_RDWR | O_CREAT | O_TRUNC, 0, 0,
-                   user_path.c_str(), &user_obj);
-    if (ret != 0) {
-      ldpp_dout(dpp, 0) << "ERROR: failed to create user file, email=" << email
-                        << " ret=" << ret << dendl;
-      return ret;
-    }
-
-    ret = dfs_release(user_obj);
-    if (ret != 0) {
-      ldpp_dout(dpp, 0) << "ERROR: dfs_release failed, user file, email="
-                        << email << " ret=" << ret << dendl;
-      return ret;
-    }
-  }
-
-  return 0;
+  return std::unique_ptr<struct ds3_user_info>(
+      new ds3_user_info{.name = info.user_id.to_str().c_str(),
+                        .email = info.user_email.c_str(),
+                        .access_ids = access_ids.data(),
+                        .access_ids_nr = access_ids.size(),
+                        .encoded = bl.c_str(),
+                        .encoded_length = bl.length()});
 }
 
 int DaosUser::remove_user(const DoutPrefixProvider* dpp, optional_yield y) {
@@ -406,68 +343,18 @@ int DaosUser::remove_user(const DoutPrefixProvider* dpp, optional_yield y) {
   // TODO: the expectation is that the object version needs to be passed in as a
   // method arg see int DB::remove_user(const DoutPrefixProvider *dpp,
   // RGWUserInfo& uinfo, RGWObjVersionTracker *pobjv)
-  ldpp_dout(dpp, 20) << "DEBUG: remove_user, name=" << name << dendl;
+  obj_version obj_ver;
+  bufferlist bl;
+  std::unique_ptr<struct ds3_user_info> user_info =
+      get_encoded_info(bl, obj_ver);
 
-  // Open user file
-  dfs_obj_t* user_obj;
-  mode_t mode = DEFFILEMODE;
-  int ret = dfs_open(store->meta_dfs, store->dirs[USERS_DIR], name.c_str(),
-                     S_IFREG | mode, O_RDWR, 0, 0, nullptr, &user_obj);
+  // Remove user
+  int ret = ds3_user_remove(name.c_str(), user_info.get(), store->ds3, nullptr);
   if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: failed to open user file, name=" << name
+    ldpp_dout(dpp, 0) << "Error: ds3_user_set failed, name=" << name
                       << " ret=" << ret << dendl;
-    return ret;
   }
-
-  // make sure each access_key is removed
-  for (auto it : info.access_keys) {
-    if (dfs_access(store->meta_dfs, store->dirs[ACCESS_KEYS_DIR],
-                   it.first.c_str(), W_OK) == 0) {
-      ret = dfs_remove(store->meta_dfs, store->dirs[ACCESS_KEYS_DIR],
-                       it.first.c_str(), true, nullptr);
-      if (ret != 0) {
-        ldpp_dout(dpp, 0) << "ERROR: failed to remove access_keys file="
-                          << it.first.c_str() << " ret=" << ret << dendl;
-        return ret;
-      }
-    }
-  }
-
-  // email should be removed if it exists
-  const string& email = info.user_email;
-  if (email.length() > 0) {
-    if (dfs_access(store->meta_dfs, store->dirs[EMAILS_DIR], email.c_str(),
-                   W_OK) == 0) {
-      ret = dfs_remove(store->meta_dfs, store->dirs[EMAILS_DIR], email.c_str(),
-                       true, nullptr);
-      if (ret != 0) {
-        ldpp_dout(dpp, 0) << "ERROR: failed to remove email file, email="
-                          << email << " ret=" << ret << dendl;
-        return ret;
-      }
-    }
-  }
-
-  // and remove the user object
-  if (dfs_access(store->meta_dfs, store->dirs[USERS_DIR], name.c_str(), W_OK) ==
-      0) {
-    ret = dfs_remove(store->meta_dfs, store->dirs[USERS_DIR], name.c_str(),
-                     true, nullptr);
-    if (ret != 0) {
-      ldpp_dout(dpp, 0) << "ERROR: failed to remove user file, name=" << name
-                        << " ret=" << ret << dendl;
-      return ret;
-    }
-  }
-
-  // Close file
-  ret = dfs_release(user_obj);
-  if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: dfs_release failed, user name=" << name
-                      << " ret=" << ret << dendl;
-    return ret;
-  }
-  return 0;
+  return ret;
 }
 
 DaosBucket::~DaosBucket() { close(nullptr); }
@@ -476,103 +363,33 @@ int DaosBucket::open(const DoutPrefixProvider* dpp) {
   ldpp_dout(dpp, 20) << "DEBUG: open, name=" << info.bucket.name.c_str()
                      << dendl;
   // Idempotent
-  if (_is_open) {
+  if (is_open()) {
     return 0;
   }
 
-  int ret;
-  daos_cont_info_t cont_info;
-  // TODO: We need to cache open container handles
-  ret = daos_cont_open(store->poh, info.bucket.name.c_str(), DAOS_COO_RW, &coh,
-                       &cont_info, nullptr);
-  ldpp_dout(dpp, 20) << "DEBUG: daos_cont_open, name=" << info.bucket.name
+  int ret = ds3_bucket_open(get_name().c_str(), &ds3b, store->ds3, nullptr);
+  ldpp_dout(dpp, 20) << "DEBUG: ds3_bucket_open, name=" << get_name()
                      << ", ret=" << ret << dendl;
 
-  if (ret != 0) {
-    return -ENOENT;
-  }
-
-  uuid_copy(cont_uuid, cont_info.ci_uuid);
-
-  ret = dfs_mount(store->poh, coh, O_RDWR, &dfs);
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_mount ret=" << ret << dendl;
-
-  if (ret != 0) {
-    daos_cont_close(coh, nullptr);
-    return -ENOENT;
-  }
-  _is_open = true;
-  return 0;
+  return ret;
 }
 
 int DaosBucket::close(const DoutPrefixProvider* dpp) {
   ldpp_dout(dpp, 20) << "DEBUG: close" << dendl;
   // Idempotent
-  if (!_is_open) {
+  if (!is_open()) {
     return 0;
   }
 
-  int ret = 0;
-  ret = dfs_umount(dfs);
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_umount ret=" << ret << dendl;
+  int ret = ds3_bucket_close(ds3b, nullptr);
+  ds3b = nullptr;
+  ldpp_dout(dpp, 20) << "DEBUG: ds3_bucket_close ret=" << ret << dendl;
 
-  if (ret < 0) {
-    return ret;
-  }
-
-  ret = daos_cont_close(coh, nullptr);
-  ldpp_dout(dpp, 20) << "DEBUG: daos_cont_close ret=" << ret << dendl;
-  if (ret < 0) {
-    return ret;
-  }
-  _is_open = false;
-  return 0;
+  return ret;
 }
 
-std::unique_ptr<DaosObject> DaosBucket::get_part_object(std::string upload_id,
-                                                        uint64_t part_num) {
-  // XXX: create a util for path build
-  fs::path part_path = make_path(
-      {MULTIPART_DIR, get_name(), upload_id, std::to_string(part_num)});
-  rgw_obj_key k;
-  k.name = part_path.string();
-  return std::make_unique<DaosObject>(store, k, store->get_metadata_bucket());
-}
-
-int DaosBucket::remove_bucket(const DoutPrefixProvider* dpp,
-                              bool delete_children, bool forward_to_master,
-                              req_info* req_info, optional_yield y) {
-  // TODO implement
-  ldpp_dout(dpp, 20) << "DEBUG: remove_bucket, delete_children="
-                     << delete_children
-                     << " forward_to_master=" << forward_to_master << dendl;
-
-  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
-}
-
-int DaosBucket::remove_bucket_bypass_gc(int concurrent_max,
-                                        bool keep_index_consistent,
-                                        optional_yield y,
-                                        const DoutPrefixProvider* dpp) {
-  // TODO implement
-  ldpp_dout(dpp, 20) << "DEBUG: remove_bucket_bypass_gc, concurrent_max="
-                     << concurrent_max
-                     << " keep_index_consistent=" << keep_index_consistent
-                     << dendl;
-  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
-}
-
-int DaosBucket::put_info(const DoutPrefixProvider* dpp, bool exclusive,
-                         ceph::real_time _mtime) {
-  ldpp_dout(dpp, 20) << "DEBUG: put_info(): bucket name=" << info.bucket.name
-                     << dendl;
-
-  int ret = open(dpp);
-  if (ret < 0) {
-    return ret;
-  }
-
-  bufferlist bl;
+std::unique_ptr<struct ds3_bucket_info> DaosBucket::get_encoded_info(
+    bufferlist& bl, ceph::real_time _mtime) {
   DaosBucketInfo dbinfo;
   dbinfo.info = info;
   dbinfo.bucket_attrs = attrs;
@@ -580,15 +397,58 @@ int DaosBucket::put_info(const DoutPrefixProvider* dpp, bool exclusive,
   dbinfo.bucket_version = bucket_version;
   dbinfo.encode(bl);
 
-  char const* const names[] = {RGW_BUCKET_RGW_INFO};
-  void const* const values[] = {bl.c_str()};
-  size_t const sizes[] = {bl.length()};
-  // TODO: separate attributes
-  ret = daos_cont_set_attr(coh, 1, names, values, sizes, nullptr);
-  if (ret < 0) {
-    ldpp_dout(dpp, 0) << "ERROR: daos_cont_set_attr failed: " << ret << dendl;
+  auto bucket_info = std::make_unique<struct ds3_bucket_info>();
+  bucket_info->encoded = bl.c_str();
+  bucket_info->encoded_length = bl.length();
+  std::strncpy(bucket_info->name, get_name().c_str(), sizeof(bucket_info->name));
+  return bucket_info;
+}
+
+int DaosBucket::remove_bucket(const DoutPrefixProvider* dpp,
+                              bool delete_children, bool forward_to_master,
+                              req_info* req_info, optional_yield y) {
+  ldpp_dout(dpp, 20) << "DEBUG: remove_bucket, delete_children="
+                    
+                     << delete_children
+                    
+                     << " forward_to_master=" << forward_to_master << dendl;
+
+  return ds3_bucket_destroy(get_name().c_str(), delete_children, store->ds3,
+                            nullptr);
+}
+
+int DaosBucket::remove_bucket_bypass_gc(int concurrent_max,
+                                        bool keep_index_consistent,
+                                        optional_yield y,
+                                        const DoutPrefixProvider* dpp) {
+  ldpp_dout(dpp, 20) << "DEBUG: remove_bucket_bypass_gc, concurrent_max="
+                    
+                     << concurrent_max
+                    
+                     << " keep_index_consistent=" << keep_index_consistent
+                    
+                     << dendl;
+  return ds3_bucket_destroy(get_name().c_str(), true, store->ds3, nullptr);
+}
+
+int DaosBucket::put_info(const DoutPrefixProvider* dpp, bool exclusive,
+                         ceph::real_time _mtime) {
+  ldpp_dout(dpp, 20) << "DEBUG: put_info(): bucket name=" << get_name()
+                     << dendl;
+
+  int ret = open(dpp);
+  if (ret != 0) {
+    return ret;
   }
-  ret = close(dpp);
+
+  bufferlist bl;
+  std::unique_ptr<struct ds3_bucket_info> bucket_info =
+      get_encoded_info(bl, ceph::real_time());
+
+  ret = ds3_bucket_set_info(bucket_info.get(), ds3b, nullptr);
+  if (ret != 0) {
+    ldpp_dout(dpp, 0) << "ERROR: ds3_bucket_set_info failed: " << ret << dendl;
+  }
   return ret;
 }
 
@@ -596,32 +456,23 @@ int DaosBucket::load_bucket(const DoutPrefixProvider* dpp, optional_yield y,
                             bool get_stats) {
   ldpp_dout(dpp, 20) << "DEBUG: load_bucket(): bucket name=" << get_name()
                      << dendl;
-
-  // Prevent attempting to load metadata bucket
-  if (get_name() == METADATA_BUCKET) {
-    ldpp_dout(dpp, 0) << "ERROR: Cannot load metadata bucket" << dendl;
-    return -ENOENT;
-  }
-
   int ret = open(dpp);
-  if (ret < 0) {
+  if (ret != 0) {
     return ret;
   }
 
   bufferlist bl;
   DaosBucketInfo dbinfo;
-  vector<uint8_t> value(DFS_MAX_XATTR_LEN);
-  char const* const names[] = {RGW_BUCKET_RGW_INFO};
-  void* const values[] = {value.data()};
-  size_t sizes[] = {value.size()};
+  uint64_t size = DS3_MAX_ENCODED_LEN;
+  struct ds3_bucket_info bucket_info = {.encoded = bl.append_hole(size).c_str(),
+                                        .encoded_length = size};
 
-  ret = daos_cont_get_attr(coh, 1, names, values, sizes, nullptr);
-  if (ret < 0) {
-    ldpp_dout(dpp, 0) << "ERROR: daos_cont_get_attr failed: " << ret << dendl;
+  ret = ds3_bucket_get_info(&bucket_info, ds3b, nullptr);
+  if (ret != 0) {
+    ldpp_dout(dpp, 0) << "ERROR: ds3_bucket_get_info failed: " << ret << dendl;
     return ret;
   }
 
-  bl.append(reinterpret_cast<char*>(value.data()), sizes[0]);
   auto iter = bl.cbegin();
   dbinfo.decode(iter);
   info = dbinfo.info;
@@ -633,8 +484,6 @@ int DaosBucket::load_bucket(const DoutPrefixProvider* dpp, optional_yield y,
   attrs = dbinfo.bucket_attrs;
   mtime = dbinfo.mtime;
   bucket_version = dbinfo.bucket_version;
-
-  ret = close(dpp);
   return ret;
 }
 
@@ -788,133 +637,69 @@ bool compare_multipart_upload(std::unique_ptr<MultipartUpload>& upload1,
 
 int DaosBucket::list(const DoutPrefixProvider* dpp, ListParams& params, int max,
                      ListResults& results, optional_yield y) {
-  ldpp_dout(dpp, 20) << "DEBUG: list bucket=" << info.bucket.name
-                     << " max=" << max << " params=" << params << dendl;
-
-  // TODO: support the case when delim is not /
-  if (params.delim != "/") {
-    return -EINVAL;
-  }
-
+  ldpp_dout(dpp, 20) << "DEBUG: list bucket=" << get_name() << " max=" << max
+                     << " params=" << params << dendl;
   // End
   if (max == 0) {
     return 0;
   }
 
   int ret = open(dpp);
-  if (ret < 0) {
-    return ret;
-  }
-
-  size_t file_start = params.prefix.rfind(params.delim);
-  string path = "";
-  string prefix_rest = params.prefix;
-
-  if (file_start != std::string::npos) {
-    path = params.prefix.substr(0, file_start);
-    prefix_rest = params.prefix.substr(file_start + params.delim.length());
-  }
-
-  dfs_obj_t* dir_obj;
-
-  string lookup_path = "/" + path;
-  ret =
-      dfs_lookup(dfs, lookup_path.c_str(), O_RDWR, &dir_obj, nullptr, nullptr);
-
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup lookup_path=" << lookup_path
-                     << " ret=" << ret << dendl;
   if (ret != 0) {
     return ret;
   }
 
-  vector<struct dirent> dirents(max);
-  // TODO handle bigger directories
-  // TODO handle ordering
-  daos_anchor_t anchor;
-  daos_anchor_init(&anchor, 0);
+  // Init needed structures
+  vector<struct ds3_object_info> object_infos(max);
+  uint32_t nobj = object_infos.size();
+  vector<vector<uint8_t>> values(nobj, vector<uint8_t>(DS3_MAX_ENCODED_LEN));
+  for (uint32_t i = 0; i < nobj; i++) {
+    object_infos[i].encoded = values[i].data();
+    object_infos[i].encoded_length = values[i].size();
+  }
 
-  uint32_t nr = dirents.size();
-  ret = dfs_readdir(dfs, dir_obj, &anchor, &nr, dirents.data());
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_readdir path=" << path << " nr=" << nr
-                     << " ret=" << ret << dendl;
+  vector<struct ds3_common_prefix_info> common_prefixes(max);
+  uint32_t ncp = common_prefixes.size();
+
+  char daos_marker[DS3_MAX_KEY_BUFF];
+  std::strncpy(daos_marker, params.marker.to_str().c_str(), sizeof(daos_marker));
+
+  ret = ds3_bucket_list_obj(&nobj, object_infos.data(), &ncp,
+                            common_prefixes.data(), params.prefix.c_str(),
+                            params.delim.c_str(), daos_marker,
+                            params.list_versions, &results.is_truncated, ds3b);
+
   if (ret != 0) {
-    dfs_release(dir_obj);
+    ldpp_dout(dpp, 0) << "ERROR: ds3_bucket_list_obj failed, name="
+                      << get_name() << ", ret=" << ret << dendl;
     return ret;
   }
 
-  if (!daos_anchor_is_eof(&anchor)) {
-    results.is_truncated = true;
+  object_infos.resize(nobj);
+  values.resize(nobj);
+  common_prefixes.resize(ncp);
+
+  // Fill common prefixes
+  for (auto const& cp : common_prefixes) {
+    results.common_prefixes[cp.prefix] = true;
   }
 
-  for (uint32_t i = 0; i < nr; i++) {
-    const auto& name = dirents[i].d_name;
-
-    // Skip entries that do not start with prefix_rest
-    // TODO handle how this affects max
-    if (string(name).compare(0, prefix_rest.length(), prefix_rest) != 0) {
-      continue;
+  // Decode objs
+  for (auto const& obj : object_infos) {
+    bufferlist bl;
+    rgw_bucket_dir_entry ent;
+    bl.append(reinterpret_cast<char*>(obj.encoded), obj.encoded_length);
+    auto iter = bl.cbegin();
+    ent.decode(iter);
+    if (params.list_versions || ent.is_visible()) {
+      results.objs.emplace_back(std::move(ent));
     }
-
-    dfs_obj_t* entry_obj;
-    mode_t mode;
-    ret = dfs_lookup_rel(dfs, dir_obj, name, O_RDWR | O_NOFOLLOW, &entry_obj,
-                         &mode, nullptr);
-    ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel i=" << i << " entry=" << name
-                       << " ret=" << ret << dendl;
-    if (ret != 0) {
-      dfs_release(dir_obj);
-      return ret;
-    }
-
-    if (S_ISDIR(mode)) {
-      // The entry is a directory, add to common prefix
-      string key = path.empty() ? "" : path + params.delim;
-      key += name + params.delim;
-      results.common_prefixes[key] = true;
-
-    } else if (S_ISREG(mode)) {
-      // The entry is a regular file, read the xattr and add to objs
-      vector<uint8_t> value(DFS_MAX_XATTR_LEN);
-      size_t size = value.size();
-      ret = dfs_getxattr(dfs, entry_obj, RGW_DIR_ENTRY_XATTR, value.data(),
-                         &size);
-      ldpp_dout(dpp, 20) << "DEBUG: dfs_getxattr entry=" << name
-                         << " xattr=" << RGW_DIR_ENTRY_XATTR << dendl;
-      // Skip if file has no dirent
-      if (ret != 0) {
-        ldpp_dout(dpp, 0) << "ERROR: no dirent, skipping entry=" << name
-                          << dendl;
-        dfs_release(entry_obj);
-        continue;
-      }
-
-      bufferlist bl;
-      rgw_bucket_dir_entry ent;
-      bl.append(reinterpret_cast<char*>(value.data()), size);
-      auto iter = bl.cbegin();
-      ent.decode(iter);
-      if (params.list_versions || ent.is_visible()) {
-        results.objs.emplace_back(std::move(ent));
-      }
-    } else {
-      // Skip other types
-      ldpp_dout(dpp, 20) << "DEBUG: skipping entry=" << name << dendl;
-    }
-
-    // Close handles
-    ret = dfs_release(entry_obj);
-    ldpp_dout(dpp, 20) << "DEBUG: dfs_release entry_obj ret=" << ret << dendl;
   }
 
   if (!params.allow_unordered) {
     std::sort(results.objs.begin(), results.objs.end(),
               compare_rgw_bucket_dir_entry);
   }
-
-  ret = dfs_release(dir_obj);
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_release dir_obj ret=" << ret << dendl;
-
-  ret = close(dpp);
 
   return ret;
 }
@@ -925,115 +710,57 @@ int DaosBucket::list_multiparts(
     vector<std::unique_ptr<MultipartUpload>>& uploads,
     map<string, bool>* common_prefixes, bool* is_truncated) {
   ldpp_dout(dpp, 20) << "DEBUG: list_multiparts" << dendl;
-  // TODO handle markers
-  // TODO: handle more than max
-
   // End of uploading
   if (max_uploads == 0) {
+    *is_truncated = false;
     return 0;
   }
 
-  int ret = open(dpp);
-  if (ret < 0) {
-    return ret;
+  // Init needed structures
+  vector<struct ds3_multipart_upload_info> multipart_upload_infos(max_uploads);
+  uint32_t nmp = multipart_upload_infos.size();
+  vector<vector<uint8_t>> values(nmp, vector<uint8_t>(DS3_MAX_ENCODED_LEN));
+  for (uint32_t i = 0; i < nmp; i++) {
+    multipart_upload_infos[i].encoded = values[i].data();
+    multipart_upload_infos[i].encoded_length = values[i].size();
   }
 
-  dfs_obj_t* multipart_dir;
-  ret = dfs_lookup_rel(store->meta_dfs, store->dirs[MULTIPART_DIR],
-                       get_name().c_str(), O_RDWR, &multipart_dir, nullptr,
-                       nullptr);
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel bucket=" << get_name()
-                     << " ret=" << ret << dendl;
-  if (ret != 0) {
-    dfs_release(multipart_dir);
-    return ret;
+  vector<struct ds3_common_prefix_info> cps(max_uploads);
+  uint32_t ncp = cps.size();
+
+  char daos_marker[DS3_MAX_KEY_BUFF];
+  std::strncpy(daos_marker, marker.c_str(), sizeof(daos_marker));
+
+  int ret = ds3_bucket_list_multipart(
+      get_name().c_str(), &nmp, multipart_upload_infos.data(), &ncp, cps.data(),
+      prefix.c_str(), delim.c_str(), daos_marker, is_truncated, store->ds3);
+
+  multipart_upload_infos.resize(nmp);
+  values.resize(nmp);
+  cps.resize(ncp);
+
+  // Fill common prefixes
+  for (auto const& cp : cps) {
+    (*common_prefixes)[cp.prefix] = true;
   }
 
-  vector<struct dirent> dirents(max_uploads);
-  daos_anchor_t anchor;
-  daos_anchor_init(&anchor, 0);
-
-  uint32_t nr = dirents.size();
-  ret =
-      dfs_readdir(store->meta_dfs, multipart_dir, &anchor, &nr, dirents.data());
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_readdir bucket=" << get_name()
-                     << " nr=" << nr << " ret=" << ret << dendl;
-  if (ret != 0) {
-    return ret;
-  }
-
-  if (is_truncated && !daos_anchor_is_eof(&anchor)) {
-    *is_truncated = true;
-  }
-
-  for (uint32_t i = 0; i < nr; i++) {
-    const auto& upload_id = dirents[i].d_name;
-
-    // Open upload dir
-    dfs_obj_t* upload_dir;
-    ret = dfs_lookup_rel(store->meta_dfs, multipart_dir, upload_id, O_RDWR,
-                         &upload_dir, nullptr, nullptr);
-    ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel i=" << i
-                       << " upload_id=" << upload_id << " ret=" << ret << dendl;
-    if (ret != 0) {
-      return ret;
-    }
-
-    // Read the xattr
-    vector<uint8_t> value(DFS_MAX_XATTR_LEN);
-    size_t size = value.size();
-    ret = dfs_getxattr(store->meta_dfs, upload_dir, RGW_DIR_ENTRY_XATTR,
-                       value.data(), &size);
-    ldpp_dout(dpp, 20) << "DEBUG: dfs_getxattr upload_id=" << upload_id
-                       << " xattr=" << RGW_DIR_ENTRY_XATTR << dendl;
-
-    // Skip if file has no dirent
-    if (ret != 0) {
-      ldpp_dout(dpp, 0) << "ERROR: no dirent, skipping upload_id=" << upload_id
-                        << dendl;
-      ret = dfs_release(upload_dir);
-      continue;
-    }
-
+  for (auto const& mp : multipart_upload_infos) {
     // Decode the xattr
     bufferlist bl;
     rgw_bucket_dir_entry ent;
-    bl.append(reinterpret_cast<char*>(value.data()), size);
+    bl.append(reinterpret_cast<char*>(mp.encoded), mp.encoded_length);
     auto iter = bl.cbegin();
     ent.decode(iter);
     string name = ent.key.name;
 
-    // Only add entries that start with prefix
-    // TODO handle how this affects max
-    if (name.compare(0, prefix.length(), prefix) == 0) {
-      ACLOwner owner(rgw_user(ent.meta.owner));
-      owner.set_name(ent.meta.owner_display_name);
-      uploads.push_back(this->get_multipart_upload(
-          name, upload_id, std::move(owner), ent.meta.mtime));
-
-      // Add common prefixes
-      if (common_prefixes && !delim.empty()) {
-        // Name key has delim after the prefix
-        const size_t delim_pos = name.find(delim, prefix.size());
-        if (delim_pos != std::string::npos) {
-          string prefix_key = name.substr(0, delim_pos + delim.length());
-          (*common_prefixes)[prefix_key] = true;
-        }
-      }
-    }
-
-    // Close handles
-    ret = dfs_release(upload_dir);
-    ldpp_dout(dpp, 20) << "DEBUG: dfs_release upload_dir ret=" << ret << dendl;
+    ACLOwner owner(rgw_user(ent.meta.owner));
+    owner.set_name(ent.meta.owner_display_name);
+    uploads.push_back(this->get_multipart_upload(
+        name, mp.upload_id, std::move(owner), ent.meta.mtime));
   }
 
   // Sort uploads
   std::sort(uploads.begin(), uploads.end(), compare_multipart_upload);
-
-  ret = dfs_release(multipart_dir);
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_release multipart_dir ret=" << ret << dendl;
-
-  ret = close(dpp);
 
   return ret;
 }
@@ -1047,38 +774,13 @@ void DaosStore::finalize(void) {
   ldout(cctx, 20) << "DEBUG: finalize" << dendl;
   int ret;
 
-  for (auto const& [dir_name, dir_obj] : dirs) {
-    ret = dfs_release(dir_obj);
-    ldout(cctx, 20) << "DEBUG: dfs_release name=" << dir_name << ", ret=" << ret
-                    << dendl;
+  ret = ds3_disconnect(ds3, nullptr);
+  if (ret != 0) {
+    ldout(cctx, 0) << "ERROR: ds3_disconnect() failed: " << ret << dendl;
   }
+  ds3 = nullptr;
 
-  if (meta_dfs != nullptr) {
-    ret = dfs_umount(meta_dfs);
-    if (ret < 0) {
-      ldout(cctx, 0) << "ERROR: dfs_umount() failed: " << ret << dendl;
-    }
-    meta_dfs = nullptr;
-  }
-
-  if (daos_handle_is_valid(meta_coh)) {
-    ret = daos_cont_close(meta_coh, nullptr);
-    if (ret < 0) {
-      ldout(cctx, 0) << "ERROR: daos_cont_close() failed: " << ret << dendl;
-    }
-    meta_coh = DAOS_HDL_INVAL;
-  }
-
-  if (daos_handle_is_valid(poh)) {
-    ret = daos_pool_disconnect(poh, nullptr);
-    if (ret != 0) {
-      ldout(cctx, 0) << "ERROR: daos_pool_disconnect() failed: " << ret
-                     << dendl;
-    }
-    poh = DAOS_HDL_INVAL;
-  }
-
-  ret = daos_fini();
+  ret = ds3_fini();
   if (ret != 0) {
     ldout(cctx, 0) << "ERROR: daos_fini() failed: " << ret << dendl;
   }
@@ -1086,11 +788,11 @@ void DaosStore::finalize(void) {
 
 int DaosStore::initialize(CephContext* cct, const DoutPrefixProvider* dpp) {
   ldpp_dout(dpp, 20) << "DEBUG: initialize" << dendl;
-  int ret = daos_init();
+  int ret = ds3_init();
 
-  // DAOS init failed, allow the case where init is already done
+  // DS3 init failed, allow the case where init is already done
   if (ret != 0 && ret != DER_ALREADY) {
-    ldout(cct, 0) << "ERROR: daos_init() failed: " << ret << dendl;
+    ldout(cct, 0) << "ERROR: ds3_init() failed: " << ret << dendl;
     return ret;
   }
 
@@ -1098,77 +800,14 @@ int DaosStore::initialize(CephContext* cct, const DoutPrefixProvider* dpp) {
   // cct somehow?
   const auto& daos_pool = g_conf().get_val<std::string>("daos_pool");
   ldout(cct, 20) << "INFO: daos pool: " << daos_pool << dendl;
-  daos_pool_info_t pool_info = {};
-  ret = daos_pool_connect(daos_pool.c_str(), nullptr, DAOS_PC_RW, &poh,
-                          &pool_info, nullptr);
+
+  ret = ds3_connect(daos_pool.c_str(), nullptr, &ds3, nullptr);
 
   if (ret != 0) {
-    ldout(cct, 0) << "ERROR: daos_pool_connect() failed: " << ret << dendl;
-    return ret;
+    ldout(cct, 0) << "ERROR: ds3_connect() failed: " << ret << dendl;
   }
 
-  uuid_copy(pool, pool_info.pi_uuid);
-
-  // Connect to metadata container
-  // TODO use dfs_connect
-  // Attempt to create
-  ret = dfs_cont_create_with_label(poh, METADATA_BUCKET, nullptr, nullptr,
-                                   &meta_coh, &meta_dfs);
-
-  if (ret == 0) {
-    // Create inner directories
-    mode_t mode = DEFFILEMODE;
-    for (auto& dir : METADATA_DIRS) {
-      ret = dfs_mkdir(meta_dfs, nullptr, dir.c_str(), mode, 0);
-      ldout(cct, 20) << "DEBUG: dfs_mkdir dir=" << dir << " ret=" << ret
-                     << dendl;
-      if (ret != 0 && ret != EEXIST) {
-        ldout(cct, 0) << "ERROR: dfs_mkdir failed! ret=" << ret << dendl;
-        return ret;
-      }
-    }
-  } else if (ret == EEXIST) {
-    // Metadata container exists, mount it
-    ret = daos_cont_open(poh, METADATA_BUCKET, DAOS_COO_RW, &meta_coh, nullptr,
-                         nullptr);
-
-    if (ret != 0) {
-      ldout(cct, 0) << "ERROR: daos_cont_open failed! ret=" << ret << dendl;
-      return ret;
-    }
-
-    ret = dfs_mount(poh, meta_coh, O_RDWR, &meta_dfs);
-
-    if (ret != 0) {
-      ldout(cct, 0) << "ERROR: dfs_mount failed! ret=" << ret << dendl;
-      return ret;
-    }
-
-  } else {
-    ldout(cct, 0) << "ERROR: dfs_cont_create_with_label failed! ret=" << ret
-                  << dendl;
-    return ret;
-  }
-
-  // XXX: if we do this, do we need to keep everything else open?
-  rgw_bucket b;
-  b.name = METADATA_BUCKET;
-  metadata_bucket = std::make_unique<DaosBucket>(this, b);
-
-  // Open metadata dirs
-  for (auto& dir : METADATA_DIRS) {
-    dirs[dir] = nullptr;
-    ret = dfs_lookup_rel(meta_dfs, nullptr, dir.c_str(), O_RDWR, &dirs[dir],
-                         nullptr, nullptr);
-    ldout(cct, 20) << "DEBUG: dfs_lookup_rel dir=" << dir << " ret=" << ret
-                   << dendl;
-    if (ret != 0) {
-      ldout(cct, 0) << "ERROR: dfs_lookup_rel failed! ret=" << ret << dendl;
-      return ret;
-    }
-  }
-
-  return 0;
+  return ret;
 }
 
 const std::string& DaosZoneGroup::get_endpoint() const {
@@ -1314,9 +953,6 @@ int DaosObject::get_obj_attrs(optional_yield y, const DoutPrefixProvider* dpp,
   // Get object's metadata (those stored in rgw_bucket_dir_entry)
   rgw_bucket_dir_entry ent;
   int ret = get_dir_entry_attrs(dpp, &ent, &attrs);
-  if (ret != 0) {
-    return ret;
-  }
   return ret;
 }
 
@@ -1452,7 +1088,7 @@ int DaosObject::DaosReadOp::prepare(optional_yield y,
   if (source->get_bucket()->versioned() && !source->have_instance()) {
     // If the bucket is versioned and no version is specified, get the latest
     // version
-    source->set_instance(LATEST_INSTANCE);
+    source->set_instance(DS3_LATEST_INSTANCE);
   }
 
   rgw_bucket_dir_entry ent;
@@ -1478,8 +1114,22 @@ int DaosObject::DaosReadOp::prepare(optional_yield y,
 int DaosObject::DaosReadOp::read(int64_t off, int64_t end, bufferlist& bl,
                                  optional_yield y,
                                  const DoutPrefixProvider* dpp) {
-  ldpp_dout(dpp, 20) << "DaosReadOp::read(): sync read." << dendl;
-  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
+  ldpp_dout(dpp, 20) << __func__ << ": off=" << off << " end=" << end << dendl;
+  int ret = source->lookup(dpp);
+  if (ret != 0) {
+    return ret;
+  }
+
+  // Calculate size, end is inclusive
+  uint64_t size = end - off + 1;
+
+  // Read
+  ret = source->read(dpp, bl, off, size);
+  if (ret != 0) {
+    return ret;
+  }
+
+  return ret;
 }
 
 // RGWGetObj::execute() calls ReadOp::iterate() to read object from 'off' to
@@ -1555,9 +1205,13 @@ int DaosObject::DaosDeleteOp::delete_obj(const DoutPrefixProvider* dpp,
   ldpp_dout(dpp, 20) << "DaosDeleteOp::delete_obj "
                      << source->get_key().to_str() << " from "
                      << source->get_bucket()->get_name() << dendl;
+  if (source->get_instance() == "null") {
+    source->clear_instance();
+  }
+
   // Open bucket
   int ret = 0;
-  std::string path = source->get_key().to_str();
+  std::string key = source->get_key().to_str();
   DaosBucket* daos_bucket = source->get_daos_bucket();
   ret = daos_bucket->open(dpp);
   if (ret != 0) {
@@ -1565,34 +1219,13 @@ int DaosObject::DaosDeleteOp::delete_obj(const DoutPrefixProvider* dpp,
   }
 
   // Remove the daos object
-  dfs_obj_t* parent = nullptr;
-  std::string file_name = path;
-
-  size_t file_start = path.rfind("/");
-
-  if (file_start != std::string::npos) {
-    // Open parent dir
-    std::string parent_path = "/" + path.substr(0, file_start);
-    file_name = path.substr(file_start + 1);
-    ret = dfs_lookup(daos_bucket->dfs, parent_path.c_str(), O_RDWR, &parent,
-                     nullptr, nullptr);
-    ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup parent_path=" << parent_path
-                       << " ret=" << ret << dendl;
-    if (ret != 0) {
-      return ret;
-    }
-  }
-
-  ret = dfs_remove(daos_bucket->dfs, parent, file_name.c_str(), false, nullptr);
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_remove file_name=" << file_name
-                     << " ret=" << ret << dendl;
+  ret = ds3_obj_destroy(key.c_str(), daos_bucket->ds3b);
+  ldpp_dout(dpp, 20) << "DEBUG: ds3_obj_destroy key=" << key << " ret=" << ret
+                     << dendl;
 
   // result.delete_marker = parent_op.result.delete_marker;
   // result.version_id = parent_op.result.version_id;
 
-  // Finalize
-  dfs_release(parent);
-  daos_bucket->close(dpp);
   return ret;
 }
 
@@ -1638,10 +1271,14 @@ int DaosObject::swift_versioning_copy(const DoutPrefixProvider* dpp,
   return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
-int DaosObject::lookup(const DoutPrefixProvider* dpp, mode_t* mode) {
+int DaosObject::lookup(const DoutPrefixProvider* dpp) {
   ldpp_dout(dpp, 20) << "DEBUG: lookup" << dendl;
   if (is_open()) {
-    return DAOS_NOT_IMPLEMENTED_LOG(dpp);
+    return 0;
+  }
+
+  if (get_instance() == "null") {
+    clear_instance();
   }
 
   int ret = 0;
@@ -1651,35 +1288,13 @@ int DaosObject::lookup(const DoutPrefixProvider* dpp, mode_t* mode) {
     return ret;
   }
 
-  // TODO: cache open file handles
-  std::string path = get_key().to_str();
-  if (path.front() != '/') path = "/" + path;
-  ret = dfs_lookup(daos_bucket->dfs, path.c_str(), O_RDWR, &dfs_obj, mode,
-                   nullptr);
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup path=" << path << " ret=" << ret
-                     << dendl;
+  ret = ds3_obj_open(get_key().to_str().c_str(), &ds3o, daos_bucket->ds3b);
 
-  if (ret != 0) {
-    size_t suffix_start = path.rfind(LATEST_INSTANCE_SUFFIX);
-    if (suffix_start != std::string::npos) {
-      // If we are trying to access the latest version, try accessing key with
-      // null instance since it is likely that the bucket did not have
-      // versioning before
-      path = path.substr(0, suffix_start);
-      ret = dfs_lookup(daos_bucket->dfs, path.c_str(), O_RDWR, &dfs_obj, mode,
-                       nullptr);
-      ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup path=" << path << " ret=" << ret
-                         << dendl;
-    }
-  }
-
-  if (ret == 0) {
-    _is_open = true;
-  } else if (ret == ENOENT) {
+  if (ret == -ENOENT) {
     ldpp_dout(dpp, 20) << "DEBUG: daos object (" << get_bucket()->get_name()
                        << ", " << get_key().to_str()
                        << ") does not exist: ret=" << ret << dendl;
-  } else {
+  } else if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to open daos object ("
                       << get_bucket()->get_name() << ", " << get_key().to_str()
                       << "): ret=" << ret << dendl;
@@ -1687,28 +1302,14 @@ int DaosObject::lookup(const DoutPrefixProvider* dpp, mode_t* mode) {
   return ret;
 }
 
-int DaosObject::create(const DoutPrefixProvider* dpp, const bool create_parents,
-                       const string link_to) {
+int DaosObject::create(const DoutPrefixProvider* dpp) {
   ldpp_dout(dpp, 20) << "DEBUG: create" << dendl;
   if (is_open()) {
     return 0;
   }
 
-  // TODO: cache open file handles
-  dfs_obj_t* parent = nullptr;
-  fs::path path = get_key().to_str();
-  fs::path file_name = path.filename();
-  fs::path parent_path = path.parent_path();
-  mode_t mode = DEFFILEMODE;
-
-  // Disallow creating a file with the instance = latest, since it is supposed
-  // to be a link, not a writeable file
-  size_t suffix_pos = path.string().rfind(LATEST_INSTANCE_SUFFIX);
-  if (suffix_pos != std::string::npos && link_to.empty()) {
-    ldpp_dout(dpp, 0) << "ERROR: creating an object that ends with "
-                      << LATEST_INSTANCE_SUFFIX
-                      << " is not allowed unless it is a link" << dendl;
-    return -EINVAL;
+  if (get_instance() == "null") {
+    clear_instance();
   }
 
   int ret = 0;
@@ -1718,68 +1319,10 @@ int DaosObject::create(const DoutPrefixProvider* dpp, const bool create_parents,
     return ret;
   }
 
-  if (!parent_path.empty()) {
-    // Recursively open parent directories
-    vector<string> dirs;
-    dfs_obj_t* dir_obj;
+  ret = ds3_obj_create(get_key().to_str().c_str(), &ds3o, daos_bucket->ds3b);
 
-    for (const auto& dir : parent_path) {
-      if (create_parents) {
-        // Create directory
-        ret = dfs_mkdir(daos_bucket->dfs, parent, dir.c_str(), mode, 0);
-        ldpp_dout(dpp, 20) << "DEBUG: dfs_mkdir dir=" << dir << " ret=" << ret
-                           << dendl;
-        if (ret != 0 && ret != EEXIST) {
-          if (parent) {
-            dfs_release(parent);
-          }
-          return ret;
-        }
-      }
-
-      // Open directory
-      ret = dfs_lookup_rel(daos_bucket->dfs, parent, dir.c_str(), O_RDWR,
-                           &dir_obj, nullptr, nullptr);
-      ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel dir=" << dir
-                         << " ret=" << ret << dendl;
-      if (parent) {
-        dfs_release(parent);
-      }
-      if (ret != 0) {
-        return ret;
-      }
-      parent = dir_obj;
-    }
-  }
-
-  // Create links if requested
-  const char* link_to_c = nullptr;
-  if (!link_to.empty()) {
-    mode |= S_IFLNK;
-    link_to_c = link_to.c_str();
-
-    // Remove any existing symlinks since O_TRUNC is not handled
-    ret =
-        dfs_remove(daos_bucket->dfs, parent, file_name.c_str(), false, nullptr);
-  } else {
-    mode |= S_IFREG;
-  }
-
-  // Finally create the file
-  ret = dfs_open(daos_bucket->dfs, parent, file_name.c_str(), mode,
-                 O_RDWR | O_CREAT | O_TRUNC, 0, 0, link_to_c, &dfs_obj);
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_open file_name=" << file_name
-                     << " ret=" << ret << dendl;
-  if (parent) {
-    ret = dfs_release(parent);
-    ldpp_dout(dpp, 20) << "DEBUG: dfs_release ret=" << ret << dendl;
-  }
-
-  if (ret == 0 || ret == EEXIST) {
-    ret = 0;
-    _is_open = true;
-  } else {
-    ldpp_dout(dpp, 0) << "ERROR: failed to open daos object ("
+  if (ret != 0) {
+    ldpp_dout(dpp, 0) << "ERROR: failed to create daos object ("
                       << get_bucket()->get_name() << ", " << get_key().to_str()
                       << "): ret=" << ret << dendl;
   }
@@ -1792,24 +1335,18 @@ int DaosObject::close(const DoutPrefixProvider* dpp) {
     return 0;
   }
 
-  int ret = dfs_release(dfs_obj);
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_release ret=" << ret << dendl;
-
-  if (ret == 0) {
-    _is_open = false;
-  }
+  int ret = ds3_obj_close(ds3o);
+  ds3o = nullptr;
+  ldpp_dout(dpp, 20) << "DEBUG: ds3_obj_close ret=" << ret << dendl;
   return ret;
 }
 
 int DaosObject::write(const DoutPrefixProvider* dpp, bufferlist&& data,
                       uint64_t offset) {
   ldpp_dout(dpp, 20) << "DEBUG: write" << dendl;
-  d_sg_list_t wsgl;
-  d_iov_t iov;
-  d_iov_set(&iov, data.c_str(), data.length());
-  wsgl.sg_nr = 1;
-  wsgl.sg_iovs = &iov;
-  int ret = dfs_write(get_daos_bucket()->dfs, dfs_obj, &wsgl, offset, nullptr);
+  uint64_t size = data.length();
+  int ret = ds3_obj_write(data.c_str(), offset, &size, get_daos_bucket()->ds3b,
+                          ds3o, nullptr);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to write into daos object ("
                       << get_bucket()->get_name() << ", " << get_key().to_str()
@@ -1821,15 +1358,8 @@ int DaosObject::write(const DoutPrefixProvider* dpp, bufferlist&& data,
 int DaosObject::read(const DoutPrefixProvider* dpp, bufferlist& data,
                      uint64_t offset, uint64_t& size) {
   ldpp_dout(dpp, 20) << "DEBUG: read" << dendl;
-  d_iov_t iov;
-  d_iov_set(&iov, data.append_hole(size).c_str(), size);
-
-  d_sg_list_t rsgl;
-  rsgl.sg_nr = 1;
-  rsgl.sg_iovs = &iov;
-  rsgl.sg_nr_out = 1;
-  int ret =
-      dfs_read(get_daos_bucket()->dfs, dfs_obj, &rsgl, offset, &size, nullptr);
+  int ret = ds3_obj_read(data.append_hole(size).c_str(), offset, &size,
+                         get_daos_bucket()->ds3b, ds3o, nullptr);
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "ERROR: failed to read from daos object ("
                       << get_bucket()->get_name() << ", " << get_key().to_str()
@@ -1840,20 +1370,33 @@ int DaosObject::read(const DoutPrefixProvider* dpp, bufferlist& data,
 
 // Get the object's dirent and attrs
 int DaosObject::get_dir_entry_attrs(const DoutPrefixProvider* dpp,
-                                    rgw_bucket_dir_entry* ent, Attrs* getattrs,
-                                    multipart_upload_info* upload_info) {
+                                    rgw_bucket_dir_entry* ent,
+                                    Attrs* getattrs) {
   ldpp_dout(dpp, 20) << "DEBUG: get_dir_entry_attrs" << dendl;
-  int ret = lookup(dpp);
-  if (ret != 0) {
-    return ret;
+  int ret = 0;
+  vector<uint8_t> value(DS3_MAX_ENCODED_LEN);
+  uint32_t size = value.size();
+
+  if (get_key().ns == RGW_OBJ_NS_MULTIPART) {
+    struct ds3_multipart_upload_info ui = {.encoded = value.data(),
+                                           .encoded_length = size};
+    ret = ds3_upload_get_info(&ui, bucket->get_name().c_str(),
+                              get_key().to_str().c_str(), store->ds3);
+  } else {
+    ret = lookup(dpp);
+    if (ret != 0) {
+      return ret;
+    }
+
+    auto object_info = std::make_unique<struct ds3_object_info>();
+    object_info->encoded = value.data();
+    object_info->encoded_length = size;
+    ret = ds3_obj_get_info(object_info.get(), get_daos_bucket()->ds3b, ds3o);
+    size = object_info->encoded_length;
   }
 
-  vector<uint8_t> value(DFS_MAX_XATTR_LEN);
-  size_t size = value.size();
-  ret = dfs_getxattr(get_daos_bucket()->dfs, dfs_obj, RGW_DIR_ENTRY_XATTR,
-                     value.data(), &size);
   if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: failed to get dirent of daos object ("
+    ldpp_dout(dpp, 0) << "ERROR: failed to get info of daos object ("
                       << get_bucket()->get_name() << ", " << get_key().to_str()
                       << "): ret=" << ret << dendl;
     return ret;
@@ -1865,27 +1408,20 @@ int DaosObject::get_dir_entry_attrs(const DoutPrefixProvider* dpp,
     ent = &dummy_ent;
   }
 
-  Attrs dummy_attrs;
-  if (!getattrs) {
-    // if ent is not passed, use a dummy ent
-    getattrs = &dummy_attrs;
-  }
-
   bufferlist bl;
   bl.append(reinterpret_cast<char*>(value.data()), size);
   auto iter = bl.cbegin();
   ent->decode(iter);
-  decode(*getattrs, iter);
-  if (upload_info) {
-    decode(*upload_info, iter);
+  if (getattrs) {
+    decode(*getattrs, iter);
   }
 
   return ret;
 }
 // Set the object's dirent and attrs
 int DaosObject::set_dir_entry_attrs(const DoutPrefixProvider* dpp,
-                                    rgw_bucket_dir_entry* ent, Attrs* setattrs,
-                                    multipart_upload_info* upload_info) {
+                                    rgw_bucket_dir_entry* ent,
+                                    Attrs* setattrs) {
   ldpp_dout(dpp, 20) << "DEBUG: set_dir_entry_attrs" << dendl;
   int ret = lookup(dpp);
   if (ret != 0) {
@@ -1893,7 +1429,6 @@ int DaosObject::set_dir_entry_attrs(const DoutPrefixProvider* dpp,
   }
 
   // Set defaults
-  rgw_bucket_dir_entry dummy_ent;
   if (!ent) {
     // if ent is not passed, return an error
     return -EINVAL;
@@ -1904,22 +1439,17 @@ int DaosObject::set_dir_entry_attrs(const DoutPrefixProvider* dpp,
     setattrs = &attrs;
   }
 
-  multipart_upload_info dummy_upload_info;
-  if (!upload_info) {
-    // if upload_info is not passed, use dummy
-    upload_info = &dummy_upload_info;
-  }
-
   bufferlist wbl;
   ent->encode(wbl);
   encode(*setattrs, wbl);
-  encode(*upload_info, wbl);
 
   // Write rgw_bucket_dir_entry into object xattr
-  ret = dfs_setxattr(get_daos_bucket()->dfs, dfs_obj, RGW_DIR_ENTRY_XATTR,
-                     wbl.c_str(), wbl.length(), 0);
+  auto object_info = std::make_unique<struct ds3_object_info>();
+  object_info->encoded = wbl.c_str();
+  object_info->encoded_length = wbl.length();
+  ret = ds3_obj_set_info(object_info.get(), get_daos_bucket()->ds3b, ds3o);
   if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: failed to set dirent of daos object ("
+    ldpp_dout(dpp, 0) << "ERROR: failed to set info of daos object ("
                       << get_bucket()->get_name() << ", " << get_key().to_str()
                       << "): ret=" << ret << dendl;
   }
@@ -1934,7 +1464,7 @@ int DaosObject::mark_as_latest(const DoutPrefixProvider* dpp,
 
   // Get latest version so far
   std::unique_ptr<DaosObject> latest_object = std::make_unique<DaosObject>(
-      store, rgw_obj_key(get_name(), LATEST_INSTANCE), get_bucket());
+      store, rgw_obj_key(get_name(), DS3_LATEST_INSTANCE), get_bucket());
 
   ldpp_dout(dpp, 20) << __func__ << ": key=" << get_key().to_str()
                      << " latest_object_key= "
@@ -1961,13 +1491,9 @@ int DaosObject::mark_as_latest(const DoutPrefixProvider* dpp,
 
   // Get or create the link [latest], make it link to the current latest
   // version.
-  std::unique_ptr<DaosObject> latest_link = std::make_unique<DaosObject>(
-      store, rgw_obj_key(get_name(), LATEST_INSTANCE), get_bucket());
-  fs::path path = get_key().to_str();
-  ret = latest_link->create(dpp, false, path.filename().string());
-
-  // TODO Update an xattr with a list to all the version ids, ordered by
-  // creation to handle deletion
+  ret =
+      ds3_obj_mark_latest(get_key().to_str().c_str(), get_daos_bucket()->ds3b);
+  ldpp_dout(dpp, 20) << "DEBUG: ds3_obj_mark_latest ret=" << ret << dendl;
   return ret;
 }
 
@@ -2043,7 +1569,7 @@ int DaosAtomicWriter::complete(
   ent.meta.owner = owner.to_str();
   ent.meta.owner_display_name =
       obj.get_bucket()->get_owner()->get_display_name();
-  bool is_versioned = obj.have_instance();
+  bool is_versioned = obj.get_bucket()->versioned();
   if (is_versioned)
     ent.flags =
         rgw_bucket_dir_entry::FLAG_VER | rgw_bucket_dir_entry::FLAG_CURRENT;
@@ -2074,7 +1600,6 @@ int DaosAtomicWriter::complete(
     }
   }
 
-  obj.close(dpp);
   return ret;
 }
 
@@ -2082,21 +1607,13 @@ int DaosMultipartUpload::abort(const DoutPrefixProvider* dpp,
                                CephContext* cct) {
   // Remove upload from bucket multipart index
   ldpp_dout(dpp, 20) << "DEBUG: abort" << dendl;
-  dfs_obj_t* multipart_dir;
-  int ret = dfs_lookup_rel(store->meta_dfs, store->dirs[MULTIPART_DIR],
-                           bucket->get_name().c_str(), O_RDWR, &multipart_dir,
-                           nullptr, nullptr);
-  ret = dfs_remove(store->meta_dfs, multipart_dir, get_upload_id().c_str(),
-                   true, nullptr);
-  dfs_release(multipart_dir);
-  return ret;
+  return ds3_upload_remove(bucket->get_name().c_str(), get_upload_id().c_str(),
+                           store->ds3);
 }
 
-static string mp_ns = RGW_OBJ_NS_MULTIPART;
-
 std::unique_ptr<rgw::sal::Object> DaosMultipartUpload::get_meta_obj() {
-  // TODO fix this so it refers to the upload_dir
-  return bucket->get_object(rgw_obj_key(get_meta(), string(), mp_ns));
+  return bucket->get_object(
+      rgw_obj_key(get_upload_id(), string(), RGW_OBJ_NS_MULTIPART));
 }
 
 int DaosMultipartUpload::init(const DoutPrefixProvider* dpp, optional_yield y,
@@ -2106,33 +1623,6 @@ int DaosMultipartUpload::init(const DoutPrefixProvider* dpp, optional_yield y,
   ldpp_dout(dpp, 20) << "DEBUG: init" << dendl;
   int ret;
   std::string oid = mp_obj.get_key();
-  dfs_obj_t* multipart_dir;
-  ret = dfs_lookup_rel(store->meta_dfs, store->dirs[MULTIPART_DIR],
-                       bucket->get_name().c_str(), O_RDWR, &multipart_dir,
-                       nullptr, nullptr);
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel multipart dir for bucket="
-                     << bucket->get_name() << " ret=" << ret << dendl;
-
-  do {
-    char buf[33];
-    gen_rand_alphanumeric(store->ctx(), buf, sizeof(buf) - 1);
-    std::string upload_id = MULTIPART_UPLOAD_ID_PREFIX; /* v2 upload id */
-    upload_id.append(buf);
-
-    mp_obj.init(oid, upload_id);
-
-    // Create meta index
-    ret = dfs_mkdir(store->meta_dfs, multipart_dir, upload_id.c_str(),
-                    DEFFILEMODE, 0);
-  } while (ret == EEXIST);
-
-  if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: failed to create multipart upload dir ("
-                      << bucket->get_name() << "/" << get_upload_id()
-                      << "): ret=" << ret << dendl;
-    dfs_release(multipart_dir);
-    return ret;
-  }
 
   // Create an initial entry in the bucket. The entry will be
   // updated when multipart upload is completed, for example,
@@ -2151,23 +1641,25 @@ int DaosMultipartUpload::init(const DoutPrefixProvider* dpp, optional_yield y,
   encode(attrs, bl);
   encode(upload_info, bl);
 
-  // Insert an entry into bucket multipart index
-  dfs_obj_t* upload_dir;
-  ret = dfs_lookup_rel(store->meta_dfs, multipart_dir, get_upload_id().c_str(),
-                       O_RDWR, &upload_dir, nullptr, nullptr);
+  struct ds3_multipart_upload_info ui;
+  std::strcpy(ui.upload_id, MULTIPART_UPLOAD_ID_PREFIX);
+  std::strncpy(ui.key, oid.c_str(), sizeof(ui.key));
+  ui.encoded = bl.c_str();
+  ui.encoded_length = bl.length();
+  int prefix_length = strlen(ui.upload_id);
 
-  ret = dfs_setxattr(store->meta_dfs, upload_dir, RGW_DIR_ENTRY_XATTR,
-                     bl.c_str(), bl.length(), 0);
+  do {
+    gen_rand_alphanumeric(store->ctx(), ui.upload_id + prefix_length,
+                          sizeof(ui.upload_id) - 1 - prefix_length);
+    mp_obj.init(oid, ui.upload_id);
+    ret = ds3_upload_init(&ui, bucket->get_name().c_str(), store->ds3);
+  } while (ret == -EEXIST);
+
   if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: failed to set xattr of multipart upload dir ("
+    ldpp_dout(dpp, 0) << "ERROR: failed to create multipart upload dir ("
                       << bucket->get_name() << "/" << get_upload_id()
                       << "): ret=" << ret << dendl;
-    dfs_release(multipart_dir);
-    return ret;
   }
-
-  dfs_release(upload_dir);
-  dfs_release(multipart_dir);
   return ret;
 }
 
@@ -2176,117 +1668,45 @@ int DaosMultipartUpload::list_parts(const DoutPrefixProvider* dpp,
                                     int* next_marker, bool* truncated,
                                     bool assume_unsorted) {
   ldpp_dout(dpp, 20) << "DEBUG: list_parts" << dendl;
-  dfs_obj_t* multipart_dir;
-  dfs_obj_t* upload_dir;
-  int ret = dfs_lookup_rel(store->meta_dfs, store->dirs[MULTIPART_DIR],
-                           bucket->get_name().c_str(), O_RDWR, &multipart_dir,
-                           nullptr, nullptr);
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel entry=" << bucket->get_name()
-                     << " ret=" << ret << dendl;
-  ret = dfs_lookup_rel(store->meta_dfs, multipart_dir, get_upload_id().c_str(),
-                       O_RDWR, &upload_dir, nullptr, nullptr);
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel entry=" << get_upload_id()
-                     << " ret=" << ret << dendl;
+  // Init needed structures
+  vector<struct ds3_multipart_part_info> multipart_part_infos(num_parts);
+  uint32_t npart = multipart_part_infos.size();
+  vector<vector<uint8_t>> values(npart, vector<uint8_t>(DS3_MAX_ENCODED_LEN));
+  for (uint32_t i = 0; i < npart; i++) {
+    multipart_part_infos[i].encoded = values[i].data();
+    multipart_part_infos[i].encoded_length = values[i].size();
+  }
+
+  uint32_t daos_marker = marker;
+  int ret = ds3_upload_list_parts(
+      bucket->get_name().c_str(), get_upload_id().c_str(), &npart,
+      multipart_part_infos.data(), &daos_marker, truncated, store->ds3);
+
   if (ret != 0) {
-    if (ret == ENOENT) {
+    if (ret == -ENOENT) {
       ret = -ERR_NO_SUCH_UPLOAD;
     }
-    dfs_release(multipart_dir);
     return ret;
   }
 
-  vector<struct dirent> dirents(MULTIPART_MAX_PARTS);
-  daos_anchor_t anchor;
-  daos_anchor_init(&anchor, 0);
+  multipart_part_infos.resize(npart);
+  values.resize(npart);
+  parts.clear();
 
-  uint32_t nr = dirents.size();
-  ret = dfs_readdir(store->meta_dfs, upload_dir, &anchor, &nr, dirents.data());
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_readdir name=" << get_upload_id()
-                     << " nr=" << nr << " ret=" << ret << dendl;
-  if (ret != 0) {
-    dfs_release(upload_dir);
-    dfs_release(multipart_dir);
-    return ret;
-  }
-
-  for (uint32_t i = 0; i < nr; i++) {
-    const auto& part_name = dirents[i].d_name;
-    std::string err;
-    const int part_num = strict_strtol(part_name, 10, &err);
-    if (!err.empty()) {
-      ldpp_dout(dpp, 10) << "bad part number: " << part_name << ": " << err
-                         << dendl;
-      dfs_release(upload_dir);
-      dfs_release(multipart_dir);
-      return -EINVAL;
-    }
-
-    // Skip entries that are not larger than marker
-    if (part_num <= marker) {
-      continue;
-    }
-
-    dfs_obj_t* part_obj;
-    ret = dfs_lookup_rel(store->meta_dfs, upload_dir, part_name, O_RDWR,
-                         &part_obj, nullptr, nullptr);
-    ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel i=" << i
-                       << " entry=" << part_name << " ret=" << ret << dendl;
-    if (ret != 0) {
-      return ret;
-    }
-
-    // The entry is a regular file, read the xattr and add to objs
-    vector<uint8_t> value(DFS_MAX_XATTR_LEN);
-    size_t size = value.size();
-    ret = dfs_getxattr(store->meta_dfs, part_obj, RGW_PART_XATTR, value.data(),
-                       &size);
-    ldpp_dout(dpp, 20) << "DEBUG: dfs_getxattr entry=" << part_name
-                       << " xattr=" << RGW_PART_XATTR << dendl;
-    // Skip if the part has no info
-    if (ret != 0) {
-      ldpp_dout(dpp, 0) << "ERROR: no part info, skipping part=" << part_name
-                        << dendl;
-      ret = dfs_release(part_obj);
-      continue;
-    }
-
+  for (auto const& pi : multipart_part_infos) {
     bufferlist bl;
-    bl.append(reinterpret_cast<char*>(value.data()), size);
+    bl.append(reinterpret_cast<char*>(pi.encoded), pi.encoded_length);
 
     std::unique_ptr<DaosMultipartPart> part =
         std::make_unique<DaosMultipartPart>();
     auto iter = bl.cbegin();
     decode(part->info, iter);
-    parts[part->info.num] = std::move(part);
-
-    // Close handles
-    ret = dfs_release(part_obj);
-    ldpp_dout(dpp, 20) << "DEBUG: dfs_release part_obj ret=" << ret << dendl;
+    parts[pi.part_num] = std::move(part);
   }
-
-  // rebuild a map with only num_parts entries
-  int last_num = 0;
-  std::map<uint32_t, std::unique_ptr<MultipartPart>> new_parts;
-  std::map<uint32_t, std::unique_ptr<MultipartPart>>::iterator piter;
-  int i;
-  for (i = 0, piter = parts.begin(); i < num_parts && piter != parts.end();
-       ++i, ++piter) {
-    last_num = piter->first;
-    new_parts[piter->first] = std::move(piter->second);
-  }
-
-  if (truncated) {
-    *truncated = (piter != parts.end());
-  }
-
-  parts.swap(new_parts);
 
   if (next_marker) {
-    *next_marker = last_num;
+    *next_marker = daos_marker;
   }
-
-  ret = dfs_release(upload_dir);
-  ret = dfs_release(multipart_dir);
   return ret;
 }
 
@@ -2324,7 +1744,7 @@ int DaosMultipartUpload::complete(
     if (ret == -ENOENT) {
       ret = -ERR_NO_SUCH_UPLOAD;
     }
-    if (ret < 0) return ret;
+    if (ret != 0) return ret;
 
     total_parts += parts.size();
     if (!truncated && total_parts != (int)part_etags.size()) {
@@ -2375,7 +1795,7 @@ int DaosMultipartUpload::complete(
       RGWUploadPartInfo& obj_part = part->info;
       string oid = mp_obj.get_part(obj_part.num);
       rgw_obj src_obj;
-      src_obj.init_ns(bucket->get_key(), oid, mp_ns);
+      src_obj.init_ns(bucket->get_key(), oid, RGW_OBJ_NS_MULTIPART);
 
       bool part_compressed = (obj_part.cs_info.compression_type != "none");
       if ((handled_parts > 0) &&
@@ -2447,40 +1867,23 @@ int DaosMultipartUpload::complete(
   }
 
   // Different from rgw_sal_rados.cc starts here
-  // TODO reduce redundant code
-  // TODO handle errors
   // Read the object's multipart info
-  dfs_obj_t* multipart_dir;
-  dfs_obj_t* upload_dir;
-  ret = dfs_lookup_rel(store->meta_dfs, store->dirs[MULTIPART_DIR],
-                       bucket->get_name().c_str(), O_RDWR, &multipart_dir,
-                       nullptr, nullptr);
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel entry=" << bucket->get_name()
-                     << " ret=" << ret << dendl;
-  ret = dfs_lookup_rel(store->meta_dfs, multipart_dir, get_upload_id().c_str(),
-                       O_RDWR, &upload_dir, nullptr, nullptr);
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel entry=" << get_upload_id()
-                     << " ret=" << ret << dendl;
+  bufferlist bl;
+  uint64_t size = DS3_MAX_ENCODED_LEN;
+  struct ds3_multipart_upload_info ui = {
+      .encoded = bl.append_hole(size).c_str(), .encoded_length = size};
+  ret = ds3_upload_get_info(&ui, bucket->get_name().c_str(),
+                            get_upload_id().c_str(), store->ds3);
+  ldpp_dout(dpp, 20) << "DEBUG: ds3_upload_get_info entry="
+                     << bucket->get_name() << "/" << get_upload_id() << dendl;
   if (ret != 0) {
-    if (ret == ENOENT) {
+    if (ret == -ENOENT) {
       ret = -ERR_NO_SUCH_UPLOAD;
     }
-    dfs_release(multipart_dir);
     return ret;
   }
 
-  vector<uint8_t> value(DFS_MAX_XATTR_LEN);
-  size_t size = value.size();
-  ret = dfs_getxattr(store->meta_dfs, upload_dir, RGW_DIR_ENTRY_XATTR,
-                     value.data(), &size);
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_getxattr entry=" << bucket->get_name()
-                     << "/" << get_upload_id()
-                     << " xattr=" << RGW_DIR_ENTRY_XATTR << dendl;
-  dfs_release(upload_dir);
-
   rgw_bucket_dir_entry ent;
-  bufferlist bl;
-  bl.append(reinterpret_cast<char*>(value.data()), size);
   auto iter = bl.cbegin();
   ent.decode(iter);
 
@@ -2494,7 +1897,7 @@ int DaosMultipartUpload::complete(
                      << dendl;
   ent.meta.category = RGWObjCategory::Main;
   ent.meta.mtime = ceph::real_clock::now();
-  bool is_versioned = target_obj->have_instance();
+  bool is_versioned = target_obj->get_bucket()->versioned();
   if (is_versioned)
     ent.flags =
         rgw_bucket_dir_entry::FLAG_VER | rgw_bucket_dir_entry::FLAG_CURRENT;
@@ -2504,37 +1907,35 @@ int DaosMultipartUpload::complete(
   DaosObject* obj = static_cast<DaosObject*>(target_obj);
   ret = obj->create(dpp);
   if (ret != 0) {
-    dfs_release(multipart_dir);
     return ret;
   }
 
   // Copy data from parts to object
   uint64_t write_off = 0;
   for (auto const& [part_num, part] : get_parts()) {
-    // TODO DRY
-    std::unique_ptr<DaosObject> part_obj =
-        get_daos_bucket()->get_part_object(get_upload_id(), part_num);
-    ret = part_obj->lookup(dpp);
+    ds3_part_t* ds3p;
+    ret = ds3_part_open(get_bucket_name().c_str(), get_upload_id().c_str(),
+                        part_num, false, &ds3p, store->ds3);
     if (ret != 0) {
-      obj->close(dpp);
-      dfs_release(multipart_dir);
       return ret;
     }
 
     // Reserve buffers and read
     uint64_t size = part->get_size();
     bufferlist bl;
-    ret = part_obj->read(dpp, bl, 0, size);
+    ret = ds3_part_read(bl.append_hole(size).c_str(), 0, &size, ds3p,
+                        store->ds3, nullptr);
     if (ret != 0) {
-      part_obj->close(dpp);
-      obj->close(dpp);
-      dfs_release(multipart_dir);
+      ds3_part_close(ds3p);
       return ret;
     }
 
+    ldpp_dout(dpp, 20) << "DaosMultipartUpload::complete(): part " << part_num
+                       << " size is " << size << dendl;
+
     // write to obj
     obj->write(dpp, std::move(bl), write_off);
-    part_obj->close(dpp);
+    ds3_part_close(ds3p);
     write_off += part->get_size();
   }
 
@@ -2548,12 +1949,9 @@ int DaosMultipartUpload::complete(
     }
   }
 
-  obj->close(dpp);
-
   // Remove upload from bucket multipart index
-  ret = dfs_remove(store->meta_dfs, multipart_dir, get_upload_id().c_str(),
-                   true, nullptr);
-  dfs_release(multipart_dir);
+  ret = ds3_upload_remove(get_bucket_name().c_str(), get_upload_id().c_str(),
+                          store->ds3);
   return ret;
 }
 
@@ -2578,42 +1976,23 @@ int DaosMultipartUpload::get_info(const DoutPrefixProvider* dpp,
   }
 
   // Read the multipart upload dirent from index
+  bufferlist bl;
+  uint64_t size = DS3_MAX_ENCODED_LEN;
+  struct ds3_multipart_upload_info ui = {
+      .encoded = bl.append_hole(size).c_str(), .encoded_length = size};
+  int ret = ds3_upload_get_info(&ui, bucket->get_name().c_str(),
+                                get_upload_id().c_str(), store->ds3);
 
-  dfs_obj_t* multipart_dir;
-  dfs_obj_t* upload_dir;
-  int ret = dfs_lookup_rel(store->meta_dfs, store->dirs[MULTIPART_DIR],
-                           bucket->get_name().c_str(), O_RDWR, &multipart_dir,
-                           nullptr, nullptr);
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel entry=" << bucket->get_name()
-                     << " ret=" << ret << dendl;
-  ret = dfs_lookup_rel(store->meta_dfs, multipart_dir, get_upload_id().c_str(),
-                       O_RDWR, &upload_dir, nullptr, nullptr);
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel entry=" << get_upload_id()
-                     << " ret=" << ret << dendl;
   if (ret != 0) {
-    if (ret == ENOENT) {
+    if (ret == -ENOENT) {
       ret = -ERR_NO_SUCH_UPLOAD;
     }
-    dfs_release(multipart_dir);
     return ret;
   }
-
-  vector<uint8_t> value(DFS_MAX_XATTR_LEN);
-  size_t size = value.size();
-  ret = dfs_getxattr(store->meta_dfs, upload_dir, RGW_DIR_ENTRY_XATTR,
-                     value.data(), &size);
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_getxattr entry=" << bucket->get_name()
-                     << "/" << get_upload_id()
-                     << " xattr=" << RGW_DIR_ENTRY_XATTR << " ret=" << ret
-                     << dendl;
-  dfs_release(upload_dir);
-  dfs_release(multipart_dir);
 
   multipart_upload_info upload_info;
   rgw_bucket_dir_entry ent;
   Attrs decoded_attrs;
-  bufferlist bl;
-  bl.append(reinterpret_cast<char*>(value.data()), size);
   auto iter = bl.cbegin();
   ent.decode(iter);
   decode(decoded_attrs, iter);
@@ -2647,21 +2026,23 @@ std::unique_ptr<Writer> DaosMultipartUpload::get_writer(
       part_num, part_num_str);
 }
 
+DaosMultipartWriter::~DaosMultipartWriter() {
+  if (is_open()) ds3_part_close(ds3p);
+}
+
 int DaosMultipartWriter::prepare(optional_yield y) {
   ldpp_dout(dpp, 20) << "DaosMultipartWriter::prepare(): enter part="
                      << part_num_str << dendl;
-
-  part_obj = get_daos_bucket()->get_part_object(upload_id, part_num);
-  // XXX: we should just create the file, and not the whole path
-  int ret = part_obj->create(dpp, false);
+  int ret = ds3_part_open(get_bucket_name().c_str(), upload_id.c_str(),
+                          part_num, true, &ds3p, store->ds3);
   if (ret == -ENOENT) {
     ret = -ERR_NO_SUCH_UPLOAD;
   }
   return ret;
 }
 
-DaosBucket* DaosMultipartWriter::get_daos_bucket() {
-  return static_cast<DaosMultipartUpload*>(upload)->get_daos_bucket();
+const std::string& DaosMultipartWriter::get_bucket_name() {
+  return static_cast<DaosMultipartUpload*>(upload)->get_bucket_name();
 }
 
 int DaosMultipartWriter::process(bufferlist&& data, uint64_t offset) {
@@ -2671,19 +2052,16 @@ int DaosMultipartWriter::process(bufferlist&& data, uint64_t offset) {
     return 0;
   }
 
-  int ret = 0;
-  if (!part_obj->is_open()) {
-    ret = part_obj->lookup(dpp);
-    if (ret != 0) {
-      return ret;
-    }
-  }
-
-  // XXX: Combine multiple streams into one as motr does
-  uint64_t data_size = data.length();
-  ret = part_obj->write(dpp, std::move(data), offset);
+  uint64_t size = data.length();
+  int ret =
+      ds3_part_write(data.c_str(), offset, &size, ds3p, store->ds3, nullptr);
   if (ret == 0) {
-    actual_part_size += data_size;
+    // XXX: Combine multiple streams into one as motr does
+    actual_part_size += size;
+  } else {
+    ldpp_dout(dpp, 0) << "ERROR: failed to write into part ("
+                      << get_bucket_name() << ", " << upload_id << ", "
+                      << part_num << "): ret=" << ret << dendl;
   }
   return ret;
 }
@@ -2710,9 +2088,8 @@ int DaosMultipartWriter::complete(
   int ret = rgw_compression_info_from_attrset(attrs, compressed, info.cs_info);
   ldpp_dout(dpp, 20) << "DaosMultipartWriter::complete(): compression ret="
                      << ret << dendl;
-  if (ret < 0) {
+  if (ret != 0) {
     ldpp_dout(dpp, 1) << "cannot get compression info" << dendl;
-    part_obj->close(dpp);
     return ret;
   }
   encode(info, bl);
@@ -2720,18 +2097,21 @@ int DaosMultipartWriter::complete(
   ldpp_dout(dpp, 20) << "DaosMultipartWriter::complete(): entry size"
                      << bl.length() << dendl;
 
-  ret = dfs_setxattr(store->meta_dfs, part_obj->dfs_obj, RGW_PART_XATTR,
-                     bl.c_str(), bl.length(), 0);
+  struct ds3_multipart_part_info part_info = {.part_num = part_num,
+                                              .encoded = bl.c_str(),
+                                              .encoded_length = bl.length()};
+
+  ret = ds3_part_set_info(&part_info, ds3p, store->ds3, nullptr);
 
   if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: failed to set xattr part (" << upload_id << "/"
-                      << part_num_str << "): ret=" << ret << dendl;
+    ldpp_dout(dpp, 0) << "ERROR: failed to set part info (" << get_bucket_name()
+                      << ", " << upload_id << ", " << part_num
+                      << "): ret=" << ret << dendl;
     if (ret == ENOENT) {
       ret = -ERR_NO_SUCH_UPLOAD;
     }
   }
 
-  part_obj->close(dpp);
   return ret;
 }
 
@@ -2808,53 +2188,6 @@ bool DaosStore::valid_placement(const rgw_placement_rule& rule) {
   return zone.zone_params->valid_placement(rule);
 }
 
-int DaosStore::read_user(const DoutPrefixProvider* dpp, std::string parent,
-                         std::string name, DaosUserInfo* duinfo) {
-  ldpp_dout(dpp, 20) << "read_user" << dendl;
-  // Open file
-  dfs_obj_t* user_obj;
-  int ret = dfs_lookup_rel(meta_dfs, dirs[parent], name.c_str(), O_RDWR,
-                           &user_obj, nullptr, nullptr);
-  ldpp_dout(dpp, 20) << "DEBUG: dfs_lookup_rel parent=" << parent
-                     << " name=" << name << " ret=" << ret << dendl;
-  if (ret != 0) {
-    return -ENOENT;
-  }
-
-  // Reserve buffers
-  uint64_t size = DFS_MAX_XATTR_LEN;
-  bufferlist bl;
-  d_iov_t iov;
-  d_sg_list_t rsgl;
-  d_iov_set(&iov, bl.append_hole(size).c_str(), size);
-  rsgl.sg_nr = 1;
-  rsgl.sg_iovs = &iov;
-  rsgl.sg_nr_out = 1;
-
-  // Read file
-  uint64_t actual;
-  ret = dfs_read(meta_dfs, user_obj, &rsgl, 0, &actual, nullptr);
-  if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: failed to read user file, name=" << name
-                      << " ret=" << ret << dendl;
-    return ret;
-  }
-
-  // Close file
-  ret = dfs_release(user_obj);
-  if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: dfs_release failed, user name=" << name
-                      << " ret=" << ret << dendl;
-    return ret;
-  }
-
-  // Decode
-  bufferlist& blr = bl;
-  auto iter = blr.cbegin();
-  duinfo->decode(iter);
-  return 0;
-}
-
 std::unique_ptr<User> DaosStore::get_user(const rgw_user& u) {
   ldout(cctx, 20) << "DEBUG: bucket's user:  " << u.to_str() << dendl;
   return std::make_unique<DaosUser>(this, u);
@@ -2863,14 +2196,25 @@ std::unique_ptr<User> DaosStore::get_user(const rgw_user& u) {
 int DaosStore::get_user_by_access_key(const DoutPrefixProvider* dpp,
                                       const std::string& key, optional_yield y,
                                       std::unique_ptr<User>* user) {
-  ldpp_dout(dpp, 20) << "get_user_by_access_key" << dendl;
-  DaosUserInfo duinfo;
-  int ret = read_user(dpp, ACCESS_KEYS_DIR, key, &duinfo);
+  // Initialize ds3_user_info
+  bufferlist bl;
+  uint64_t size = DS3_MAX_ENCODED_LEN;
+  struct ds3_user_info user_info = {.encoded = bl.append_hole(size).c_str(),
+                                    .encoded_length = size};
+
+  int ret = ds3_user_get_by_key(key.c_str(), &user_info, ds3, nullptr);
+
   if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: get_user_by_access_key failed, key=" << key
-                      << dendl;
+    ldpp_dout(dpp, 0) << "Error: ds3_user_get_by_key failed, key=" << key
+                      << " ret=" << ret << dendl;
     return ret;
   }
+
+  // Decode
+  DaosUserInfo duinfo;
+  bufferlist& blr = bl;
+  auto iter = blr.cbegin();
+  duinfo.decode(iter);
 
   User* u = new DaosUser(this, duinfo.info);
   if (!u) {
@@ -2884,14 +2228,25 @@ int DaosStore::get_user_by_access_key(const DoutPrefixProvider* dpp,
 int DaosStore::get_user_by_email(const DoutPrefixProvider* dpp,
                                  const std::string& email, optional_yield y,
                                  std::unique_ptr<User>* user) {
-  ldpp_dout(dpp, 20) << "get_user_by_email" << dendl;
-  DaosUserInfo duinfo;
-  int ret = read_user(dpp, EMAILS_DIR, email, &duinfo);
+  // Initialize ds3_user_info
+  bufferlist bl;
+  uint64_t size = DS3_MAX_ENCODED_LEN;
+  struct ds3_user_info user_info = {.encoded = bl.append_hole(size).c_str(),
+                                    .encoded_length = size};
+
+  int ret = ds3_user_get_by_email(email.c_str(), &user_info, ds3, nullptr);
+
   if (ret != 0) {
-    ldpp_dout(dpp, 0) << "ERROR: get_user_by_email failed, email=" << email
-                      << dendl;
+    ldpp_dout(dpp, 0) << "Error: ds3_user_get_by_email failed, email=" << email
+                      << " ret=" << ret << dendl;
     return ret;
   }
+
+  // Decode
+  DaosUserInfo duinfo;
+  bufferlist& blr = bl;
+  auto iter = blr.cbegin();
+  duinfo.decode(iter);
 
   User* u = new DaosUser(this, duinfo.info);
   if (!u) {
@@ -2931,7 +2286,7 @@ int DaosStore::get_bucket(const DoutPrefixProvider* dpp, User* u,
 
   bp = new DaosBucket(this, b, u);
   ret = bp->load_bucket(dpp, y);
-  if (ret < 0) {
+  if (ret != 0) {
     delete bp;
     return ret;
   }
@@ -2962,8 +2317,6 @@ int DaosStore::get_bucket(const DoutPrefixProvider* dpp, User* u,
 
   return get_bucket(dpp, u, b, bucket, y);
 }
-
-DaosBucket* DaosStore::get_metadata_bucket() { return metadata_bucket.get(); }
 
 bool DaosStore::is_meta_master() { return true; }
 

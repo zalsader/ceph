@@ -18,7 +18,7 @@
 #pragma once
 
 #include <daos.h>
-#include <daos_fs.h>
+#include <daos_s3.h>
 #include <uuid/uuid.h>
 
 #include <map>
@@ -154,6 +154,7 @@ class DaosNotification : public StoreNotification {
 class DaosUser : public StoreUser {
  private:
   DaosStore* store;
+  std::vector<const char*> access_ids;
 
  public:
   DaosUser(DaosStore* _st, const rgw_user& _u) : StoreUser(_u), store(_st) {}
@@ -204,62 +205,63 @@ class DaosUser : public StoreUser {
   virtual int remove_user(const DoutPrefixProvider* dpp,
                           optional_yield y) override;
 
+  /** Read user info without loading it */
+  int read_user(const DoutPrefixProvider* dpp, std::string name,
+                DaosUserInfo* duinfo);
+
+  std::unique_ptr<struct ds3_user_info> get_encoded_info(bufferlist& bl,
+                                                         obj_version& obj_ver);
+
   friend class DaosBucket;
 };
+
+// RGWBucketInfo and other information that are shown when listing a bucket is
+// represented in struct DaosBucketInfo. The structure is encoded and stored
+// as the value of the global bucket instance index.
+// TODO: compare pros and cons of separating the bucket_attrs (ACLs, tag etc.)
+// into a different index.
+struct DaosBucketInfo {
+  RGWBucketInfo info;
+
+  obj_version bucket_version;
+  ceph::real_time mtime;
+
+  rgw::sal::Attrs bucket_attrs;
+
+  void encode(bufferlist& bl) const {
+    ENCODE_START(4, 4, bl);
+    encode(info, bl);
+    encode(bucket_version, bl);
+    encode(mtime, bl);
+    encode(bucket_attrs, bl);  // rgw_cache.h example for a map
+    ENCODE_FINISH(bl);
+  }
+
+  void decode(bufferlist::const_iterator& bl) {
+    DECODE_START(4, bl);
+    decode(info, bl);
+    decode(bucket_version, bl);
+    decode(mtime, bl);
+    decode(bucket_attrs, bl);
+    DECODE_FINISH(bl);
+  }
+};
+WRITE_CLASS_ENCODER(DaosBucketInfo);
 
 class DaosBucket : public StoreBucket {
  private:
   DaosStore* store;
   RGWAccessControlPolicy acls;
-  bool _is_open = false;
-
-  // RGWBucketInfo and other information that are shown when listing a bucket is
-  // represented in struct DaosBucketInfo. The structure is encoded and stored
-  // as the value of the global bucket instance index.
-  // TODO: compare pros and cons of separating the bucket_attrs (ACLs, tag etc.)
-  // into a different index.
-  struct DaosBucketInfo {
-    RGWBucketInfo info;
-
-    obj_version bucket_version;
-    ceph::real_time mtime;
-
-    rgw::sal::Attrs bucket_attrs;
-
-    void encode(bufferlist& bl) const {
-      ENCODE_START(4, 4, bl);
-      encode(info, bl);
-      encode(bucket_version, bl);
-      encode(mtime, bl);
-      encode(bucket_attrs, bl);  // rgw_cache.h example for a map
-      ENCODE_FINISH(bl);
-    }
-
-    void decode(bufferlist::const_iterator& bl) {
-      DECODE_START(4, bl);
-      decode(info, bl);
-      decode(bucket_version, bl);
-      decode(mtime, bl);
-      decode(bucket_attrs, bl);
-      DECODE_FINISH(bl);
-    }
-  };
-  WRITE_CLASS_ENCODER(DaosBucketInfo);
 
  public:
-  /** Container handle */
-  daos_handle_t coh;
-  /** Container uuid */
-  uuid_t cont_uuid;
-  /** Container dfs handle */
-  dfs_t* dfs;
+  /** Container ds3b handle */
+  ds3_bucket_t* ds3b = nullptr;
 
   DaosBucket(DaosStore* _st) : store(_st), acls() {}
 
   DaosBucket(const DaosBucket& _daos_bucket)
-      : store(_daos_bucket.store), acls(), coh(DAOS_HDL_INVAL), dfs(nullptr) {
+      : store(_daos_bucket.store), acls(), ds3b(nullptr) {
     // TODO: deep copy all objects
-    // daos_duplicate_handle(_daos_bucket.coh);
   }
 
   DaosBucket(DaosStore* _st, User* _u) : StoreBucket(_u), store(_st), acls() {}
@@ -364,9 +366,9 @@ class DaosBucket : public StoreBucket {
 
   int open(const DoutPrefixProvider* dpp);
   int close(const DoutPrefixProvider* dpp);
-  bool is_open() { return _is_open; }
-  std::unique_ptr<DaosObject> get_part_object(std::string upload_id,
-                                              uint64_t part_num);
+  bool is_open() { return ds3b != nullptr; }
+  std::unique_ptr<struct ds3_bucket_info> get_encoded_info(
+      bufferlist& bl, ceph::real_time mtime);
 
   friend class DaosStore;
 };
@@ -551,7 +553,6 @@ class DaosObject : public StoreObject {
  private:
   DaosStore* store;
   RGWAccessControlPolicy acls;
-  bool _is_open = false;
 
  public:
   struct DaosReadOp : public StoreReadOp {
@@ -582,7 +583,7 @@ class DaosObject : public StoreObject {
                            optional_yield y) override;
   };
 
-  dfs_obj_t* dfs_obj;
+  ds3_obj_t* ds3o = nullptr;
 
   DaosObject() = default;
 
@@ -680,12 +681,11 @@ class DaosObject : public StoreObject {
                                   const std::string& key, bufferlist& val,
                                   bool must_exist, optional_yield y) override;
 
-  bool is_open() { return _is_open; };
+  bool is_open() { return ds3o != nullptr; };
   // Only lookup the object, do not create
-  int lookup(const DoutPrefixProvider* dpp, mode_t* mode = nullptr);
+  int lookup(const DoutPrefixProvider* dpp);
   // Create the object, truncate if exists
-  int create(const DoutPrefixProvider* dpp, const bool create_parents = true,
-             const std::string link_to = "");
+  int create(const DoutPrefixProvider* dpp);
   // Release the daos resources
   int close(const DoutPrefixProvider* dpp);
   // Write to object starting from offset
@@ -695,12 +695,10 @@ class DaosObject : public StoreObject {
            uint64_t& size);
   // Get the object's dirent and attrs
   int get_dir_entry_attrs(const DoutPrefixProvider* dpp,
-                          rgw_bucket_dir_entry* ent, Attrs* getattrs = nullptr,
-                          multipart_upload_info* upload_info = nullptr);
+                          rgw_bucket_dir_entry* ent, Attrs* getattrs = nullptr);
   // Set the object's dirent and attrs
   int set_dir_entry_attrs(const DoutPrefixProvider* dpp,
-                          rgw_bucket_dir_entry* ent, Attrs* setattrs = nullptr,
-                          multipart_upload_info* upload_info = nullptr);
+                          rgw_bucket_dir_entry* ent, Attrs* setattrs = nullptr);
   // Marks this DAOS object as being the latest version and unmarks all other
   // versions as latest
   int mark_as_latest(const DoutPrefixProvider* dpp, ceph::real_time set_mtime);
@@ -761,15 +759,15 @@ class DaosMultipartWriter : public StoreWriter {
  protected:
   rgw::sal::DaosStore* store;
   MultipartUpload* upload;
-
-  // Uploaded Object.
-  std::unique_ptr<DaosObject> part_obj;
   std::string upload_id;
 
   // Part parameters.
   const uint64_t part_num;
   const std::string part_num_str;
   uint64_t actual_part_size = 0;
+
+  ds3_part_t* ds3p = nullptr;
+  bool is_open() { return ds3p != nullptr; };
 
  public:
   DaosMultipartWriter(const DoutPrefixProvider* dpp, optional_yield y,
@@ -784,7 +782,7 @@ class DaosMultipartWriter : public StoreWriter {
         upload_id(_upload->get_upload_id()),
         part_num(_part_num),
         part_num_str(part_num_str) {}
-  ~DaosMultipartWriter() = default;
+  virtual ~DaosMultipartWriter();
 
   // prepare to start processing object data
   virtual int prepare(optional_yield y) override;
@@ -801,7 +799,7 @@ class DaosMultipartWriter : public StoreWriter {
                        rgw_zone_set* zones_trace, bool* canceled,
                        optional_yield y) override;
 
-  DaosBucket* get_daos_bucket();
+  const std::string& get_bucket_name();
 };
 
 class DaosMultipartPart : public StoreMultipartPart {
@@ -871,7 +869,7 @@ class DaosMultipartUpload : public StoreMultipartUpload {
       std::unique_ptr<rgw::sal::Object> _head_obj, const rgw_user& owner,
       const rgw_placement_rule* ptail_placement_rule, uint64_t part_num,
       const std::string& part_num_str) override;
-  DaosBucket* get_daos_bucket() { return static_cast<DaosBucket*>(bucket); }
+  const std::string& get_bucket_name() { return bucket->get_name(); }
 };
 
 class DaosStore : public StoreStore {
@@ -879,19 +877,9 @@ class DaosStore : public StoreStore {
   std::string luarocks_path;
   DaosZone zone;
   RGWSyncModuleInstanceRef sync_module;
-  std::unique_ptr<DaosBucket> metadata_bucket;
 
  public:
-  /** UUID of the pool */
-  uuid_t pool;
-  /** Pool handle */
-  daos_handle_t poh;
-  /** Metadata bucket handle */
-  daos_handle_t meta_coh;
-  /** Metadata dfs handle */
-  dfs_t* meta_dfs = nullptr;
-  /** Metadata index directories */
-  std::map<std::string, dfs_obj_t*> dirs;
+  ds3_t* ds3 = nullptr;
 
   CephContext* cctx;
 
@@ -1059,10 +1047,6 @@ class DaosStore : public StoreStore {
 
   virtual int initialize(CephContext* cct,
                          const DoutPrefixProvider* dpp) override;
-
-  int read_user(const DoutPrefixProvider* dpp, std::string parent,
-                std::string name, DaosUserInfo* duinfo);
-  DaosBucket* get_metadata_bucket();
 };
 
 }  // namespace rgw::sal
