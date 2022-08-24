@@ -18,7 +18,7 @@
 #pragma once
 
 #include <daos.h>
-#include <daos_fs.h>
+#include <daos_s3.h>
 #include <uuid/uuid.h>
 
 #include <map>
@@ -34,36 +34,32 @@
 #include "rgw_role.h"
 #include "rgw_sal.h"
 
-inline bool IsDebuggerAttached()
-{
+inline bool IsDebuggerAttached() {
 #ifdef DEBUG
-    char buf[4096];
+  char buf[4096];
 
-    const int status_fd = ::open("/proc/self/status", O_RDONLY);
-    if (status_fd == -1)
-        return false;
+  const int status_fd = ::open("/proc/self/status", O_RDONLY);
+  if (status_fd == -1) return false;
 
-    const ssize_t num_read = ::read(status_fd, buf, sizeof(buf) - 1);
-    ::close(status_fd);
+  const ssize_t num_read = ::read(status_fd, buf, sizeof(buf) - 1);
+  ::close(status_fd);
 
-    if (num_read <= 0)
-        return false;
+  if (num_read <= 0) return false;
 
-    buf[num_read] = '\0';
-    constexpr char tracerPidString[] = "TracerPid:";
-    const auto tracer_pid_ptr = ::strstr(buf, tracerPidString);
-    if (!tracer_pid_ptr)
-        return false;
+  buf[num_read] = '\0';
+  constexpr char tracerPidString[] = "TracerPid:";
+  const auto tracer_pid_ptr = ::strstr(buf, tracerPidString);
+  if (!tracer_pid_ptr) return false;
 
-    for (const char* characterPtr = tracer_pid_ptr + sizeof(tracerPidString) - 1; characterPtr <= buf + num_read; ++characterPtr)
-    {
-        if (::isspace(*characterPtr))
-            continue;
-        else
-            return ::isdigit(*characterPtr) != 0 && *characterPtr != '0';
-    }
+  for (const char* characterPtr = tracer_pid_ptr + sizeof(tracerPidString) - 1;
+       characterPtr <= buf + num_read; ++characterPtr) {
+    if (::isspace(*characterPtr))
+      continue;
+    else
+      return ::isdigit(*characterPtr) != 0 && *characterPtr != '0';
+  }
 #endif  // DEBUG
-    return false;
+  return false;
 }
 
 inline void DebugBreak() {
@@ -71,23 +67,30 @@ inline void DebugBreak() {
   // only break into the debugger if the debugger is attached
   if (IsDebuggerAttached())
     raise(SIGINT);  // breaks into GDB and stops, can be continued
-#endif  // DEBUG
+#endif              // DEBUG
 }
 
-inline int NotImplementedLog(const DoutPrefixProvider* ldpp, const char* filename, int linenumber, const char* functionname) {
+inline int NotImplementedLog(const DoutPrefixProvider* ldpp,
+                             const char* filename, int linenumber,
+                             const char* functionname) {
   if (ldpp)
-    ldpp_dout(ldpp, 20) << filename << "(" << linenumber << ") " << functionname << ": Not implemented" << dendl;
+    ldpp_dout(ldpp, 20) << filename << "(" << linenumber << ") " << functionname
+                        << ": Not implemented" << dendl;
   return 0;
 }
 
-inline int NotImplementedGdbBreak(const DoutPrefixProvider* ldpp, const char* filename, int linenumber, const char* functionname) {
+inline int NotImplementedGdbBreak(const DoutPrefixProvider* ldpp,
+                                  const char* filename, int linenumber,
+                                  const char* functionname) {
   NotImplementedLog(ldpp, filename, linenumber, functionname);
   DebugBreak();
   return 0;
 }
 
-#define DAOS_NOT_IMPLEMENTED_GDB_BREAK(ldpp) NotImplementedGdbBreak(ldpp, __FILE__, __LINE__, __FUNCTION__)
-#define DAOS_NOT_IMPLEMENTED_LOG(ldpp) NotImplementedLog(ldpp, __FILE__, __LINE__, __FUNCTION__)
+#define DAOS_NOT_IMPLEMENTED_GDB_BREAK(ldpp) \
+  NotImplementedGdbBreak(ldpp, __FILE__, __LINE__, __FUNCTION__)
+#define DAOS_NOT_IMPLEMENTED_LOG(ldpp) \
+  NotImplementedLog(ldpp, __FILE__, __LINE__, __FUNCTION__)
 
 namespace rgw::sal {
 
@@ -95,14 +98,17 @@ class DaosStore;
 class DaosObject;
 
 #ifdef DEBUG
-// Prepends each log entry with the "filename(source_line) function_name".  Makes it simple to 
+// Prepends each log entry with the "filename(source_line) function_name". Makes
+// it simple to
 //  associate log entries with the source that generated the log entry
 #undef ldpp_dout
-#define ldpp_dout(dpp, v) 						\
-  if (decltype(auto) pdpp = (dpp); pdpp) /* workaround -Wnonnull-compare for 'this' */ \
-    dout_impl(pdpp->get_cct(), ceph::dout::need_dynamic(pdpp->get_subsys()), v) \
-      pdpp->gen_prefix(*_dout) << __FILE__ << "(" << __LINE__ << ") " << __FUNCTION__ << " - "
-#endif // DEBUG
+#define ldpp_dout(dpp, v)                                                     \
+  if (decltype(auto) pdpp = (dpp);                                            \
+      pdpp) /* workaround -Wnonnull-compare for 'this' */                     \
+  dout_impl(pdpp->get_cct(), ceph::dout::need_dynamic(pdpp->get_subsys()), v) \
+          pdpp->gen_prefix(*_dout)                                            \
+      << __FILE__ << "(" << __LINE__ << ") " << __FUNCTION__ << " - "
+#endif  // DEBUG
 
 struct DaosUserInfo {
   RGWUserInfo info;
@@ -148,6 +154,7 @@ class DaosNotification : public Notification {
 class DaosUser : public User {
  private:
   DaosStore* store;
+  std::vector<const char*> access_ids;
 
  public:
   DaosUser(DaosStore* _st, const rgw_user& _u) : User(_u), store(_st) {}
@@ -198,61 +205,63 @@ class DaosUser : public User {
   virtual int remove_user(const DoutPrefixProvider* dpp,
                           optional_yield y) override;
 
+  /** Read user info without loading it */
+  int read_user(const DoutPrefixProvider* dpp, std::string name,
+                DaosUserInfo* duinfo);
+
+  std::unique_ptr<struct ds3_user_info> get_encoded_info(bufferlist& bl,
+                                                         obj_version& obj_ver);
+
   friend class DaosBucket;
 };
+
+// RGWBucketInfo and other information that are shown when listing a bucket is
+// represented in struct DaosBucketInfo. The structure is encoded and stored
+// as the value of the global bucket instance index.
+// TODO: compare pros and cons of separating the bucket_attrs (ACLs, tag etc.)
+// into a different index.
+struct DaosBucketInfo {
+  RGWBucketInfo info;
+
+  obj_version bucket_version;
+  ceph::real_time mtime;
+
+  rgw::sal::Attrs bucket_attrs;
+
+  void encode(bufferlist& bl) const {
+    ENCODE_START(4, 4, bl);
+    encode(info, bl);
+    encode(bucket_version, bl);
+    encode(mtime, bl);
+    encode(bucket_attrs, bl);  // rgw_cache.h example for a map
+    ENCODE_FINISH(bl);
+  }
+
+  void decode(bufferlist::const_iterator& bl) {
+    DECODE_START(4, bl);
+    decode(info, bl);
+    decode(bucket_version, bl);
+    decode(mtime, bl);
+    decode(bucket_attrs, bl);
+    DECODE_FINISH(bl);
+  }
+};
+WRITE_CLASS_ENCODER(DaosBucketInfo);
 
 class DaosBucket : public Bucket {
  private:
   DaosStore* store;
   RGWAccessControlPolicy acls;
-  bool _is_open = false;
-
-  // RGWBucketInfo and other information that are shown when listing a bucket is
-  // represented in struct DaosBucketInfo. The structure is encoded and stored
-  // as the value of the global bucket instance index.
-  // TODO: compare pros and cons of separating the bucket_attrs (ACLs, tag etc.)
-  // into a different index.
-  struct DaosBucketInfo {
-    RGWBucketInfo info;
-
-    obj_version bucket_version;
-    ceph::real_time mtime;
-
-    rgw::sal::Attrs bucket_attrs;
-
-    void encode(bufferlist& bl) const {
-      ENCODE_START(4, 4, bl);
-      encode(info, bl);
-      encode(bucket_version, bl);
-      encode(mtime, bl);
-      encode(bucket_attrs, bl);  // rgw_cache.h example for a map
-      ENCODE_FINISH(bl);
-    }
-
-    void decode(bufferlist::const_iterator& bl) {
-      DECODE_START(4, bl);
-      decode(info, bl);
-      decode(bucket_version, bl);
-      decode(mtime, bl);
-      decode(bucket_attrs, bl);
-      DECODE_FINISH(bl);
-    }
-  };
-  WRITE_CLASS_ENCODER(DaosBucketInfo);
 
  public:
-  /** Container handle */
-  daos_handle_t coh;
-  /** Container uuid */
-  uuid_t cont_uuid;
-  /** Container dfs handle */
-  dfs_t* dfs;
+  /** Container ds3b handle */
+  ds3_bucket_t* ds3b = nullptr;
 
   DaosBucket(DaosStore* _st) : store(_st), acls() {}
 
-  DaosBucket(const DaosBucket& _daos_bucket) : store(_daos_bucket.store), acls(), coh(DAOS_HDL_INVAL), dfs(nullptr) {
-    //TODO: deep copy all objects
-    //daos_duplicate_handle(_daos_bucket.coh);
+  DaosBucket(const DaosBucket& _daos_bucket)
+      : store(_daos_bucket.store), acls(), ds3b(nullptr) {
+    // TODO: deep copy all objects
   }
 
   DaosBucket(DaosStore* _st, User* _u) : Bucket(_u), store(_st), acls() {}
@@ -354,9 +363,9 @@ class DaosBucket : public Bucket {
 
   int open(const DoutPrefixProvider* dpp);
   int close(const DoutPrefixProvider* dpp);
-  bool is_open() { return _is_open; }
-  std::unique_ptr<DaosObject> get_part_object(std::string upload_id,
-                                              uint64_t part_num);
+  bool is_open() { return ds3b != nullptr; }
+  std::unique_ptr<struct ds3_bucket_info> get_encoded_info(
+      bufferlist& bl, ceph::real_time mtime);
 
   friend class DaosStore;
 };
@@ -537,7 +546,6 @@ class DaosObject : public Object {
  private:
   DaosStore* store;
   RGWAccessControlPolicy acls;
-  bool _is_open = false;
 
  public:
   struct DaosReadOp : public ReadOp {
@@ -568,7 +576,7 @@ class DaosObject : public Object {
                            optional_yield y) override;
   };
 
-  dfs_obj_t* dfs_obj;
+  ds3_obj_t* ds3o = nullptr;
 
   DaosObject() = default;
 
@@ -638,7 +646,7 @@ class DaosObject : public Object {
   virtual bool placement_rules_match(rgw_placement_rule& r1,
                                      rgw_placement_rule& r2) override;
   virtual int dump_obj_layout(const DoutPrefixProvider* dpp, optional_yield y,
-                              Formatter* f ) override;
+                              Formatter* f) override;
 
   /* Swift versioning */
   virtual int swift_versioning_restore(bool& restored,
@@ -666,12 +674,11 @@ class DaosObject : public Object {
                                   const std::string& key, bufferlist& val,
                                   bool must_exist, optional_yield y) override;
 
-  bool is_open() { return _is_open; };
+  bool is_open() { return ds3o != nullptr; };
   // Only lookup the object, do not create
-  int lookup(const DoutPrefixProvider* dpp, mode_t* mode = nullptr);
+  int lookup(const DoutPrefixProvider* dpp);
   // Create the object, truncate if exists
-  int create(const DoutPrefixProvider* dpp, const bool create_parents = true,
-             const std::string link_to = "");
+  int create(const DoutPrefixProvider* dpp);
   // Release the daos resources
   int close(const DoutPrefixProvider* dpp);
   // Write to object starting from offset
@@ -681,12 +688,10 @@ class DaosObject : public Object {
            uint64_t& size);
   // Get the object's dirent and attrs
   int get_dir_entry_attrs(const DoutPrefixProvider* dpp,
-                          rgw_bucket_dir_entry* ent, Attrs* getattrs = nullptr,
-                          multipart_upload_info* upload_info = nullptr);
+                          rgw_bucket_dir_entry* ent, Attrs* getattrs = nullptr);
   // Set the object's dirent and attrs
   int set_dir_entry_attrs(const DoutPrefixProvider* dpp,
-                          rgw_bucket_dir_entry* ent, Attrs* setattrs = nullptr,
-                          multipart_upload_info* upload_info = nullptr);
+                          rgw_bucket_dir_entry* ent, Attrs* setattrs = nullptr);
   // Marks this DAOS object as being the latest version and unmarks all other
   // versions as latest
   int mark_as_latest(const DoutPrefixProvider* dpp, ceph::real_time set_mtime);
@@ -700,8 +705,7 @@ class DaosObject : public Object {
 class MPDaosSerializer : public MPSerializer {
  public:
   MPDaosSerializer(const DoutPrefixProvider* dpp, DaosStore* store,
-                   DaosObject* obj, const std::string& lock_name) {
-  }
+                   DaosObject* obj, const std::string& lock_name) {}
 
   virtual int try_lock(const DoutPrefixProvider* dpp, utime_t dur,
                        optional_yield y) override {
@@ -748,15 +752,15 @@ class DaosMultipartWriter : public Writer {
  protected:
   rgw::sal::DaosStore* store;
   MultipartUpload* upload;
-
-  // Uploaded Object.
-  std::unique_ptr<DaosObject> part_obj;
   std::string upload_id;
 
   // Part parameters.
   const uint64_t part_num;
   const std::string part_num_str;
   uint64_t actual_part_size = 0;
+
+  ds3_part_t* ds3p = nullptr;
+  bool is_open() { return ds3p != nullptr; };
 
  public:
   DaosMultipartWriter(const DoutPrefixProvider* dpp, optional_yield y,
@@ -771,7 +775,7 @@ class DaosMultipartWriter : public Writer {
         upload_id(_upload->get_upload_id()),
         part_num(_part_num),
         part_num_str(part_num_str) {}
-  ~DaosMultipartWriter() = default;
+  virtual ~DaosMultipartWriter();
 
   // prepare to start processing object data
   virtual int prepare(optional_yield y) override;
@@ -788,7 +792,7 @@ class DaosMultipartWriter : public Writer {
                        rgw_zone_set* zones_trace, bool* canceled,
                        optional_yield y) override;
 
-  DaosBucket* get_daos_bucket();
+  const std::string& get_bucket_name();
 };
 
 class DaosMultipartPart : public MultipartPart {
@@ -858,7 +862,7 @@ class DaosMultipartUpload : public MultipartUpload {
       std::unique_ptr<rgw::sal::Object> _head_obj, const rgw_user& owner,
       const rgw_placement_rule* ptail_placement_rule, uint64_t part_num,
       const std::string& part_num_str) override;
-  DaosBucket* get_daos_bucket() { return static_cast<DaosBucket*>(bucket); }
+  const std::string& get_bucket_name() { return bucket->get_name(); }
 };
 
 class DaosStore : public Store {
@@ -866,19 +870,9 @@ class DaosStore : public Store {
   std::string luarocks_path;
   DaosZone zone;
   RGWSyncModuleInstanceRef sync_module;
-  std::unique_ptr<DaosBucket> metadata_bucket;
 
  public:
-  /** UUID of the pool */
-  uuid_t pool;
-  /** Pool handle */
-  daos_handle_t poh;
-  /** Metadata bucket handle */
-  daos_handle_t meta_coh;
-  /** Metadata dfs handle */
-  dfs_t* meta_dfs = nullptr;
-  /** Metadata index directories */
-  std::map<std::string, dfs_obj_t*> dirs;
+  ds3_t* ds3 = nullptr;
 
   CephContext* cctx;
 
@@ -952,7 +946,9 @@ class DaosStore : public Store {
   virtual int set_buckets_enabled(const DoutPrefixProvider* dpp,
                                   std::vector<rgw_bucket>& buckets,
                                   bool enabled) override;
-  virtual uint64_t get_new_req_id() override { return DAOS_NOT_IMPLEMENTED_LOG(nullptr); }
+  virtual uint64_t get_new_req_id() override {
+    return DAOS_NOT_IMPLEMENTED_LOG(nullptr);
+  }
   virtual int get_sync_policy_handler(const DoutPrefixProvider* dpp,
                                       std::optional<rgw_zone_id> zone,
                                       std::optional<rgw_bucket> bucket,
@@ -968,7 +964,9 @@ class DaosStore : public Store {
       std::map<int, std::set<std::string>>& shard_ids) override {
     return;
   }
-  virtual int clear_usage(const DoutPrefixProvider* dpp) override { return DAOS_NOT_IMPLEMENTED_LOG(dpp); }
+  virtual int clear_usage(const DoutPrefixProvider* dpp) override {
+    return DAOS_NOT_IMPLEMENTED_LOG(dpp);
+  }
   virtual int read_all_usage(
       const DoutPrefixProvider* dpp, uint64_t start_epoch, uint64_t end_epoch,
       uint32_t max_entries, bool* is_truncated, RGWUsageIter& usage_iter,
@@ -1036,10 +1034,6 @@ class DaosStore : public Store {
 
   virtual int initialize(CephContext* cct,
                          const DoutPrefixProvider* dpp) override;
-
-  int read_user(const DoutPrefixProvider* dpp, std::string parent,
-                std::string name, DaosUserInfo* duinfo);
-  DaosBucket* get_metadata_bucket();
 };
 
 }  // namespace rgw::sal
