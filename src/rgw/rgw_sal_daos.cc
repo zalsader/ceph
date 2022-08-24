@@ -237,6 +237,8 @@ int DaosUser::store_user(const DoutPrefixProvider* dpp, optional_yield y,
   struct DaosUserInfo duinfo;
   ret = read_user(dpp, name, &duinfo);
   obj_version obj_ver = duinfo.user_version;
+  std::unique_ptr<struct ds3_user_info> old_user_info;
+  std::vector<const char*> old_access_ids;
 
   // Check if the user already exists
   if (ret == 0 && obj_ver.ver) {
@@ -260,6 +262,15 @@ int DaosUser::store_user(const DoutPrefixProvider* dpp, optional_yield y,
       return ret;
     }
     obj_ver.ver++;
+
+    for (auto const& [id, key] : duinfo.info.access_keys) {
+      old_access_ids.push_back(id.c_str());
+    }
+    old_user_info.reset(
+        new ds3_user_info{.name = duinfo.info.user_id.to_str().c_str(),
+                          .email = duinfo.info.user_email.c_str(),
+                          .access_ids = old_access_ids.data(),
+                          .access_ids_nr = old_access_ids.size()});
   } else {
     obj_ver.ver = 1;
     obj_ver.tag = "UserTAG";
@@ -269,7 +280,8 @@ int DaosUser::store_user(const DoutPrefixProvider* dpp, optional_yield y,
   std::unique_ptr<struct ds3_user_info> user_info =
       get_encoded_info(bl, obj_ver);
 
-  ret = ds3_user_set(name.c_str(), user_info.get(), store->ds3, nullptr);
+  ret = ds3_user_set(name.c_str(), user_info.get(), old_user_info.get(),
+                     store->ds3, nullptr);
 
   if (ret != 0) {
     ldpp_dout(dpp, 0) << "Error: ds3_user_set failed, name=" << name
