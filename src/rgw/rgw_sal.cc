@@ -220,10 +220,16 @@ rgw::sal::Store* StoreManager::init_storage_provider(const DoutPrefixProvider* d
 
 #ifdef WITH_RADOSGW_DAOS
   else if (cfg.store_name.compare("daos") == 0) {
-    rgw::sal::Store* store = newDaosStore(cct);
+    store = newDaosStore(cct);
     if (store == nullptr) {
       ldpp_dout(dpp, 0) << "newDaosStore() failed!" << dendl;
       return store;
+    }
+    int ret = store->initialize(cct, dpp);
+    if (ret != 0) {
+      ldpp_dout(dpp, 20) << "ERROR: store->initialize() failed: " << ret << dendl;
+      delete store;
+      return nullptr;
     }
   }
 #endif
@@ -286,6 +292,11 @@ rgw::sal::Store* StoreManager::init_raw_storage_provider(const DoutPrefixProvide
   } else if (cfg.store_name.compare("daos") == 0) {
 #ifdef WITH_RADOSGW_DAOS
     store = newDaosStore(cct);
+
+    if (store->initialize(cct, dpp) < 0) {
+      delete store;
+      return nullptr;
+    }
 #else
     store = nullptr;
 #endif

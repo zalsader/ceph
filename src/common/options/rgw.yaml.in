@@ -3576,3 +3576,10 @@ options:
   - rgw
   - osd
   with_legacy: true
+- name: daos_pool
+  type: str
+  level: advanced
+  desc: DAOS Pool to use
+  default: tank
+  services:
+  - rgw

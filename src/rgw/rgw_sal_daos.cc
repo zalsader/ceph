@@ -798,13 +798,14 @@ int DaosStore::initialize(CephContext* cct, const DoutPrefixProvider* dpp) {
 
   // XXX: these params should be taken from config settings and
   // cct somehow?
-  const auto& daos_pool = g_conf().get_val<std::string>("daos_pool");
+  const auto& daos_pool = cct->_conf.get_val<std::string>("daos_pool");
   ldout(cct, 20) << "INFO: daos pool: " << daos_pool << dendl;
 
   ret = ds3_connect(daos_pool.c_str(), nullptr, &ds3, nullptr);
 
   if (ret != 0) {
     ldout(cct, 0) << "ERROR: ds3_connect() failed: " << ret << dendl;
+    ds3_fini();
   }
 
   return ret;
@@ -2467,18 +2468,6 @@ std::string DaosStore::get_cluster_id(const DoutPrefixProvider* dpp,
 extern "C" {
 
 void* newDaosStore(CephContext* cct) {
-  int ret = -1;
-  rgw::sal::DaosStore* store = new rgw::sal::DaosStore(cct);
-
-  if (store) {
-    ret = store->initialize(cct, nullptr);
-    if (ret != 0) {
-      ldout(cct, 0) << "ERROR: store->initialize() failed: " << ret << dendl;
-      store->finalize();
-      delete store;
-      return nullptr;
-    }
-  }
-  return store;
+  return new rgw::sal::DaosStore(cct);
 }
 }
