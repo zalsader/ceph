@@ -62,8 +62,8 @@ int DaosUser::list_buckets(const DoutPrefixProvider* dpp, const string& marker,
     bucket_infos[i].encoded_length = values[i].size();
   }
 
-  char daos_marker[DS3_MAX_KEY];
-  std::strcpy(daos_marker, marker.c_str());
+  char daos_marker[DS3_MAX_BUCKET_NAME];
+  std::strncpy(daos_marker, marker.c_str(), sizeof(daos_marker));
   ret = ds3_bucket_list(&bcount, bucket_infos.data(), daos_marker,
                         &is_truncated, store->ds3, nullptr);
   ldpp_dout(dpp, 20) << "DEBUG: ds3_bucket_list: bcount=" << bcount
@@ -400,7 +400,7 @@ std::unique_ptr<struct ds3_bucket_info> DaosBucket::get_encoded_info(
   auto bucket_info = std::make_unique<struct ds3_bucket_info>();
   bucket_info->encoded = bl.c_str();
   bucket_info->encoded_length = bl.length();
-  std::strcpy(bucket_info->name, get_name().c_str());
+  std::strncpy(bucket_info->name, get_name().c_str(), sizeof(bucket_info->name));
   return bucket_info;
 }
 
@@ -653,8 +653,8 @@ int DaosBucket::list(const DoutPrefixProvider* dpp, ListParams& params, int max,
   vector<struct ds3_common_prefix_info> common_prefixes(max);
   uint32_t ncp = common_prefixes.size();
 
-  char daos_marker[DS3_MAX_KEY];
-  std::strcpy(daos_marker, params.marker.to_str().c_str());
+  char daos_marker[DS3_MAX_KEY_BUFF];
+  std::strncpy(daos_marker, params.marker.to_str().c_str(), sizeof(daos_marker));
 
   ret = ds3_bucket_list_obj(&nobj, object_infos.data(), &ncp,
                             common_prefixes.data(), params.prefix.c_str(),
@@ -720,8 +720,8 @@ int DaosBucket::list_multiparts(
   vector<struct ds3_common_prefix_info> cps(max_uploads);
   uint32_t ncp = cps.size();
 
-  char daos_marker[DS3_MAX_KEY];
-  std::strcpy(daos_marker, marker.c_str());
+  char daos_marker[DS3_MAX_KEY_BUFF];
+  std::strncpy(daos_marker, marker.c_str(), sizeof(daos_marker));
 
   int ret = ds3_bucket_list_multipart(
       get_name().c_str(), &nmp, multipart_upload_infos.data(), &ncp, cps.data(),
@@ -1635,7 +1635,7 @@ int DaosMultipartUpload::init(const DoutPrefixProvider* dpp, optional_yield y,
 
   struct ds3_multipart_upload_info ui;
   std::strcpy(ui.upload_id, MULTIPART_UPLOAD_ID_PREFIX);
-  std::strcpy(ui.key, oid.c_str());
+  std::strncpy(ui.key, oid.c_str(), sizeof(ui.key));
   ui.encoded = bl.c_str();
   ui.encoded_length = bl.length();
   int prefix_length = strlen(ui.upload_id);
