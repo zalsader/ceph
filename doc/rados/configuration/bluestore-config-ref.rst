@@ -357,14 +357,19 @@ The device selector always has the form of ``DDDD:BB:DD.FF`` or ``DDDD.BB.DD.FF`
 
 and then set::
 
-  bluestore_block_path = spdk:0000:01:00.0
+  bluestore_block_path = "spdk:trtype:PCIe traddr:0000:01:00.0"
 
 Where ``0000:01:00.0`` is the device selector found in the output of ``lspci``
 command above.
 
+You may also specify a remote NVMeoF target over the TCP transport as in the
+following example::
+
+  bluestore_block_path = "spdk:trtype:TCP traddr:10.67.110.197 trsvcid:4420 subnqn:nqn.2019-02.io.spdk:cnode1"
+
 To run multiple SPDK instances per node, you must specify the
 amount of dpdk memory in MB that each instance will use, to make sure each
-instance uses its own dpdk memory
+instance uses its own DPDK memory.
 
 In most cases, a single device can be used for data, DB, and WAL.  We describe
 this strategy as *colocating* these components. Be sure to enter the below
@@ -390,16 +395,13 @@ is created on an HDD, BlueStore will be initialized with the current value
 of :confval:`bluestore_min_alloc_size_hdd`, and SSD OSDs (including NVMe devices)
 with the value of :confval:`bluestore_min_alloc_size_ssd`.
 
-Note that this BlueStore attribute takes effect *only* at OSD creation; if
-changed later, a given OSD's behavior will not change unless / until it is
-destroyed and redeployed.
-
 Through the Mimic release, the default values were 64KB and 16KB for rotational
-(HDD) and non-rotational (SSD) media respectively.  Octopus and later releases
-default to a value of 4KB for all media types.
+(HDD) and non-rotational (SSD) media respectively.  Octopus changed the default
+for SSD (non-rotational) media to 4KB, and Pacific changed the default for HDD
+(rotational) media to 4KB as well.
 
-This change was driven by the space amplification experienced by Ceph RADOS
-GateWay (RGW) deployments that host large numbers of relatively small files
+These changes were driven by space amplification experienced by Ceph RADOS
+GateWay (RGW) deployments that host large numbers of small files
 (S3/Swift objects).
 
 For example, when an RGW client stores a 1KB S3 object, it is written to a
@@ -407,7 +409,7 @@ single RADOS object.  With the default :confval:`min_alloc_size` value, 4KB of
 underlying drive space is allocated.  This means that roughly
 (4KB - 1KB) == 3KB is allocated but never used, which corresponds to 300%
 overhead or 25% efficiency. Similarly, a 5KB user object will be stored
-as one 4KB and one 1KB RADOS object, again stranding 4KB of device capcity,
+as one 4KB and one 1KB RADOS object, again stranding 4KB of device capacity,
 though in this case the overhead is a much smaller percentage.  Think of this
 in terms of the remainder from a modulus operation. The overhead *percentage*
 thus decreases rapidly as user object size increases.
@@ -421,7 +423,7 @@ will allocate (6 * 4KB) = 24KB of device capacity.
 
 When an RGW bucket pool contains many relatively large user objects, the effect
 of this phenomenon is often negligible, but should be considered for deployments
-that expect a signficiant fraction of relatively small objects.
+that expect a significant fraction of relatively small objects.
 
 The 4KB default value aligns well with conventional HDD and SSD devices.  Some
 new coarse-IU (Indirection Unit) QLC SSDs however perform and wear best
@@ -441,11 +443,35 @@ the :confval:`bluestore_use_optimal_io_size_for_min_alloc_size`
 option that enables automatic discovery of the appropriate value as each OSD is
 created.  Note that the use of ``bcache``, ``OpenCAS``, ``dmcrypt``,
 ``ATA over Ethernet``, `iSCSI`, or other device layering / abstraction
-technologies may confound the determination of appropriate values. We suggest
-inspecting such OSDs at startup via logs and admin sockets to ensure that
+technologies may confound the determination of appropriate values. OSDs
+deployed on top of VMware storage have been reported to also
+sometimes report a ``rotational`` attribute that does not match the underlying
+hardware.
+
+We suggest inspecting such OSDs at startup via logs and admin sockets to ensure that
 behavior is appropriate.  Note that this also may not work as desired with
 older kernels.  You can check for this by examining the presence and value
 of ``/sys/block/<drive>/queue/optimal_io_size``.
+
+You may also inspect a given OSD:
+
+    .. prompt:: bash #
+
+      ceph osd metadata osd.1701 | grep rotational
+
+This space amplification may manifest as an unusually high ratio of raw to
+stored data reported by ``ceph df``.  ``ceph osd df`` may also report
+anomalously high ``%USE`` / ``VAR`` values when
+compared to other, ostensibly identical OSDs.  A pool using OSDs with
+mismatched ``min_alloc_size`` values may experience unexpected balancer
+behavior as well.
+
+Note that this BlueStore attribute takes effect *only* at OSD creation; if
+changed later, a given OSD's behavior will not change unless / until it is
+destroyed and redeployed with the appropriate option value(s).  Upgrading
+to a later Ceph release will *not* change the value used by OSDs deployed
+under older releases or with other settings.
+
 
 .. confval:: bluestore_min_alloc_size
 .. confval:: bluestore_min_alloc_size_hdd

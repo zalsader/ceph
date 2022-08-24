@@ -4,7 +4,7 @@ if(NOT GPERF)
 endif()
 
 if(WITH_RADOSGW_SELECT_PARQUET)
-  set(ARROW_LIBRARIES Arrow::Parquet)
+  set(ARROW_LIBRARIES Arrow::Arrow Arrow::Parquet)
   add_definitions(-D_ARROW_EXIST)
   message("-- arrow is installed, radosgw/s3select-op is able to process parquet objects")
 endif(WITH_RADOSGW_SELECT_PARQUET)
@@ -39,6 +39,7 @@ set(librgw_common_srcs
   services/svc_quota.cc
   services/svc_sync_modules.cc
   services/svc_rados.cc
+  services/svc_role_rados.cc
   services/svc_sys_obj.cc
   services/svc_sys_obj_cache.cc
   services/svc_sys_obj_core.cc
@@ -132,6 +133,7 @@ set(librgw_common_srcs
   rgw_s3select.cc
   rgw_role.cc
   rgw_sal.cc
+  rgw_sal_filter.cc
   rgw_sal_rados.cc
   rgw_string.cc
   rgw_tag.cc
@@ -158,11 +160,13 @@ set(librgw_common_srcs
   rgw_url.cc
   rgw_oidc_provider.cc
   rgw_datalog.cc
+  rgw_datalog_notify.cc
   cls_fifo_legacy.cc
   rgw_lua_utils.cc
   rgw_lua.cc
   rgw_bucket_encryption.cc
-  rgw_tracer.cc)
+  rgw_tracer.cc
+  rgw_lua_background.cc)
 
 if(WITH_RADOSGW_AMQP_ENDPOINT)
   list(APPEND librgw_common_srcs rgw_amqp.cc)
@@ -196,7 +200,7 @@ endif()
 
 target_link_libraries(rgw_common
   PRIVATE
-    ceph-common
+    global
     cls_2pc_queue_client
     cls_cmpomap_client
     cls_lock_client
@@ -217,6 +221,7 @@ target_link_libraries(rgw_common
     ${CURL_LIBRARIES}
     ${EXPAT_LIBRARIES}
     ${ARROW_LIBRARIES}
+    ${ALLOC_LIBS}
   PUBLIC
     ${LUA_LIBRARIES}
     spawn)
@@ -254,8 +259,8 @@ if(WITH_LTTNG)
 endif()
 
 if(WITH_JAEGER)
-  add_dependencies(rgw_common ${jaeger_base})
-  target_link_libraries(rgw_common PUBLIC ${jaeger_base})
+  add_dependencies(rgw_common jaeger_base)
+  target_link_libraries(rgw_common PUBLIC jaeger_base)
 endif()
 
 if(WITH_RADOSGW_DBSTORE)
@@ -263,11 +268,8 @@ if(WITH_RADOSGW_DBSTORE)
 endif()
 
 if(WITH_RADOSGW_MOTR)
-  target_include_directories(rgw_common PRIVATE "/usr/include/motr")
-  target_compile_options(rgw_common PRIVATE "-Wno-attributes")
-  target_compile_definitions(rgw_common
-    PRIVATE "M0_EXTERN=extern" "M0_INTERNAL=")
-  target_link_libraries(rgw_common PRIVATE motr motr-helpers)
+  find_package(motr REQUIRED)
+  target_link_libraries(rgw_common PRIVATE motr::motr)
 endif()
 
 if(WITH_RADOSGW_DAOS)
@@ -350,50 +352,35 @@ set(rgw_schedulers_srcs
   rgw_dmclock_scheduler_ctx.cc
   rgw_dmclock_sync_scheduler.cc
   rgw_dmclock_async_scheduler.cc)
-set(radosgw_srcs
-  rgw_loadgen_process.cc
-  rgw_asio_client.cc
-  rgw_asio_frontend.cc)
 
 add_library(rgw_schedulers STATIC ${rgw_schedulers_srcs})
 target_link_libraries(rgw_schedulers
   PUBLIC dmclock::dmclock spawn)
 
-add_library(radosgw SHARED
-  ${radosgw_srcs}
-  ${rgw_a_srcs}
+set(radosgw_srcs
   rgw_main.cc
+  rgw_loadgen_process.cc
+  rgw_asio_client.cc
+  rgw_asio_frontend.cc
   rgw_kmip_client_impl.cc)
+
+add_executable(radosgw ${radosgw_srcs})
 
 target_compile_definitions(radosgw PUBLIC "-DCLS_CLIENT_HIDE_IOCTX")
 target_include_directories(radosgw
   PUBLIC "${CMAKE_SOURCE_DIR}/src/dmclock/support/src"
-  PRIVATE "${CMAKE_SOURCE_DIR}/src/libkmip")
+  PRIVATE "${CMAKE_SOURCE_DIR}/src/libkmip"
+  PUBLIC "${CMAKE_SOURCE_DIR}/src/rgw"
+  PRIVATE "${LUA_INCLUDE_DIR}")
+
 target_include_directories(radosgw SYSTEM PUBLIC "../rapidjson/include")
 
-target_link_libraries(radosgw
-  PRIVATE ${rgw_libs} rgw_schedulers kmip
-  PUBLIC dmclock::dmclock
-)
+target_link_libraries(radosgw PRIVATE ${rgw_libs} rgw_schedulers kmip)
 if(WITH_RADOSGW_BEAST_OPENSSL)
   # used by rgw_asio_frontend.cc
   target_link_libraries(radosgw PRIVATE OpenSSL::SSL)
 endif()
-set_target_properties(radosgw PROPERTIES OUTPUT_NAME radosgw VERSION 2.0.0
-  SOVERSION 2)
-install(TARGETS radosgw DESTINATION ${CMAKE_INSTALL_LIBDIR})
-
-add_executable(radosgwd radosgw.cc)
-target_link_libraries(radosgwd radosgw librados
-  cls_rgw_client cls_otp_client cls_lock_client cls_refcount_client
-  cls_log_client cls_timeindex_client neorados_cls_fifo
-  cls_version_client cls_user_client
-  global
-  ${LIB_RESOLV}
-  ${CURL_LIBRARIES} ${EXPAT_LIBRARIES} ${BLKID_LIBRARIES}
-  ${ALLOC_LIBS})
-set_target_properties(radosgwd PROPERTIES OUTPUT_NAME radosgw)
-install(TARGETS radosgwd DESTINATION bin)
+install(TARGETS radosgw DESTINATION bin)
 
 set(radosgw_admin_srcs
   rgw_admin.cc

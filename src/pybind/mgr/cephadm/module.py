@@ -1,5 +1,6 @@
 import json
 import errno
+import ipaddress
 import logging
 import re
 import shlex
@@ -8,6 +9,8 @@ from configparser import ConfigParser
 from functools import wraps
 from tempfile import TemporaryDirectory, NamedTemporaryFile
 from threading import Event
+
+from cephadm.service_discovery import ServiceDiscovery
 
 import string
 from typing import List, Dict, Optional, Callable, Tuple, TypeVar, \
@@ -24,11 +27,13 @@ from ceph.deployment import inventory
 from ceph.deployment.drive_group import DriveGroupSpec
 from ceph.deployment.service_spec import \
     ServiceSpec, PlacementSpec, \
-    HostPlacementSpec, IngressSpec
+    HostPlacementSpec, IngressSpec, \
+    TunedProfileSpec
 from ceph.utils import str_to_datetime, datetime_to_str, datetime_now
 from cephadm.serve import CephadmServe
 from cephadm.services.cephadmservice import CephadmDaemonDeploySpec
-from cephadm.agent import CherryPyThread, CephadmAgentHelpers
+from cephadm.http_server import CephadmHttpServer
+from cephadm.agent import CephadmAgentHelpers
 
 
 from mgr_module import MgrModule, HandleCommandResult, Option, NotifyType
@@ -53,15 +58,17 @@ from .services.nfs import NFSService
 from .services.osd import OSDRemovalQueue, OSDService, OSD, NotFoundError
 from .services.monitoring import GrafanaService, AlertmanagerService, PrometheusService, \
     NodeExporterService, SNMPGatewayService, LokiService, PromtailService
+from .services.jaeger import ElasticSearchService, JaegerAgentService, JaegerCollectorService, JaegerQueryService
 from .schedule import HostAssignment
 from .inventory import Inventory, SpecStore, HostCache, AgentCache, EventStore, \
-    ClientKeyringStore, ClientKeyringSpec
+    ClientKeyringStore, ClientKeyringSpec, TunedProfileStore
 from .upgrade import CephadmUpgrade
 from .template import TemplateMgr
 from .utils import CEPH_IMAGE_TYPES, RESCHEDULE_FROM_OFFLINE_HOSTS_TYPES, forall_hosts, \
-    cephadmNoImage
+    cephadmNoImage, CEPH_UPGRADE_ORDER
 from .configchecks import CephadmConfigChecks
 from .offline_watcher import OfflineHostWatcher
+from .tuned_profiles import TunedProfileUtils
 
 try:
     import asyncssh
@@ -99,9 +106,13 @@ DEFAULT_LOKI_IMAGE = 'docker.io/grafana/loki:2.4.0'
 DEFAULT_PROMTAIL_IMAGE = 'docker.io/grafana/promtail:2.4.0'
 DEFAULT_ALERT_MANAGER_IMAGE = 'quay.io/prometheus/alertmanager:v0.23.0'
 DEFAULT_GRAFANA_IMAGE = 'quay.io/ceph/ceph-grafana:8.3.5'
-DEFAULT_HAPROXY_IMAGE = 'docker.io/library/haproxy:2.3'
-DEFAULT_KEEPALIVED_IMAGE = 'docker.io/arcts/keepalived'
+DEFAULT_HAPROXY_IMAGE = 'quay.io/ceph/haproxy:2.3'
+DEFAULT_KEEPALIVED_IMAGE = 'quay.io/ceph/keepalived:2.1.5'
 DEFAULT_SNMP_GATEWAY_IMAGE = 'docker.io/maxwo/snmp-notifier:v1.2.1'
+DEFAULT_ELASTICSEARCH_IMAGE = 'quay.io/omrizeneva/elasticsearch:6.8.23'
+DEFAULT_JAEGER_COLLECTOR_IMAGE = 'quay.io/jaegertracing/jaeger-collector:1.29'
+DEFAULT_JAEGER_AGENT_IMAGE = 'quay.io/jaegertracing/jaeger-agent:1.29'
+DEFAULT_JAEGER_QUERY_IMAGE = 'quay.io/jaegertracing/jaeger-query:1.29'
 # ------------------------------------------------------------------------------
 
 
@@ -225,6 +236,26 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule,
             'container_image_snmp_gateway',
             default=DEFAULT_SNMP_GATEWAY_IMAGE,
             desc='SNMP Gateway container image',
+        ),
+        Option(
+            'container_image_elasticsearch',
+            default=DEFAULT_ELASTICSEARCH_IMAGE,
+            desc='elasticsearch container image',
+        ),
+        Option(
+            'container_image_jaeger_agent',
+            default=DEFAULT_JAEGER_AGENT_IMAGE,
+            desc='Jaeger agent container image',
+        ),
+        Option(
+            'container_image_jaeger_collector',
+            default=DEFAULT_JAEGER_COLLECTOR_IMAGE,
+            desc='Jaeger collector container image',
+        ),
+        Option(
+            'container_image_jaeger_query',
+            default=DEFAULT_JAEGER_QUERY_IMAGE,
+            desc='Jaeger query container image',
         ),
         Option(
             'warn_on_stray_hosts',
@@ -392,6 +423,12 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule,
             default=10,
             desc='max number of osds that will be drained simultaneously when osds are removed'
         ),
+        Option(
+            'service_discovery_port',
+            type='int',
+            default=8765,
+            desc='cephadm service discovery port'
+        ),
     ]
 
     def __init__(self, *args: Any, **kwargs: Any):
@@ -429,6 +466,10 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule,
             self.container_image_haproxy = ''
             self.container_image_keepalived = ''
             self.container_image_snmp_gateway = ''
+            self.container_image_elasticsearch = ''
+            self.container_image_jaeger_agent = ''
+            self.container_image_jaeger_collector = ''
+            self.container_image_jaeger_query = ''
             self.warn_on_stray_hosts = True
             self.warn_on_stray_daemons = True
             self.warn_on_failed_host_check = True
@@ -459,6 +500,7 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule,
             self.agent_refresh_rate = 0
             self.agent_down_multiplier = 0.0
             self.agent_starting_port = 0
+            self.service_discovery_port = 0
             self.apply_spec_fails: List[Tuple[str, str]] = []
             self.max_osd_draining_count = 10
             self.device_enhanced_scan = False
@@ -504,6 +546,11 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule,
         self.keys = ClientKeyringStore(self)
         self.keys.load()
 
+        self.tuned_profiles = TunedProfileStore(self)
+        self.tuned_profiles.load()
+
+        self.tuned_profile_utils = TunedProfileUtils(self)
+
         # ensure the host lists are in sync
         for h in self.inventory.keys():
             if h not in self.cache.daemons:
@@ -523,7 +570,8 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule,
             RgwService, RbdMirrorService, GrafanaService, AlertmanagerService,
             PrometheusService, NodeExporterService, LokiService, PromtailService, CrashService, IscsiService,
             IngressService, CustomContainerService, CephfsMirrorService,
-            CephadmAgent, SNMPGatewayService
+            CephadmAgent, SNMPGatewayService, ElasticSearchService, JaegerQueryService, JaegerAgentService,
+            JaegerCollectorService
         ]
 
         # https://github.com/python/mypy/issues/8993
@@ -540,8 +588,8 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule,
 
         self.config_checker = CephadmConfigChecks(self)
 
-        self.cherrypy_thread = CherryPyThread(self)
-        self.cherrypy_thread.start()
+        self.http_server = CephadmHttpServer(self)
+        self.http_server.start()
         self.agent_helpers = CephadmAgentHelpers(self)
         if self.use_agent:
             self.agent_helpers._apply_agent()
@@ -553,7 +601,7 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule,
         self.log.debug('shutdown')
         self._worker_pool.close()
         self._worker_pool.join()
-        self.cherrypy_thread.shutdown()
+        self.http_server.shutdown()
         self.offline_watcher.shutdown()
         self.run = False
         self.event.set()
@@ -677,7 +725,8 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule,
         suffix = daemon_type not in [
             'mon', 'crash',
             'prometheus', 'node-exporter', 'grafana', 'alertmanager',
-            'container', 'agent', 'snmp-gateway', 'loki', 'promtail'
+            'container', 'agent', 'snmp-gateway', 'loki', 'promtail',
+            'elasticsearch', 'jaeger-collector', 'jaeger-agent', 'jaeger-query'
         ]
         if forcename:
             if len([d for d in existing if d.daemon_id == forcename]):
@@ -754,6 +803,7 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule,
             sd.memory_usage = d.get('memory_usage')
             sd.memory_request = d.get('memory_request')
             sd.memory_limit = d.get('memory_limit')
+            sd.cpu_percentage = d.get('cpu_percentage')
             sd._service_name = d.get('service_name')
             sd.deployed_by = d.get('deployed_by')
             sd.version = d.get('version')
@@ -1330,6 +1380,14 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule,
             image = self.container_image_haproxy
         elif daemon_type == 'keepalived':
             image = self.container_image_keepalived
+        elif daemon_type == 'elasticsearch':
+            image = self.container_image_elasticsearch
+        elif daemon_type == 'jaeger-agent':
+            image = self.container_image_jaeger_agent
+        elif daemon_type == 'jaeger-collector':
+            image = self.container_image_jaeger_collector
+        elif daemon_type == 'jaeger-query':
+            image = self.container_image_jaeger_query
         elif daemon_type == CustomContainerService.TYPE:
             # The image can't be resolved, the necessary information
             # is only available when a container is deployed (given
@@ -1345,11 +1403,6 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule,
         return image
 
     def _check_valid_addr(self, host: str, addr: str) -> str:
-        # make sure mgr is not resolving own ip
-        if addr in self.get_mgr_id():
-            raise OrchestratorError(
-                "Can not automatically resolve ip address of host where active mgr is running. Please explicitly provide the address.")
-
         # make sure hostname is resolvable before trying to make a connection
         try:
             ip_addr = utils.resolve_ip(addr)
@@ -1372,6 +1425,15 @@ Then run the following:
 > ssh -F ssh_config -i ~/cephadm_private_key {self.ssh_user}@{addr}'''
             raise OrchestratorError(msg)
 
+        if ipaddress.ip_address(ip_addr).is_loopback and host == addr:
+            # if this is a re-add, use old address. otherwise error
+            if host not in self.inventory or self.inventory.get_addr(host) == host:
+                raise OrchestratorError(
+                    (f'Cannot automatically resolve ip address of host {host}. Ip resolved to loopback address: {ip_addr}\n'
+                     + f'Please explicitly provide the address (ceph orch host add {host} --addr <ip-addr>)'))
+            self.log.debug(
+                f'Received loopback address resolving ip for {host}: {ip_addr}. Falling back to previous address.')
+            ip_addr = self.inventory.get_addr(host)
         out, err, code = self.wait_async(CephadmServe(self)._run_cephadm(
             host, cephadmNoImage, 'check-host',
             ['--expect-hostname', host],
@@ -1750,6 +1812,34 @@ Then run the following:
 
         return f"Ceph cluster {self._cluster_fsid} on {hostname} has exited maintenance mode"
 
+    @handle_orch_error
+    @host_exists()
+    def rescan_host(self, hostname: str) -> str:
+        """Use cephadm to issue a disk rescan on each HBA
+
+        Some HBAs and external enclosures don't automatically register
+        device insertion with the kernel, so for these scenarios we need
+        to manually rescan
+
+        :param hostname: (str) host name
+        """
+        self.log.info(f'disk rescan request sent to host "{hostname}"')
+        _out, _err, _code = self.wait_async(CephadmServe(self)._run_cephadm(hostname, cephadmNoImage, "disk-rescan",
+                                                                            [],
+                                                                            no_fsid=True,
+                                                                            error_ok=True))
+        if not _err:
+            raise OrchestratorError('Unexpected response from cephadm disk-rescan call')
+
+        msg = _err[0].split('\n')[-1]
+        log_msg = f'disk rescan: {msg}'
+        if msg.upper().startswith('OK'):
+            self.log.info(log_msg)
+        else:
+            self.log.warning(log_msg)
+
+        return f'{msg}'
+
     def get_minimal_ceph_conf(self) -> str:
         _, config, _ = self.check_mon_command({
             "prefix": "config generate-minimal-conf",
@@ -1884,6 +1974,9 @@ Then run the following:
 
     @handle_orch_error
     def service_action(self, action: str, service_name: str) -> List[str]:
+        if service_name not in self.spec_store.all_specs.keys():
+            raise OrchestratorError(f'Invalid service name "{service_name}".'
+                                    + ' View currently running services using "ceph orch ls"')
         dds: List[DaemonDescription] = self.cache.get_daemons_by_service(service_name)
         if not dds:
             raise OrchestratorError(f'No daemons exist under service name "{service_name}".'
@@ -1912,6 +2005,10 @@ Then run the following:
             if daemon_spec.daemon_type != 'osd':
                 daemon_spec = self.cephadm_services[daemon_type_to_service(
                     daemon_spec.daemon_type)].prepare_create(daemon_spec)
+            else:
+                # for OSDs, we still need to update config, just not carry out the full
+                # prepare_create function
+                daemon_spec.final_config, daemon_spec.deps = self.osd_service.generate_config(daemon_spec)
             return self.wait_async(CephadmServe(self)._create_daemon(daemon_spec, reconfig=(action == 'reconfig')))
 
         actions = {
@@ -1967,6 +2064,9 @@ Then run the following:
 
     def daemon_is_self(self, daemon_type: str, daemon_id: str) -> bool:
         return daemon_type == 'mgr' and daemon_id == self.get_mgr_id()
+
+    def get_active_mgr(self) -> DaemonDescription:
+        return self.mgr_service.get_active_daemon(self.cache.get_daemons_by_type('mgr'))
 
     def get_active_mgr_digests(self) -> List[str]:
         digests = self.mgr_service.get_active_daemon(
@@ -2305,25 +2405,31 @@ Then run the following:
             root_cert = ''
             server_port = ''
             try:
-                server_port = str(self.cherrypy_thread.server_port)
-                root_cert = self.cherrypy_thread.ssl_certs.get_root_cert()
+                server_port = str(self.http_server.agent.server_port)
+                root_cert = self.http_server.agent.ssl_certs.get_root_cert()
             except Exception:
                 pass
             deps = sorted([self.get_mgr_ip(), server_port, root_cert,
                            str(self.device_enhanced_scan)])
         elif daemon_type == 'iscsi':
             deps = [self.get_mgr_ip()]
+
+        elif daemon_type == 'prometheus':
+            # for prometheus we add the active mgr as an explicit dependency,
+            # this way we force a redeploy after a mgr failover
+            deps.append(self.get_active_mgr().name())
+            deps.append(str(self.get_module_option_ex('prometheus', 'server_port', 9283)))
+            deps += [s for s in ['node-exporter', 'alertmanager', 'ingress']
+                     if self.cache.get_daemons_by_service(s)]
         else:
             need = {
-                'prometheus': ['mgr', 'alertmanager', 'node-exporter', 'ingress'],
-                'grafana': ['prometheus'],
+                'grafana': ['prometheus', 'loki'],
                 'alertmanager': ['mgr', 'alertmanager', 'snmp-gateway'],
+                'promtail': ['loki'],
             }
             for dep_type in need.get(daemon_type, []):
                 for dd in self.cache.get_daemons_by_type(dep_type):
                     deps.append(dd.name())
-            if daemon_type == 'prometheus':
-                deps.append(str(self.get_module_option_ex('prometheus', 'server_port', 9283)))
         return sorted(deps)
 
     @forall_hosts
@@ -2429,6 +2535,53 @@ Then run the following:
 
         return self._apply_service_spec(cast(ServiceSpec, spec))
 
+    @handle_orch_error
+    def apply_tuned_profiles(self, specs: List[TunedProfileSpec]) -> str:
+        outs = []
+        for spec in specs:
+            self.tuned_profiles.add_profile(spec)
+            outs.append(f'Saved tuned profile {spec.profile_name}')
+        self._kick_serve_loop()
+        return '\n'.join(outs)
+
+    @handle_orch_error
+    def rm_tuned_profile(self, profile_name: str) -> str:
+        if profile_name not in self.tuned_profiles:
+            raise OrchestratorError(
+                f'Tuned profile {profile_name} does not exist. Nothing to remove.')
+        self.tuned_profiles.rm_profile(profile_name)
+        self._kick_serve_loop()
+        return f'Removed tuned profile {profile_name}'
+
+    @handle_orch_error
+    def tuned_profile_ls(self) -> List[TunedProfileSpec]:
+        return self.tuned_profiles.list_profiles()
+
+    @handle_orch_error
+    def tuned_profile_add_setting(self, profile_name: str, setting: str, value: str) -> str:
+        if profile_name not in self.tuned_profiles:
+            raise OrchestratorError(
+                f'Tuned profile {profile_name} does not exist. Cannot add setting.')
+        self.tuned_profiles.add_setting(profile_name, setting, value)
+        self._kick_serve_loop()
+        return f'Added setting {setting} with value {value} to tuned profile {profile_name}'
+
+    @handle_orch_error
+    def tuned_profile_rm_setting(self, profile_name: str, setting: str) -> str:
+        if profile_name not in self.tuned_profiles:
+            raise OrchestratorError(
+                f'Tuned profile {profile_name} does not exist. Cannot remove setting.')
+        self.tuned_profiles.rm_setting(profile_name, setting)
+        self._kick_serve_loop()
+        return f'Removed setting {setting} from tuned profile {profile_name}'
+
+    @handle_orch_error
+    def service_discovery_dump_cert(self) -> str:
+        root_cert = self.get_store(ServiceDiscovery.KV_STORE_SD_ROOT_CERT)
+        if not root_cert:
+            raise OrchestratorError('No certificate found for service discovery')
+        return root_cert
+
     def set_health_warning(self, name: str, summary: str, count: int, detail: List[str]) -> None:
         self.health_checks[name] = {
             'severity': 'warning',
@@ -2454,6 +2607,7 @@ Then run the following:
             spec=spec,
             hosts=self.cache.get_schedulable_hosts(),
             unreachable_hosts=self.cache.get_unreachable_hosts(),
+            draining_hosts=self.cache.get_draining_hosts(),
             networks=self.cache.networks,
             daemons=self.cache.get_daemons_by_service(spec.service_name()),
             allow_colo=svc.allow_colo(),
@@ -2503,6 +2657,10 @@ Then run the following:
                 'crash': PlacementSpec(host_pattern='*'),
                 'container': PlacementSpec(count=1),
                 'snmp-gateway': PlacementSpec(count=1),
+                'elasticsearch': PlacementSpec(count=1),
+                'jaeger-agent': PlacementSpec(host_pattern='*'),
+                'jaeger-collector': PlacementSpec(count=1),
+                'jaeger-query': PlacementSpec(count=1)
             }
             spec.placement = defaults[spec.service_type]
         elif spec.service_type in ['mon', 'mgr'] and \
@@ -2532,6 +2690,7 @@ Then run the following:
             spec=spec,
             hosts=self.inventory.all_specs(),  # All hosts, even those without daemon refresh
             unreachable_hosts=self.cache.get_unreachable_hosts(),
+            draining_hosts=self.cache.get_draining_hosts(),
             networks=self.cache.networks,
             daemons=self.cache.get_daemons_by_service(spec.service_name()),
             allow_colo=self.cephadm_services[spec.service_type].allow_colo(),
@@ -2686,10 +2845,37 @@ Then run the following:
         return self.upgrade.upgrade_ls(image, tags, show_all_versions)
 
     @handle_orch_error
-    def upgrade_start(self, image: str, version: str) -> str:
+    def upgrade_start(self, image: str, version: str, daemon_types: Optional[List[str]] = None, host_placement: Optional[str] = None,
+                      services: Optional[List[str]] = None, limit: Optional[int] = None) -> str:
         if self.inventory.get_host_with_state("maintenance"):
             raise OrchestratorError("upgrade aborted - you have host(s) in maintenance state")
-        return self.upgrade.upgrade_start(image, version)
+        if daemon_types is not None and services is not None:
+            raise OrchestratorError('--daemon-types and --services are mutually exclusive')
+        if daemon_types is not None:
+            for dtype in daemon_types:
+                if dtype not in CEPH_UPGRADE_ORDER:
+                    raise OrchestratorError(f'Upgrade aborted - Got unexpected daemon type "{dtype}".\n'
+                                            f'Viable daemon types for this command are: {utils.CEPH_TYPES + utils.GATEWAY_TYPES}')
+        if services is not None:
+            for service in services:
+                if service not in self.spec_store:
+                    raise OrchestratorError(f'Upgrade aborted - Got unknown service name "{service}".\n'
+                                            f'Known services are: {self.spec_store.all_specs.keys()}')
+        hosts: Optional[List[str]] = None
+        if host_placement is not None:
+            all_hosts = list(self.inventory.all_specs())
+            placement = PlacementSpec.from_string(host_placement)
+            hosts = placement.filter_matching_hostspecs(all_hosts)
+            if not hosts:
+                raise OrchestratorError(
+                    f'Upgrade aborted - hosts parameter "{host_placement}" provided did not match any hosts')
+
+        if limit is not None:
+            if limit < 1:
+                raise OrchestratorError(
+                    f'Upgrade aborted - --limit arg must be a positive integer, not {limit}')
+
+        return self.upgrade.upgrade_start(image, version, daemon_types, hosts, services, limit)
 
     @handle_orch_error
     def upgrade_pause(self) -> str:
@@ -2737,7 +2923,10 @@ Then run the following:
 
         # trigger the serve loop to initiate the removal
         self._kick_serve_loop()
-        return "Scheduled OSD(s) for removal"
+        warning_zap = "" if zap else ("\nVG/LV for the OSDs won't be zapped (--zap wasn't passed).\n"
+                                      "Run the `ceph-volume lvm zap` command with `--destroy`"
+                                      " against the VG/LV if you want them to be destroyed.")
+        return f"Scheduled OSD(s) for removal.{warning_zap}"
 
     @handle_orch_error
     def stop_remove_osds(self, osd_ids: List[str]) -> str:

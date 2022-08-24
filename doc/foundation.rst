@@ -52,6 +52,7 @@ General
 * `ISS <http://iss-integration.com/>`_
 * `Linode <https://linode.com/>`_
 * `OSNexus <https://osnexus.com/>`_
+* `Seagate <https://seagate.com/>`_
 * `SinoRail <http://www.sinorail.com/>`_
 * `Vexxhost <https://vexxhost.com>`_
 
@@ -96,20 +97,21 @@ Members
 -------
 
 * Anjaneya "Reddy" Chagam (Intel)
-* Dan van der Ster (CERN) - Associate member representative
+* Carlos Maltzahn (UCSC) - Associate member representative
+* Dan van der Ster (CERN) - Ceph Council representative
 * Haomai Wang (XSKY)
 * James Page (Canonical)
-* Lenz Grimmer (SUSE) - Ceph Leadership Team representative
-* Lars Marowsky-Bree (SUSE)
+* Joao Luis (SUSE)
+* Josh Durgin (Red Hat) - Ceph Council representative
 * Matias Bjorling (Western Digital)
 * Matthew Leonard (Bloomberg)
 * Mike Perez (Red Hat) - Ceph community manager
 * Myoungwon Oh (Samsung Electronics)
-* Martin Verges (croit) - General member representative
+* Neha Ojha (Red Hat) - Ceph Council Representative
+* Steven Umbehocker (OSNexus) - General member representative
 * Pawel Sadowski (OVH)
 * Phil Straw (SoftIron)
 * Robin Johnson (DigitalOcean)
-* Sage Weil (Red Hat) - Ceph project leader
 * Xie Xingguo (ZTE)
 * Zhang Shaowen (China Mobile)
 
@@ -118,4 +120,3 @@ Joining
 
 For information about joining the Ceph Foundation, please contact
 membership@linuxfoundation.org.
-

@@ -85,7 +85,7 @@ int RGWListBuckets_ObjStore_SWIFT::get_params(optional_yield y)
   return 0;
 }
 
-static void dump_account_metadata(struct req_state * const s,
+static void dump_account_metadata(req_state * const s,
                                   const RGWUsageStats& global_stats,
                                   const std::map<std::string, RGWUsageStats> &policies_stats,
                                   /* const */map<string, bufferlist>& attrs,
@@ -167,7 +167,7 @@ void RGWListBuckets_ObjStore_SWIFT::send_response_begin(bool has_buckets)
 {
   if (op_ret) {
     set_req_state_err(s, op_ret);
-  } else if (!has_buckets && s->format == RGW_FORMAT_PLAIN) {
+  } else if (!has_buckets && s->format == RGWFormat::PLAIN) {
     op_ret = STATUS_NO_CONTENT;
     set_req_state_err(s, op_ret);
   }
@@ -178,7 +178,7 @@ void RGWListBuckets_ObjStore_SWIFT::send_response_begin(bool has_buckets)
             global_stats,
             policies_stats,
             s->user->get_attrs(),
-            s->user->get_info().user_quota,
+            s->user->get_info().quota.user_quota,
             static_cast<RGWAccessControlPolicy_SWIFTAcct&>(*s->user_acl));
     dump_errno(s);
     dump_header(s, "Accept-Ranges", "bytes");
@@ -284,7 +284,7 @@ void RGWListBuckets_ObjStore_SWIFT::send_response_end()
             global_stats,
             policies_stats,
             s->user->get_attrs(),
-            s->user->get_info().user_quota,
+            s->user->get_info().quota.user_quota,
             static_cast<RGWAccessControlPolicy_SWIFTAcct&>(*s->user_acl));
     dump_errno(s);
     end_header(s, nullptr, nullptr, s->formatter->get_len(), true);
@@ -341,7 +341,7 @@ int RGWListBucket_ObjStore_SWIFT::get_params(optional_yield y)
   return 0;
 }
 
-static void dump_container_metadata(struct req_state *,
+static void dump_container_metadata(req_state *,
                                     const rgw::sal::Bucket*,
                                     const RGWQuotaInfo&,
                                     const RGWBucketWebsiteConf&);
@@ -352,7 +352,7 @@ void RGWListBucket_ObjStore_SWIFT::send_response()
   map<string, bool>::iterator pref_iter = common_prefixes.begin();
 
   dump_start(s);
-  dump_container_metadata(s, s->bucket.get(), bucket_quota,
+  dump_container_metadata(s, s->bucket.get(), quota.bucket_quota,
                           s->bucket->get_info().website_conf);
 
   s->formatter->open_array_section_with_attrs("container",
@@ -414,7 +414,7 @@ void RGWListBucket_ObjStore_SWIFT::send_response()
 
       /* swift is a bit inconsistent here */
       switch (s->format) {
-        case RGW_FORMAT_XML:
+        case RGWFormat::XML:
           s->formatter->dump_string("name", name);
           break;
         default:
@@ -451,7 +451,7 @@ next:
   rgw_flush_formatter_and_reset(s, s->formatter);
 } // RGWListBucket_ObjStore_SWIFT::send_response
 
-static void dump_container_metadata(struct req_state *s,
+static void dump_container_metadata(req_state *s,
                                     const rgw::sal::Bucket* bucket,
                                     const RGWQuotaInfo& quota,
                                     const RGWBucketWebsiteConf& ws_conf)
@@ -559,7 +559,7 @@ void RGWStatAccount_ObjStore_SWIFT::send_response()
             global_stats,
             policies_stats,
             attrs,
-            s->user->get_info().user_quota,
+            s->user->get_info().quota.user_quota,
             static_cast<RGWAccessControlPolicy_SWIFTAcct&>(*s->user_acl));
   }
 
@@ -575,7 +575,7 @@ void RGWStatBucket_ObjStore_SWIFT::send_response()
 {
   if (op_ret >= 0) {
     op_ret = STATUS_NO_CONTENT;
-    dump_container_metadata(s, bucket.get(), bucket_quota,
+    dump_container_metadata(s, bucket.get(), quota.bucket_quota,
                             s->bucket->get_info().website_conf);
   }
 
@@ -1311,7 +1311,7 @@ static void get_contype_from_attrs(map<string, bufferlist>& attrs,
   }
 }
 
-static void dump_object_metadata(const DoutPrefixProvider* dpp, struct req_state * const s,
+static void dump_object_metadata(const DoutPrefixProvider* dpp, req_state * const s,
 				 const map<string, bufferlist>& attrs)
 {
   map<string, string> response_attrs;
@@ -2499,7 +2499,7 @@ RGWOp* RGWSwiftWebsiteHandler::get_ws_listing_op()
       /* Generate the header now. */
       set_req_state_err(s, op_ret);
       dump_errno(s);
-      dump_container_metadata(s, s->bucket.get(), bucket_quota,
+      dump_container_metadata(s, s->bucket.get(), quota.bucket_quota,
                               s->bucket->get_info().website_conf);
       end_header(s, this, "text/html");
       if (op_ret < 0) {
@@ -2805,7 +2805,12 @@ int RGWHandler_REST_SWIFT::postauth_init(optional_yield y)
   struct req_init_state* t = &s->init_state;
 
   /* XXX Stub this until Swift Auth sets account into URL. */
-  s->bucket_tenant = s->user->get_tenant();
+  if (g_conf()->rgw_swift_account_in_url
+      && s->user->get_id().id == RGW_USER_ANON_ID) {
+    s->bucket_tenant = s->account_name;
+  } else {
+    s->bucket_tenant = s->user->get_tenant();
+  }
   s->bucket_name = t->url_bucket;
 
   if (!s->object) {
@@ -2904,7 +2909,7 @@ static void next_tok(string& str, string& tok, char delim)
 }
 
 int RGWHandler_REST_SWIFT::init_from_header(rgw::sal::Store* store,
-					    struct req_state* const s,
+					    req_state* const s,
                                             const std::string& frontend_prefix)
 {
   string req;
@@ -2978,7 +2983,7 @@ int RGWHandler_REST_SWIFT::init_from_header(rgw::sal::Store* store,
     return -ENOENT;
   }
 
-  int ret = allocate_formatter(s, RGW_FORMAT_PLAIN, true);
+  int ret = allocate_formatter(s, RGWFormat::PLAIN, true);
   if (ret < 0)
     return ret;
 
@@ -3029,7 +3034,7 @@ int RGWHandler_REST_SWIFT::init_from_header(rgw::sal::Store* store,
   return 0;
 }
 
-int RGWHandler_REST_SWIFT::init(rgw::sal::Store* store, struct req_state* s,
+int RGWHandler_REST_SWIFT::init(rgw::sal::Store* store, req_state* s,
 				rgw::io::BasicClient *cio)
 {
   struct req_init_state *t = &s->init_state;
@@ -3077,7 +3082,7 @@ int RGWHandler_REST_SWIFT::init(rgw::sal::Store* store, struct req_state* s,
 
 RGWHandler_REST*
 RGWRESTMgr_SWIFT::get_handler(rgw::sal::Store* store,
-			      struct req_state* const s,
+			      req_state* const s,
                               const rgw::auth::StrategyRegistry& auth_registry,
                               const std::string& frontend_prefix)
 {
@@ -3102,7 +3107,7 @@ RGWRESTMgr_SWIFT::get_handler(rgw::sal::Store* store,
 
 RGWHandler_REST* RGWRESTMgr_SWIFT_Info::get_handler(
   rgw::sal::Store* store,
-  struct req_state* const s,
+  req_state* const s,
   const rgw::auth::StrategyRegistry& auth_registry,
   const std::string& frontend_prefix)
 {

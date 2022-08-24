@@ -6,14 +6,17 @@
 #include <random>
 #include <boost/iterator/counting_iterator.hpp>
 
-#include "crimson/os/seastore/segment_cleaner.h"
+#include "crimson/os/seastore/async_cleaner.h"
 #include "crimson/os/seastore/cache.h"
+#include "crimson/os/seastore/logging.h"
 #include "crimson/os/seastore/transaction_manager.h"
 #include "crimson/os/seastore/segment_manager/ephemeral.h"
 #include "crimson/os/seastore/seastore.h"
 #include "crimson/os/seastore/segment_manager.h"
 #include "crimson/os/seastore/collection_manager/flat_collection_manager.h"
 #include "crimson/os/seastore/onode_manager/staged-fltree/fltree_onode_manager.h"
+#include "crimson/os/seastore/random_block_manager/rbm_device.h"
+#include "crimson/os/seastore/journal/circular_bounded_journal.h"
 
 using namespace crimson;
 using namespace crimson::os;
@@ -23,6 +26,8 @@ class EphemeralTestState {
 protected:
   segment_manager::EphemeralSegmentManagerRef segment_manager;
   std::list<segment_manager::EphemeralSegmentManagerRef> secondary_segment_managers;
+  std::unique_ptr<random_block_device::RBMDevice> rb_device;
+  journal_type_t journal_type;
 
   EphemeralTestState(std::size_t num_segment_managers) {
     assert(num_segment_managers > 0);
@@ -48,6 +53,8 @@ protected:
   virtual FuturizedStore::mount_ertr::future<> _mount() = 0;
 
   void restart() {
+    LOG_PREFIX(EphemeralTestState::restart);
+    SUBINFO(test, "begin ...");
     _teardown().get0();
     destroy();
     segment_manager->remount();
@@ -56,9 +63,11 @@ protected:
     }
     init();
     _mount().handle_error(crimson::ct_error::assert_all{}).get0();
+    SUBINFO(test, "finish");
   }
-
-  seastar::future<> tm_setup() {
+  seastar::future<> segment_setup()
+  {
+    LOG_PREFIX(EphemeralTestState::segment_setup);
     segment_manager = segment_manager::create_test_ephemeral();
     for (auto &sec_sm : secondary_segment_managers) {
       sec_sm = segment_manager::create_test_ephemeral();
@@ -87,69 +96,103 @@ protected:
             segment_manager::get_ephemeral_device_config(cnt, get_num_devices()));
         });
       });
-    }).safe_then([this] {
+    }).safe_then([this, FNAME] {
       init();
-      return _mkfs();
-    }).safe_then([this] {
-      return _teardown();
-    }).safe_then([this] {
-      destroy();
-      segment_manager->remount();
-      for (auto &sec_sm : secondary_segment_managers) {
-        sec_sm->remount();
-      }
-      init();
-      return _mount();
-    }).handle_error(crimson::ct_error::assert_all{});
+      return _mkfs(
+      ).safe_then([this] {
+	return _teardown();
+      }).safe_then([this] {
+	destroy();
+	segment_manager->remount();
+	for (auto &sec_sm : secondary_segment_managers) {
+	  sec_sm->remount();
+	}
+	init();
+	return _mount();
+      }).handle_error(
+	crimson::ct_error::assert_all{}
+      ).then([FNAME] {
+	SUBINFO(test, "finish");
+      });
+    }).handle_error(
+      crimson::ct_error::assert_all{}
+    );
+  }
+  seastar::future<> randomblock_setup()
+  {
+    auto config =
+      journal::CircularBoundedJournal::mkfs_config_t::get_default();
+    rb_device.reset(new random_block_device::TestMemory(config.total_size));
+    rb_device->set_device_id(
+      1 << (std::numeric_limits<device_id_t>::digits - 1));
+    return rb_device->mount().handle_error(crimson::ct_error::assert_all{}
+    ).then([this]() {
+      return segment_setup();
+    });
+  }
+
+  seastar::future<> tm_setup(
+    journal_type_t type = journal_type_t::SEGMENT_JOURNAL) {
+    LOG_PREFIX(EphemeralTestState::tm_setup);
+    SUBINFO(test, "begin with {} devices ...", get_num_devices());
+    journal_type = type;
+    // FIXME: should not initialize segment_manager with circularbounded-journal
+    if (journal_type == journal_type_t::SEGMENT_JOURNAL) {
+      return segment_setup();
+    } else {
+      assert(journal_type == journal_type_t::CIRCULARBOUNDED_JOURNAL);
+      return randomblock_setup();
+    }
   }
 
   seastar::future<> tm_teardown() {
-    return _teardown().then([this] {
+    LOG_PREFIX(EphemeralTestState::tm_teardown);
+    SUBINFO(test, "begin");
+    return _teardown().then([this, FNAME] {
       segment_manager.reset();
       for (auto &sec_sm : secondary_segment_managers) {
         sec_sm.reset();
       }
+      rb_device.reset();
+      SUBINFO(test, "finish");
     });
   }
 };
-
-auto get_seastore(SeaStore::MDStoreRef mdstore, SegmentManagerRef sm) {
-  auto tm = make_transaction_manager(true);
-  auto cm = std::make_unique<collection_manager::FlatCollectionManager>(*tm);
-  return std::make_unique<SeaStore>(
-    "",
-    std::move(mdstore),
-    std::move(sm),
-    std::move(tm),
-    std::move(cm),
-    std::make_unique<crimson::os::seastore::onode::FLTreeOnodeManager>(*tm));
-}
-
 
 class TMTestState : public EphemeralTestState {
 protected:
   TransactionManagerRef tm;
   LBAManager *lba_manager;
-  SegmentCleaner *segment_cleaner;
+  BackrefManager *backref_manager;
+  Cache* cache;
+  AsyncCleaner *async_cleaner;
+  uint64_t seq = 0;
 
   TMTestState() : EphemeralTestState(1) {}
 
   TMTestState(std::size_t num_devices) : EphemeralTestState(num_devices) {}
 
   virtual void _init() override {
-    tm = make_transaction_manager(true);
-    tm->add_device(segment_manager.get(), true);
-    if (get_num_devices() > 1) {
-      for (auto &sec_sm : secondary_segment_managers) {
-        tm->add_device(sec_sm.get(), false);
-      }
+    std::vector<Device*> sec_devices;
+    for (auto &sec_sm : secondary_segment_managers) {
+      sec_devices.emplace_back(sec_sm.get());
     }
-    segment_cleaner = tm->get_segment_cleaner();
+    if (journal_type == journal_type_t::CIRCULARBOUNDED_JOURNAL) {
+      // FIXME: should not initialize segment_manager with circularbounded-journal
+      // FIXME: no secondary device in the single device test
+      sec_devices.emplace_back(segment_manager.get());
+      tm = make_transaction_manager(rb_device.get(), sec_devices, true);
+    } else {
+      tm = make_transaction_manager(segment_manager.get(), sec_devices, true);
+    }
+    async_cleaner = tm->get_async_cleaner();
     lba_manager = tm->get_lba_manager();
+    backref_manager = tm->get_backref_manager();
+    cache = tm->get_cache();
   }
 
   virtual void _destroy() override {
-    segment_cleaner = nullptr;
+    async_cleaner = nullptr;
     lba_manager = nullptr;
     tm.reset();
   }
@@ -168,17 +211,31 @@ protected:
     ).handle_error(
       crimson::ct_error::assert_all{"Error in mount"}
     ).then([this] {
-      return segment_cleaner->stop();
+      return async_cleaner->stop();
     }).then([this] {
-      return segment_cleaner->run_until_halt();
+      return async_cleaner->run_until_halt();
     });
   }
 
   virtual FuturizedStore::mkfs_ertr::future<> _mkfs() {
-    return tm->mkfs(
-    ).handle_error(
-      crimson::ct_error::assert_all{"Error in teardown"}
-    );
+    if (journal_type == journal_type_t::SEGMENT_JOURNAL) {
+      return tm->mkfs(
+      ).handle_error(
+	crimson::ct_error::assert_all{"Error in mkfs"}
+      );
+    } else {
+      auto config = journal::CircularBoundedJournal::mkfs_config_t::get_default();
+      return static_cast<journal::CircularBoundedJournal*>(tm->get_journal())->mkfs(
+	config
+      ).safe_then([this]() {
+	return tm->mkfs(
+	).handle_error(
+	  crimson::ct_error::assert_all{"Error in mkfs"}
+	);
+      }).handle_error(
+	crimson::ct_error::assert_all{"Error in mkfs"}
+      );
+    }
   }
 
   auto create_mutate_transaction() {
@@ -192,8 +249,8 @@ protected:
   }
 
   auto create_weak_transaction() {
-    return tm->create_weak_transaction(
-        Transaction::src_t::READ, "test_read_weak");
+    return tm->create_transaction(
+        Transaction::src_t::READ, "test_read_weak", true);
   }
 
   auto submit_transaction_fut2(Transaction& t) {
@@ -207,10 +264,21 @@ protected:
 	return tm->submit_transaction(t);
       });
   }
+  auto submit_transaction_fut_with_seq(Transaction &t) {
+    using ertr = TransactionManager::base_iertr;
+    return with_trans_intr(
+      t,
+      [this](auto &t) {
+	return tm->submit_transaction(t
+	).si_then([this] {
+	  return ertr::make_ready_future<uint64_t>(seq++);
+	});
+      });
+  }
 
   void submit_transaction(TransactionRef t) {
     submit_transaction_fut(*t).unsafe_get0();
-    segment_cleaner->run_until_halt().get0();
+    async_cleaner->run_until_halt().get0();
   }
 };
 
@@ -311,9 +379,9 @@ protected:
   SeaStoreTestState() : EphemeralTestState(1) {}
 
   virtual void _init() final {
-    seastore = get_seastore(
-      std::make_unique<TestMDStoreState::Store>(mdstore_state.get_mdstore()),
-      std::make_unique<TestSegmentManagerWrapper>(*segment_manager));
+    seastore = make_test_seastore(
+      std::make_unique<TestSegmentManagerWrapper>(*segment_manager),
+      std::make_unique<TestMDStoreState::Store>(mdstore_state.get_mdstore()));
   }
 
   virtual void _destroy() final {

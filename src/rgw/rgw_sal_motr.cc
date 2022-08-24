@@ -554,7 +554,8 @@ int MotrBucket::unlink_user(const DoutPrefixProvider* dpp, User* new_user, optio
 }
 
 /* stats - Not for first pass */
-int MotrBucket::read_stats(const DoutPrefixProvider *dpp, int shard_id,
+int MotrBucket::read_stats(const DoutPrefixProvider *dpp,
+    const bucket_index_layout_generation& idx_layout, int shard_id,
     std::string *bucket_ver, std::string *master_ver,
     std::map<RGWObjCategory, RGWStorageStats>& stats,
     std::string *max_marker, bool *syncstopped)
@@ -590,7 +591,9 @@ int MotrBucket::create_multipart_indices()
 }
 
 
-int MotrBucket::read_stats_async(const DoutPrefixProvider *dpp, int shard_id, RGWGetBucketStats_CB *ctx)
+int MotrBucket::read_stats_async(const DoutPrefixProvider *dpp,
+                                 const bucket_index_layout_generation& idx_layout,
+                                 int shard_id, RGWGetBucketStats_CB *ctx)
 {
   return 0;
 }
@@ -630,7 +633,7 @@ int MotrBucket::check_empty(const DoutPrefixProvider *dpp, optional_yield y)
   return 0;
 }
 
-int MotrBucket::check_quota(const DoutPrefixProvider *dpp, RGWQuotaInfo& user_quota, RGWQuotaInfo& bucket_quota, uint64_t obj_size,
+int MotrBucket::check_quota(const DoutPrefixProvider *dpp, RGWQuota& quota, uint64_t obj_size,
     optional_yield y, bool check_size_only)
 {
   /* Not Handled in the first pass as stats are also needed */
@@ -936,9 +939,9 @@ const std::string& MotrZone::get_current_period_id()
   return current_period->get_id();
 }
 
-std::unique_ptr<LuaScriptManager> MotrStore::get_lua_script_manager()
+std::unique_ptr<LuaManager> MotrStore::get_lua_manager()
 {
-  return std::make_unique<MotrLuaScriptManager>(this);
+  return std::make_unique<MotrLuaManager>(this);
 }
 
 int MotrObject::get_obj_state(const DoutPrefixProvider* dpp, RGWObjState **_state, optional_yield y, bool follow_olh)
@@ -1107,9 +1110,10 @@ int MotrObject::omap_set_val_by_key(const DoutPrefixProvider *dpp, const std::st
   return 0;
 }
 
-MPSerializer* MotrObject::get_serializer(const DoutPrefixProvider *dpp, const std::string& lock_name)
+std::unique_ptr<MPSerializer> MotrObject::get_serializer(const DoutPrefixProvider *dpp,
+                                                         const std::string& lock_name)
 {
-  return new MPMotrSerializer(dpp, store, this, lock_name);
+  return std::make_unique<MPMotrSerializer>(dpp, store, this, lock_name);
 }
 
 int MotrObject::transition(Bucket* bucket,
@@ -1338,7 +1342,7 @@ MotrAtomicWriter::MotrAtomicWriter(const DoutPrefixProvider *dpp,
           const rgw_placement_rule *_ptail_placement_rule,
           uint64_t _olh_epoch,
           const std::string& _unique_tag) :
-        Writer(dpp, y),
+        StoreWriter(dpp, y),
         store(_store),
               owner(_owner),
               ptail_placement_rule(_ptail_placement_rule),
@@ -2762,6 +2766,12 @@ std::unique_ptr<RGWRole> MotrStore::get_role(std::string name,
   return std::unique_ptr<RGWRole>(p);
 }
 
+std::unique_ptr<RGWRole> MotrStore::get_role(const RGWRoleInfo& info)
+{
+  RGWRole* p = nullptr;
+  return std::unique_ptr<RGWRole>(p);
+}
+
 std::unique_ptr<RGWRole> MotrStore::get_role(std::string id)
 {
   RGWRole* p = nullptr;
@@ -2927,6 +2937,14 @@ int MotrStore::forward_request_to_master(const DoutPrefixProvider *dpp, User* us
   return 0;
 }
 
+int MotrStore::forward_iam_request_to_master(const DoutPrefixProvider *dpp, const RGWAccessKey& key, obj_version* objv,
+					     bufferlist& in_data,
+					     RGWXMLDecoder::XMLParser* parser, req_info& info,
+					     optional_yield y)
+{
+    return 0;
+}
+
 std::string MotrStore::zone_unique_id(uint64_t unique_num)
 {
   return "";
@@ -2952,7 +2970,7 @@ std::unique_ptr<Completions> MotrStore::get_completions(void)
   return 0;
 }
 
-std::unique_ptr<Notification> MotrStore::get_notification(Object* obj, Object* src_obj, struct req_state* s,
+std::unique_ptr<Notification> MotrStore::get_notification(Object* obj, Object* src_obj, req_state* s,
     rgw::notify::EventType event_type, const string* object_name)
 {
   return std::make_unique<MotrNotification>(obj, src_obj, event_type);
@@ -2988,7 +3006,7 @@ void MotrStore::get_ratelimit(RGWRateLimitInfo& bucket_ratelimit,
   return;
 }
 
-void MotrStore::get_quota(RGWQuotaInfo& bucket_quota, RGWQuotaInfo& user_quota)
+void MotrStore::get_quota(RGWQuota& quota)
 {
   // XXX: Not handled for the first pass
   return;
@@ -3463,6 +3481,35 @@ int MotrStore::init_metadata_cache(const DoutPrefixProvider *dpp,
   return 0;
 }
 
+  int MotrLuaManager::get_script(const DoutPrefixProvider* dpp, optional_yield y, const std::string& key, std::string& script)
+  {
+    return -ENOENT;
+  }
+
+  int MotrLuaManager::put_script(const DoutPrefixProvider* dpp, optional_yield y, const std::string& key, const std::string& script)
+  {
+    return -ENOENT;
+  }
+
+  int MotrLuaManager::del_script(const DoutPrefixProvider* dpp, optional_yield y, const std::string& key)
+  {
+    return -ENOENT;
+  }
+
+  int MotrLuaManager::add_package(const DoutPrefixProvider* dpp, optional_yield y, const std::string& package_name)
+  {
+    return -ENOENT;
+  }
+
+  int MotrLuaManager::remove_package(const DoutPrefixProvider* dpp, optional_yield y, const std::string& package_name)
+  {
+    return -ENOENT;
+  }
+
+  int MotrLuaManager::list_packages(const DoutPrefixProvider* dpp, optional_yield y, rgw::lua::packages_t& packages)
+  {
+    return -ENOENT;
+  }
 } // namespace rgw::sal
 
 extern "C" {

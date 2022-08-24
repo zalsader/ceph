@@ -58,7 +58,7 @@ class SSHManager:
                                  host: str,
                                  addr: Optional[str] = None,
                                  ) -> "SSHClientConnection":
-        if not self.cons.get(host):
+        if not self.cons.get(host) or host not in self.mgr.inventory:
             if not addr and host in self.mgr.inventory:
                 addr = self.mgr.inventory.get_addr(host)
 
@@ -104,7 +104,7 @@ class SSHManager:
         except OSError as e:
             self.mgr.offline_hosts.add(host)
             log_content = log_string.getvalue()
-            msg = f"Can't communicate with remote host `{addr}`, possibly because python3 is not installed there. {str(e)}"
+            msg = f"Can't communicate with remote host `{addr}`, possibly because python3 is not installed there or you are missing NOPASSWD in sudoers. {str(e)}"
             logger.exception(msg)
             raise OrchestratorError(msg)
         except asyncssh.Error as e:
@@ -136,7 +136,8 @@ class SSHManager:
                                addr: Optional[str] = None,
                                ) -> Tuple[str, str, int]:
         conn = await self._remote_connection(host, addr)
-        cmd = "sudo " + " ".join(quote(x) for x in cmd)
+        sudo_prefix = "sudo " if self.mgr.ssh_user != 'root' else ""
+        cmd = sudo_prefix + " ".join(quote(x) for x in cmd)
         logger.debug(f'Running command: {cmd}')
         try:
             r = await conn.run('sudo true', check=True, timeout=5)

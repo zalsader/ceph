@@ -47,14 +47,12 @@
 #include "messages/MOSDAlive.h"
 #include "messages/MPoolOp.h"
 #include "messages/MPoolOpReply.h"
-#include "messages/MOSDPGCreate.h"
 #include "messages/MOSDPGCreate2.h"
 #include "messages/MOSDPGCreated.h"
 #include "messages/MOSDPGTemp.h"
 #include "messages/MOSDPGReadyToMerge.h"
 #include "messages/MMonCommand.h"
 #include "messages/MRemoveSnaps.h"
-#include "messages/MOSDScrub.h"
 #include "messages/MRoute.h"
 #include "messages/MMonGetPurgedSnaps.h"
 #include "messages/MMonGetPurgedSnapsReply.h"
@@ -5042,10 +5040,7 @@ epoch_t OSDMonitor::send_pg_creates(int osd, Connection *con, epoch_t next) cons
     return next;
   ceph_assert(!creating_pgs_by_epoch->second.empty());
 
-  MOSDPGCreate *oldm = nullptr; // for pre-mimic OSD compat
-  MOSDPGCreate2 *m = nullptr;
-
-  bool old = osdmap.require_osd_release < ceph_release_t::nautilus;
+  auto m = make_message<MOSDPGCreate2>(creating_pgs_epoch);
 
   epoch_t last = 0;
   for (auto epoch_pgs = creating_pgs_by_epoch->second.lower_bound(next);
@@ -5060,34 +5055,20 @@ epoch_t OSDMonitor::send_pg_creates(int osd, Connection *con, epoch_t next) cons
       // last_scrub_stamp upon pg creation.
       auto create = creating_pgs.pgs.find(pg.pgid);
       ceph_assert(create != creating_pgs.pgs.end());
-      if (old) {
-	if (!oldm) {
-	  oldm = new MOSDPGCreate(creating_pgs_epoch);
-	}
-	oldm->mkpg.emplace(pg.pgid,
-			   pg_create_t{create->second.create_epoch, pg.pgid, 0});
-	oldm->ctimes.emplace(pg.pgid, create->second.create_stamp);
-      } else {
-	if (!m) {
-	  m = new MOSDPGCreate2(creating_pgs_epoch);
-	}
-	m->pgs.emplace(pg, make_pair(create->second.create_epoch,
-				     create->second.create_stamp));
-	if (create->second.history.epoch_created) {
-	  dout(20) << __func__ << "   " << pg << " " << create->second.history
-		   << " " << create->second.past_intervals << dendl;
-	  m->pg_extra.emplace(pg, make_pair(create->second.history,
-					    create->second.past_intervals));
-	}
+      m->pgs.emplace(pg, make_pair(create->second.create_epoch,
+                             create->second.create_stamp));
+      if (create->second.history.epoch_created) {
+        dout(20) << __func__ << "   " << pg << " " << create->second.history
+      	   << " " << create->second.past_intervals << dendl;
+        m->pg_extra.emplace(pg, make_pair(create->second.history,
+                                    create->second.past_intervals));
       }
       dout(20) << __func__ << " will create " << pg
-	       << " at " << create->second.create_epoch << dendl;
+      	       << " at " << create->second.create_epoch << dendl;
     }
   }
-  if (m) {
-    con->send_message(m);
-  } else if (oldm) {
-    con->send_message(oldm);
+  if (!m->pgs.empty()) {
+    con->send_message2(std::move(m));
   } else {
     dout(20) << __func__ << " osd." << osd << " from " << next
              << " has nothing to send" << dendl;
@@ -12599,6 +12580,14 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
       return false;
     }
 
+    // make sure kvmon is writeable.
+    if (!mon.kvmon()->is_writeable()) {
+      dout(10) << __func__ << " waiting for kv mon to be writeable for "
+               << "osd new" << dendl;
+      mon.kvmon()->wait_for_writeable(op, new C_RetryMessage(this, op));
+      return false;
+    }
+
     map<string,string> param_map;
 
     bufferlist bl = m->get_data();
@@ -13539,6 +13528,8 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
       ss << "unable to set cache-mode '" << pg_pool_t::get_cache_mode_name(mode)
          << "' on a '" << pg_pool_t::get_cache_mode_name(p->cache_mode)
          << "' pool; only '"
+         << pg_pool_t::get_cache_mode_name(pg_pool_t::CACHEMODE_PROXY)
+         << "','"
          << pg_pool_t::get_cache_mode_name(pg_pool_t::CACHEMODE_READPROXY)
         << "' allowed.";
       err = -EINVAL;

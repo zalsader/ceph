@@ -48,12 +48,13 @@ class SegmentProvider;
  */
 class SegmentedOolWriter : public ExtentOolWriter {
 public:
-  SegmentedOolWriter(std::string name,
+  SegmentedOolWriter(data_category_t category,
+                     reclaim_gen_t gen,
                      SegmentProvider &sp,
                      SegmentSeqAllocator &ssa);
 
   open_ertr::future<> open() final {
-    return record_submitter.open().discard_result();
+    return record_submitter.open(false).discard_result();
   }
 
   alloc_write_iertr::future<> alloc_write_ool_extents(
@@ -86,34 +87,43 @@ private:
 class ExtentPlacementManager {
 public:
   ExtentPlacementManager() {
-    devices_by_id.resize(DEVICE_ID_GLOBAL_MAX, nullptr);
+    devices_by_id.resize(DEVICE_ID_MAX, nullptr);
   }
 
   void init_ool_writers(SegmentProvider &sp, SegmentSeqAllocator &ssa) {
-    // Currently only one SegmentProvider is supported, so hardcode the
-    // writers_by_hint for now.
-    writer_seed = 0;
+    // Currently only one SegmentProvider is supported
     writer_refs.clear();
-    writers_by_hint.resize((std::size_t)placement_hint_t::NUM_HINTS, {});
 
-    // ool writer is not supported for placement_hint_t::HOT
-    writer_refs.emplace_back(
-        std::make_unique<SegmentedOolWriter>("COLD", sp, ssa));
-    writers_by_hint[(std::size_t)placement_hint_t::COLD
-                   ].emplace_back(writer_refs.back().get());
-    writer_refs.emplace_back(
-        std::make_unique<SegmentedOolWriter>("REWRITE", sp, ssa));
-    writers_by_hint[(std::size_t)placement_hint_t::REWRITE
-                   ].emplace_back(writer_refs.back().get());
+    ceph_assert(RECLAIM_GENERATIONS > 0);
+    data_writers_by_gen.resize(RECLAIM_GENERATIONS, {});
+    for (reclaim_gen_t gen = 0; gen < RECLAIM_GENERATIONS; ++gen) {
+      writer_refs.emplace_back(std::make_unique<SegmentedOolWriter>(
+            data_category_t::DATA, gen, sp, ssa));
+      data_writers_by_gen[gen] = writer_refs.back().get();
+    }
+
+    md_writers_by_gen.resize(RECLAIM_GENERATIONS - 1, {});
+    for (reclaim_gen_t gen = 1; gen < RECLAIM_GENERATIONS; ++gen) {
+      writer_refs.emplace_back(std::make_unique<SegmentedOolWriter>(
+            data_category_t::METADATA, gen, sp, ssa));
+      md_writers_by_gen[gen - 1] = writer_refs.back().get();
+    }
   }
 
   void add_device(Device* device, bool is_primary) {
     auto device_id = device->get_device_id();
     ceph_assert(devices_by_id[device_id] == nullptr);
     devices_by_id[device_id] = device;
+    ++num_devices;
     if (is_primary) {
       ceph_assert(primary_device == nullptr);
       primary_device = device;
+      if (device->get_device_type() == device_type_t::SEGMENTED) {
+        prefer_ool = false;
+      } else {
+        ceph_assert(device->get_device_type() == device_type_t::RANDOM_BLOCK);
+        prefer_ool = true;
+      }
     }
   }
 
@@ -131,9 +141,12 @@ public:
   using open_ertr = ExtentOolWriter::open_ertr;
   open_ertr::future<> open() {
     LOG_PREFIX(ExtentPlacementManager::open);
-    SUBINFO(seastore_journal, "started");
-    return crimson::do_for_each(writers_by_hint, [](auto& writers) {
-      return crimson::do_for_each(writers, [](auto& writer) {
+    SUBINFO(seastore_journal, "started with {} devices", num_devices);
+    ceph_assert(primary_device != nullptr);
+    return crimson::do_for_each(data_writers_by_gen, [](auto &writer) {
+      return writer->open();
+    }).safe_then([this] {
+      return crimson::do_for_each(md_writers_by_gen, [](auto &writer) {
         return writer->open();
       });
     });
@@ -142,14 +155,18 @@ public:
   struct alloc_result_t {
     paddr_t paddr;
     bufferptr bp;
+    reclaim_gen_t gen;
   };
   alloc_result_t alloc_new_extent(
     Transaction& t,
     extent_types_t type,
     seastore_off_t length,
-    placement_hint_t hint
+    placement_hint_t hint,
+    reclaim_gen_t gen
   ) {
     assert(hint < placement_hint_t::NUM_HINTS);
+    assert(gen < RECLAIM_GENERATIONS);
+    assert(gen == 0 || hint == placement_hint_t::REWRITE);
 
     // XXX: bp might be extended to point to differnt memory (e.g. PMem)
     // according to the allocator.
@@ -160,19 +177,35 @@ public:
     if (!is_logical_type(type)) {
       // TODO: implement out-of-line strategy for physical extent.
       return {make_record_relative_paddr(0),
-              std::move(bp)};
+              std::move(bp),
+              0};
     }
 
-    // FIXME: set delay for COLD extent and improve GC
-    // NOTE: delay means to delay the decision about whether to write the
-    // extent as inline or out-of-line extents.
-    bool delay = (hint > placement_hint_t::COLD);
-    if (delay) {
+    if (hint == placement_hint_t::COLD) {
+      assert(gen == 0);
       return {make_delayed_temp_paddr(0),
-              std::move(bp)};
+              std::move(bp),
+              COLD_GENERATION};
+    }
+
+    if (get_extent_category(type) == data_category_t::METADATA &&
+        gen == 0) {
+      // gen 0 METADATA writer is the journal writer
+      if (prefer_ool) {
+        return {make_delayed_temp_paddr(0),
+                std::move(bp),
+                1};
+      } else {
+        return {make_record_relative_paddr(0),
+                std::move(bp),
+                0};
+      }
     } else {
-      return {make_record_relative_paddr(0),
-              std::move(bp)};
+      assert(get_extent_category(type) == data_category_t::DATA ||
+             gen > 0);
+      return {make_delayed_temp_paddr(0),
+              std::move(bp),
+              gen};
     }
   }
 
@@ -193,7 +226,10 @@ public:
         [this, &t, &delayed_extents](auto& alloc_map) {
       for (auto& extent : delayed_extents) {
         // For now, just do ool allocation for any delayed extent
-        auto writer_ptr = get_writer(extent->hint);
+        auto writer_ptr = get_writer(
+            extent->get_user_hint(),
+            get_extent_category(extent->get_type()),
+            extent->get_reclaim_generation());
         alloc_map[writer_ptr].emplace_back(extent);
       }
       return trans_intr::do_for_each(alloc_map, [&t](auto& p) {
@@ -208,14 +244,12 @@ public:
   close_ertr::future<> close() {
     LOG_PREFIX(ExtentPlacementManager::close);
     SUBINFO(seastore_journal, "started");
-    return crimson::do_for_each(writers_by_hint, [](auto& writers) {
-      return crimson::do_for_each(writers, [](auto& writer) {
+    return crimson::do_for_each(data_writers_by_gen, [](auto &writer) {
+      return writer->close();
+    }).safe_then([this] {
+      return crimson::do_for_each(md_writers_by_gen, [](auto &writer) {
         return writer->close();
       });
-    }).safe_then([this] {
-      devices_by_id.clear();
-      devices_by_id.resize(DEVICE_ID_GLOBAL_MAX, nullptr);
-      primary_device = nullptr;
     });
   }
 
@@ -230,20 +264,30 @@ public:
   }
 
 private:
-  ExtentOolWriter* get_writer(placement_hint_t hint) {
+  ExtentOolWriter* get_writer(placement_hint_t hint,
+                              data_category_t category,
+                              reclaim_gen_t gen) {
     assert(hint < placement_hint_t::NUM_HINTS);
-    auto hint_index = static_cast<std::size_t>(hint);
-    assert(hint_index < writers_by_hint.size());
-    auto& writers = writers_by_hint[hint_index];
-    assert(writers.size() > 0);
-    return writers[writer_seed++ % writers.size()];
+    assert(gen < RECLAIM_GENERATIONS);
+    if (category == data_category_t::DATA) {
+      return data_writers_by_gen[gen];
+    } else {
+      assert(category == data_category_t::METADATA);
+      // gen 0 METADATA writer is the journal writer
+      assert(gen > 0);
+      return md_writers_by_gen[gen - 1];
+    }
   }
 
-  std::size_t writer_seed = 0;
+  bool prefer_ool;
   std::vector<ExtentOolWriterRef> writer_refs;
-  std::vector<std::vector<ExtentOolWriter*>> writers_by_hint;
+  std::vector<ExtentOolWriter*> data_writers_by_gen;
+  // gen 0 METADATA writer is the journal writer
+  std::vector<ExtentOolWriter*> md_writers_by_gen;
+
   std::vector<Device*> devices_by_id;
   Device* primary_device = nullptr;
+  std::size_t num_devices = 0;
 };
 using ExtentPlacementManagerRef = std::unique_ptr<ExtentPlacementManager>;
 

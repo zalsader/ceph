@@ -4297,7 +4297,7 @@ void *BlueStore::MempoolThread::entry()
     _resize_shards(interval_stats_trim);
     interval_stats_trim = false;
 
-    store->_update_cache_logger();
+    store->_update_logger();
     auto wait = ceph::make_timespan(
       store->cct->_conf->bluestore_cache_trim_interval);
     cond.wait_for(l, wait);
@@ -4412,15 +4412,20 @@ void BlueStore::MempoolThread::_update_cache_settings()
 #define dout_prefix *_dout << "bluestore.OmapIteratorImpl(" << this << ") "
 
 BlueStore::OmapIteratorImpl::OmapIteratorImpl(
-  CollectionRef c, OnodeRef o, KeyValueDB::Iterator it)
-  : c(c), o(o), it(it)
+  PerfCounters* _logger, CollectionRef c, OnodeRef o, KeyValueDB::Iterator it)
+  : logger(_logger), c(c), o(o), it(it)
 {
+  logger->inc(l_bluestore_omap_iterator_count);
   std::shared_lock l(c->lock);
   if (o->onode.has_omap()) {
     o->get_omap_key(string(), &head);
     o->get_omap_tail(&tail);
     it->lower_bound(head);
   }
+}
+BlueStore::OmapIteratorImpl::~OmapIteratorImpl()
+{
+  logger->dec(l_bluestore_omap_iterator_count);
 }
 
 string BlueStore::OmapIteratorImpl::_stringify() const
@@ -5238,7 +5243,15 @@ void BlueStore::_init_logger()
 		    "Sum for extents that have been merged due to garbage "
 		    "collection");
   //****************************************
-
+  // misc
+  //****************************************
+  b.add_u64_counter(l_bluestore_omap_iterator_count, "omap_iterator_count",
+    "Open omap iterators count");
+  b.add_u64_counter(l_bluestore_omap_rmkeys_count, "omap_rmkeys_count",
+    "amount of omap keys removed via rmkeys");
+  b.add_u64_counter(l_bluestore_omap_rmkey_ranges_count, "omap_rmkey_range_count",
+    "amount of omap key ranges removed via rmkeys");
+  //****************************************
   // other client ops latencies
   //****************************************
   b.add_time_avg(l_bluestore_omap_seek_to_first_lat, "omap_seek_to_first_lat",
@@ -6207,7 +6220,8 @@ int BlueStore::_open_bluefs(bool create, bool read_only)
     return r;
   }
   BlueFSVolumeSelector* vselector = nullptr;
-  if (bluefs_layout.shared_bdev == BlueFS::BDEV_SLOW) {
+  if (bluefs_layout.shared_bdev == BlueFS::BDEV_SLOW ||
+      cct->_conf->bluestore_volume_selection_policy == "use_some_extra_enforced") {
 
     string options = cct->_conf->bluestore_rocksdb_options;
     string options_annex = cct->_conf->bluestore_rocksdb_options_annex;
@@ -6245,7 +6259,8 @@ int BlueStore::_open_bluefs(bool create, bool read_only)
           rocks_opts.max_bytes_for_level_multiplier,
           reserved_factor,
           cct->_conf->bluestore_volume_selection_reserved,
-          cct->_conf->bluestore_volume_selection_policy == "use_some_extra");
+          cct->_conf->bluestore_volume_selection_policy.find("use_some_extra")
+             == 0);
     }    
   }
   if (create) {
@@ -6870,12 +6885,11 @@ int BlueStore::_setup_block_symlink_or_file(
 	return r;
       }
       // write the Transport ID of the NVMe device
-      // a transport id looks like: "trtype:PCIe traddr:0000:02:00.0"
+      // a transport id for PCIe looks like: "trtype:PCIe traddr:0000:02:00.0"
       // where "0000:02:00.0" is the selector of a PCI device, see
       // the first column of "lspci -mm -n -D"
-      string trid{"trtype:PCIe "};
-      trid += "traddr:";
-      trid += epath.substr(strlen(SPDK_PREFIX));
+      // a transport id for tcp looks like: "trype:TCP adrfam:IPv4 traddr:172.31.89.152 trsvcid:4420"
+      string trid = epath.substr(strlen(SPDK_PREFIX));
       r = ::write(fd, trid.c_str(), trid.size());
       ceph_assert(r == static_cast<int>(trid.size()));
       dout(1) << __func__ << " created " << name << " symlink to "
@@ -10580,7 +10594,7 @@ void BlueStore::_reap_collections()
   }
 }
 
-void BlueStore::_update_cache_logger()
+void BlueStore::_update_logger()
 {
   uint64_t num_onodes = 0;
   uint64_t num_pinned_onodes = 0;
@@ -12155,7 +12169,7 @@ ObjectMap::ObjectMapIterator BlueStore::get_omap_iterator(
     bounds.upper_bound = std::move(upper_bound);
   }
   KeyValueDB::Iterator it = db->get_iterator(o->get_omap_prefix(), 0, std::move(bounds));
-  return ObjectMap::ObjectMapIterator(new OmapIteratorImpl(c, o, it));
+  return ObjectMap::ObjectMapIterator(new OmapIteratorImpl(logger,c, o, it));
 }
 
 // -----------------
@@ -13251,10 +13265,14 @@ void BlueStore::_kv_sync_thread()
 	// flush/barrier on block device
 	bdev->flush();
 
-	// if we flush then deferred done are now deferred stable
-	deferred_stable.insert(deferred_stable.end(), deferred_done.begin(),
-			       deferred_done.end());
-	deferred_done.clear();
+        // if we flush then deferred done are now deferred stable
+        if (deferred_stable.empty()) {
+          deferred_stable.swap(deferred_done);
+        } else {
+          deferred_stable.insert(deferred_stable.end(), deferred_done.begin(),
+                                 deferred_done.end());
+          deferred_done.clear();
+        }
       }
       auto after_flush = mono_clock::now();
 
@@ -13919,6 +13937,15 @@ int BlueStore::_deferred_replay()
   dout(10) << __func__ << " start" << dendl;
   int count = 0;
   int r = 0;
+  interval_set<uint64_t> bluefs_extents;
+  if (bluefs) {
+    bluefs->foreach_block_extents(
+      bluefs_layout.shared_bdev,
+      [&] (uint64_t start, uint32_t len) {
+        bluefs_extents.insert(start, len);
+      }
+    );
+  }
   CollectionRef ch = _get_collection(coll_t::meta());
   bool fake_ch = false;
   if (!ch) {
@@ -13944,10 +13971,15 @@ int BlueStore::_deferred_replay()
       r = -EIO;
       goto out;
     }
-    TransContext *txc = _txc_create(ch.get(), osr,  nullptr);
-    txc->deferred_txn = deferred_txn;
-    txc->set_state(TransContext::STATE_KV_DONE);
-    _txc_state_proc(txc);
+    bool has_some = _eliminate_outdated_deferred(deferred_txn, bluefs_extents);
+    if (has_some) {
+      TransContext *txc = _txc_create(ch.get(), osr,  nullptr);
+      txc->deferred_txn = deferred_txn;
+      txc->set_state(TransContext::STATE_KV_DONE);
+      _txc_state_proc(txc);
+    } else {
+      delete deferred_txn;
+    }
   }
  out:
   dout(20) << __func__ << " draining osr" << dendl;
@@ -13958,6 +13990,76 @@ int BlueStore::_deferred_replay()
   }
   dout(10) << __func__ << " completed " << count << " events" << dendl;
   return r;
+}
+
+bool BlueStore::_eliminate_outdated_deferred(bluestore_deferred_transaction_t* deferred_txn,
+					     interval_set<uint64_t>& bluefs_extents)
+{
+  bool has_some = false;
+  dout(30) << __func__ << " bluefs_extents: " << std::hex << bluefs_extents << std::dec << dendl;
+  auto it = deferred_txn->ops.begin();
+  while (it != deferred_txn->ops.end()) {
+    // We process a pair of _data_/_extents_ (here: it->data/it->extents)
+    // by eliminating _extents_ that belong to bluefs, removing relevant parts of _data_
+    // example:
+    // +------------+---------------+---------------+---------------+
+    // | data       | aaaaaaaabbbbb | bbbbcccccdddd | ddddeeeeeefff |
+    // | extent     | 40000 - 44000 | 50000 - 58000 | 58000 - 60000 |
+    // | in bluefs? |       no      |      yes      |       no      |
+    // +------------+---------------+---------------+---------------+
+    // result:
+    // +------------+---------------+---------------+
+    // | data       | aaaaaaaabbbbb | ddddeeeeeefff |
+    // | extent     | 40000 - 44000 | 58000 - 60000 |
+    // +------------+---------------+---------------+
+    PExtentVector new_extents;
+    ceph::buffer::list new_data;
+    uint32_t data_offset = 0; // this tracks location of extent 'e' inside it->data
+    dout(30) << __func__ << " input extents: " << it->extents << dendl;
+    for (auto& e: it->extents) {
+      interval_set<uint64_t> region;
+      region.insert(e.offset, e.length);
+
+      auto mi = bluefs_extents.lower_bound(e.offset);
+      if (mi != bluefs_extents.begin()) {
+	--mi;
+	if (mi.get_end() <= e.offset) {
+	  ++mi;
+	}
+      }
+      while (mi != bluefs_extents.end() && mi.get_start() < e.offset + e.length) {
+	// The interval_set does not like (asserts) when we erase interval that does not exist.
+	// Hence we do we implement (region-mi) by ((region+mi)-mi).
+	region.union_insert(mi.get_start(), mi.get_len());
+	region.erase(mi.get_start(), mi.get_len());
+	++mi;
+      }
+      // 'region' is now a subset of e, without parts used by bluefs
+      // we trim coresponding parts from it->data (actally constructing new_data / new_extents)
+      for (auto ki = region.begin(); ki != region.end(); ki++) {
+	ceph::buffer::list chunk;
+	// A chunk from it->data; data_offset is a an offset where 'e' was located;
+	// 'ki.get_start() - e.offset' is an offset of ki inside 'e'.
+	chunk.substr_of(it->data, data_offset + (ki.get_start() - e.offset), ki.get_len());
+	new_data.claim_append(chunk);
+	new_extents.emplace_back(bluestore_pextent_t(ki.get_start(), ki.get_len()));
+      }
+      data_offset += e.length;
+    }
+    dout(30) << __func__ << " output extents: " << new_extents << dendl;
+    if (it->data.length() != new_data.length()) {
+      dout(10) << __func__ << " trimmed deferred extents: " << it->extents << "->" << new_extents << dendl;
+    }
+    if (new_extents.size() == 0) {
+      it = deferred_txn->ops.erase(it);
+    } else {
+      has_some = true;
+      std::swap(it->extents, new_extents);
+      std::swap(it->data, new_data);
+      ++it;
+    }
+  }
+  return has_some;
 }
 
 // ---------------------------
@@ -14590,7 +14692,7 @@ void BlueStore::_do_write_small(
     o->extent_map.punch_hole(c, offset, length, &wctx->old_extents);
 
     // Zero detection -- small block
-    if (!bl.is_zero()) {
+    if (!cct->_conf->bluestore_zero_block_detection || !bl.is_zero()) {
       BlobRef b = c->new_blob();
       _pad_zeros(&bl, &b_off0, min_alloc_size);
       wctx->write(offset, b, alloc_len, b_off0, bl, b_off, length, false, true);
@@ -14829,7 +14931,7 @@ void BlueStore::_do_write_small(
 	    o->extent_map.punch_hole(c, offset, length, &wctx->old_extents);
 
 	    // Zero detection -- small block
-	    if (!bl.is_zero()) {
+	    if (!cct->_conf->bluestore_zero_block_detection || !bl.is_zero()) {
 	      _pad_zeros(&bl, &b_off0, chunk_size);
 
 	      dout(20) << __func__ << " reuse blob " << *b << std::hex
@@ -14891,7 +14993,7 @@ void BlueStore::_do_write_small(
 	  o->extent_map.punch_hole(c, offset, length, &wctx->old_extents);
 
 	  // Zero detection -- small block
-	  if (!bl.is_zero()) {
+	  if (!cct->_conf->bluestore_zero_block_detection || !bl.is_zero()) {
 	    uint64_t chunk_size = b->get_blob().get_chunk_size(block_size);
 	    _pad_zeros(&bl, &b_off0, chunk_size);
 
@@ -14947,7 +15049,7 @@ void BlueStore::_do_write_small(
   o->extent_map.punch_hole(c, offset, length, &wctx->old_extents);
 
   // Zero detection -- small block
-  if (!bl.is_zero()) {
+  if (!cct->_conf->bluestore_zero_block_detection || !bl.is_zero()) {
     // new blob.
     BlobRef b = c->new_blob();
     _pad_zeros(&bl, &b_off0, block_size);
@@ -15280,7 +15382,7 @@ void BlueStore::_do_write_big(
     blp.copy(l, t);
 
     // Zero detection -- big block
-    if (!t.is_zero()) {
+    if (!cct->_conf->bluestore_zero_block_detection || !t.is_zero()) {
       wctx->write(offset, b, l, b_off, t, b_off, l, false, new_blob);
 
       dout(20) << __func__ << " schedule write big: 0x"
@@ -16536,7 +16638,6 @@ int BlueStore::_omap_rmkeys(TransContext *txc,
   auto p = bl.cbegin();
   __u32 num;
   string final_key;
-
   if (!o->onode.has_omap()) {
     goto out;
   }
@@ -16545,6 +16646,7 @@ int BlueStore::_omap_rmkeys(TransContext *txc,
     o->get_omap_key(string(), &final_key);
     size_t base_key_len = final_key.size();
     decode(num, p);
+    logger->inc(l_bluestore_omap_rmkeys_count, num);
     while (num--) {
       string key;
       decode(key, p);
@@ -16578,6 +16680,7 @@ int BlueStore::_omap_rmkey_range(TransContext *txc,
     o->flush();
     o->get_omap_key(first, &key_first);
     o->get_omap_key(last, &key_last);
+    logger->inc(l_bluestore_omap_rmkey_ranges_count);
     txc->t->rm_range_keys(prefix, key_first, key_last);
     dout(20) << __func__ << " remove range start: "
              << pretty_binary_string(key_first) << " end: "
@@ -16586,7 +16689,6 @@ int BlueStore::_omap_rmkey_range(TransContext *txc,
   txc->note_modified_object(o);
 
  out:
-  dout(10) << __func__ << " " << c->cid << " " << o->oid << " = " << r << dendl;
   return r;
 }
 
@@ -18554,7 +18656,7 @@ int BlueStore::__restore_allocator(Allocator* allocator, uint64_t *num, uint64_t
   uint64_t        extent_count       = 0;
   uint64_t        extents_bytes_left = file_size - (header_size + trailer_size + sizeof(crc));
   while (extents_bytes_left) {
-    int req_bytes  = std::min(extents_bytes_left, sizeof(buffer));
+    int req_bytes  = std::min(extents_bytes_left, static_cast<uint64_t>(sizeof(buffer)));
     int read_bytes = bluefs->read(p_handle.get(), offset, req_bytes, nullptr, (char*)buffer);
     if (read_bytes != req_bytes) {
       derr << "Failed bluefs->read()::read_bytes=" << read_bytes << ", req_bytes=" << req_bytes << dendl;

@@ -69,7 +69,7 @@ TMDriver::read_extents_ret TMDriver::read_extents(
 	  [this, &t, &ret](auto &&pin) {
 	    logger().debug(
 	      "read_extents: get_extent {}~{}",
-	      pin->get_paddr(),
+	      pin->get_val(),
 	      pin->get_length());
 	    return tm->pin_to_extent<TestBlock>(
 	      t,
@@ -97,11 +97,11 @@ seastar::future<bufferlist> TMDriver::read(
   assert(size % (size_t)device->get_block_size() == 0);
   auto blptrret = std::make_unique<bufferlist>();
   auto &blret = *blptrret;
-  return repeat_eagain([=, &blret] {
+  return repeat_eagain([=, &blret, this] {
     return tm->with_transaction_intr(
       Transaction::src_t::READ,
       "read",
-      [=, &blret](auto& t)
+      [=, &blret, this](auto& t)
     {
       return read_extents(t, offset, size
       ).si_then([=, &blret](auto ext_list) {
@@ -131,8 +131,12 @@ seastar::future<bufferlist> TMDriver::read(
 
 void TMDriver::init()
 {
-  tm = make_transaction_manager(false /* detailed */);
-  tm->add_device(device.get(), true);
+  std::vector<Device*> sec_devices;
+#ifndef NDEBUG
+  tm = make_transaction_manager(device.get(), sec_devices, true);
+#else
+  tm = make_transaction_manager(device.get(), sec_devices, false);
+#endif
 }
 
 void TMDriver::clear()

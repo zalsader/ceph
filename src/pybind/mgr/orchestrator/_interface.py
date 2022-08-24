@@ -31,7 +31,7 @@ import yaml
 
 from ceph.deployment import inventory
 from ceph.deployment.service_spec import ServiceSpec, NFSServiceSpec, RGWSpec, \
-    IscsiServiceSpec, IngressSpec, SNMPGatewaySpec, MDSSpec
+    IscsiServiceSpec, IngressSpec, SNMPGatewaySpec, MDSSpec, TunedProfileSpec
 from ceph.deployment.drive_group import DriveGroupSpec
 from ceph.deployment.hostspec import HostSpec, SpecValidationError
 from ceph.utils import datetime_to_str, str_to_datetime
@@ -418,11 +418,30 @@ class Orchestrator(object):
         """
         raise NotImplementedError()
 
+    def rescan_host(self, hostname: str) -> OrchResult:
+        """Use cephadm to issue a disk rescan on each HBA
+
+        Some HBAs and external enclosures don't automatically register
+        device insertion with the kernel, so for these scenarios we need
+        to manually rescan
+
+        :param hostname: (str) host name
+        """
+        raise NotImplementedError()
+
     def get_inventory(self, host_filter: Optional['InventoryFilter'] = None, refresh: bool = False) -> OrchResult[List['InventoryHost']]:
         """
         Returns something that was created by `ceph-volume inventory`.
 
         :return: list of InventoryHost
+        """
+        raise NotImplementedError()
+
+    def service_discovery_dump_cert(self) -> OrchResult:
+        """
+        Returns service discovery server root certificate
+
+        :return: service discovery root certificate
         """
         raise NotImplementedError()
 
@@ -668,13 +687,34 @@ class Orchestrator(object):
         """Update an existing snmp gateway service"""
         raise NotImplementedError()
 
+    def apply_tuned_profiles(self, specs: List[TunedProfileSpec]) -> OrchResult[str]:
+        """Add or update an existing tuned profile"""
+        raise NotImplementedError()
+
+    def rm_tuned_profile(self, profile_name: str) -> OrchResult[str]:
+        """Remove a tuned profile"""
+        raise NotImplementedError()
+
+    def tuned_profile_ls(self) -> OrchResult[List[TunedProfileSpec]]:
+        """See current tuned profiles"""
+        raise NotImplementedError()
+
+    def tuned_profile_add_setting(self, profile_name: str, setting: str, value: str) -> OrchResult[str]:
+        """Change/Add a specific setting for a tuned profile"""
+        raise NotImplementedError()
+
+    def tuned_profile_rm_setting(self, profile_name: str, setting: str) -> OrchResult[str]:
+        """Remove a specific setting for a tuned profile"""
+        raise NotImplementedError()
+
     def upgrade_check(self, image: Optional[str], version: Optional[str]) -> OrchResult[str]:
         raise NotImplementedError()
 
     def upgrade_ls(self, image: Optional[str], tags: bool, show_all_versions: Optional[bool] = False) -> OrchResult[Dict[Any, Any]]:
         raise NotImplementedError()
 
-    def upgrade_start(self, image: Optional[str], version: Optional[str]) -> OrchResult[str]:
+    def upgrade_start(self, image: Optional[str], version: Optional[str], daemon_types: Optional[List[str]],
+                      hosts: Optional[str], services: Optional[List[str]], limit: Optional[int]) -> OrchResult[str]:
         raise NotImplementedError()
 
     def upgrade_pause(self) -> OrchResult[str]:
@@ -739,6 +779,10 @@ def daemon_type_to_service(dtype: str) -> str:
         'container': 'container',
         'agent': 'agent',
         'snmp-gateway': 'snmp-gateway',
+        'elasticsearch': 'elasticsearch',
+        'jaeger-agent': 'jaeger-agent',
+        'jaeger-collector': 'jaeger-collector',
+        'jaeger-query': 'jaeger-query'
     }
     return mapping[dtype]
 
@@ -765,6 +809,11 @@ def service_to_daemon_types(stype: str) -> List[str]:
         'container': ['container'],
         'agent': ['agent'],
         'snmp-gateway': ['snmp-gateway'],
+        'elasticsearch': ['elasticsearch'],
+        'jaeger-agent': ['jaeger-agent'],
+        'jaeger-collector': ['jaeger-collector'],
+        'jaeger-query': ['jaeger-query'],
+        'jaeger-tracing': ['elasticsearch', 'jaeger-query', 'jaeger-collector', 'jaeger-agent']
     }
     return mapping[stype]
 
@@ -779,8 +828,10 @@ class UpgradeStatusSpec(object):
         self.in_progress = False  # Is an upgrade underway?
         self.target_image: Optional[str] = None
         self.services_complete: List[str] = []  # Which daemon types are fully updated?
+        self.which: str = '<unknown>'  # for if user specified daemon types, services or hosts
         self.progress: Optional[str] = None  # How many of the daemons have we upgraded
         self.message = ""  # Freeform description
+        self.is_paused: bool = False  # Is the upgrade paused?
 
 
 def handle_type_error(method: FuncT) -> FuncT:
@@ -849,6 +900,7 @@ class DaemonDescription(object):
                  memory_usage: Optional[int] = None,
                  memory_request: Optional[int] = None,
                  memory_limit: Optional[int] = None,
+                 cpu_percentage: Optional[str] = None,
                  service_name: Optional[str] = None,
                  ports: Optional[List[int]] = None,
                  ip: Optional[str] = None,
@@ -910,6 +962,8 @@ class DaemonDescription(object):
         self.memory_usage: Optional[int] = memory_usage
         self.memory_request: Optional[int] = memory_request
         self.memory_limit: Optional[int] = memory_limit
+
+        self.cpu_percentage: Optional[str] = cpu_percentage
 
         self.ports: Optional[List[int]] = ports
         self.ip: Optional[str] = ip
@@ -1034,6 +1088,7 @@ class DaemonDescription(object):
         out['memory_usage'] = self.memory_usage
         out['memory_request'] = self.memory_request
         out['memory_limit'] = self.memory_limit
+        out['cpu_percentage'] = self.cpu_percentage
         out['version'] = self.version
         out['status'] = self.status.value if self.status is not None else None
         out['status_desc'] = self.status_desc
@@ -1071,6 +1126,7 @@ class DaemonDescription(object):
         out['memory_usage'] = self.memory_usage
         out['memory_request'] = self.memory_request
         out['memory_limit'] = self.memory_limit
+        out['cpu_percentage'] = self.cpu_percentage
         out['version'] = self.version
         out['status'] = self.status.value if self.status is not None else None
         out['status_desc'] = self.status_desc

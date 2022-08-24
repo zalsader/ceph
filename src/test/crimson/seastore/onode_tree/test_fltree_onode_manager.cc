@@ -84,7 +84,6 @@ struct fltree_onode_manager_test_t
   virtual FuturizedStore::mkfs_ertr::future<> _mkfs() final {
     return TMTestState::_mkfs(
     ).safe_then([this] {
-      tm->add_device(segment_manager.get(), true);
       return tm->mount(
       ).safe_then([this] {
 	return repeat_eagain([this] {
@@ -112,7 +111,7 @@ struct fltree_onode_manager_test_t
     auto t = create_mutate_transaction();
     std::invoke(f, *t);
     submit_transaction(std::move(t));
-    segment_cleaner->run_until_halt().get0();
+    async_cleaner->run_until_halt().get0();
   }
 
   template <typename F>

@@ -408,7 +408,9 @@ int DaosBucket::remove_bucket(const DoutPrefixProvider* dpp,
                               bool delete_children, bool forward_to_master,
                               req_info* req_info, optional_yield y) {
   ldpp_dout(dpp, 20) << "DEBUG: remove_bucket, delete_children="
+                    
                      << delete_children
+                    
                      << " forward_to_master=" << forward_to_master << dendl;
 
   return ds3_bucket_destroy(get_name().c_str(), delete_children, store->ds3,
@@ -420,8 +422,11 @@ int DaosBucket::remove_bucket_bypass_gc(int concurrent_max,
                                         optional_yield y,
                                         const DoutPrefixProvider* dpp) {
   ldpp_dout(dpp, 20) << "DEBUG: remove_bucket_bypass_gc, concurrent_max="
+                    
                      << concurrent_max
+                    
                      << " keep_index_consistent=" << keep_index_consistent
+                    
                      << dendl;
   return ds3_bucket_destroy(get_name().c_str(), true, store->ds3, nullptr);
 }
@@ -483,15 +488,19 @@ int DaosBucket::load_bucket(const DoutPrefixProvider* dpp, optional_yield y,
 }
 
 /* stats - Not for first pass */
-int DaosBucket::read_stats(const DoutPrefixProvider* dpp, int shard_id,
-                           std::string* bucket_ver, std::string* master_ver,
+int DaosBucket::read_stats(const DoutPrefixProvider* dpp,
+                           const bucket_index_layout_generation& idx_layout,
+                           int shard_id, std::string* bucket_ver,
+                           std::string* master_ver,
                            std::map<RGWObjCategory, RGWStorageStats>& stats,
                            std::string* max_marker, bool* syncstopped) {
   return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
-int DaosBucket::read_stats_async(const DoutPrefixProvider* dpp, int shard_id,
-                                 RGWGetBucketStats_CB* ctx) {
+int DaosBucket::read_stats_async(
+    const DoutPrefixProvider* dpp,
+    const bucket_index_layout_generation& idx_layout, int shard_id,
+    RGWGetBucketStats_CB* ctx) {
   return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
@@ -525,10 +534,9 @@ int DaosBucket::check_empty(const DoutPrefixProvider* dpp, optional_yield y) {
   return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
-int DaosBucket::check_quota(const DoutPrefixProvider* dpp,
-                            RGWQuotaInfo& user_quota,
-                            RGWQuotaInfo& bucket_quota, uint64_t obj_size,
-                            optional_yield y, bool check_size_only) {
+int DaosBucket::check_quota(const DoutPrefixProvider* dpp, RGWQuota& quota,
+                            uint64_t obj_size, optional_yield y,
+                            bool check_size_only) {
   /* Not Handled in the first pass as stats are also needed */
   return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
@@ -880,8 +888,8 @@ const std::string& DaosZone::get_current_period_id() {
   return current_period->get_id();
 }
 
-std::unique_ptr<LuaScriptManager> DaosStore::get_lua_script_manager() {
-  return std::make_unique<DaosLuaScriptManager>(this);
+std::unique_ptr<LuaManager> DaosStore::get_lua_manager() {
+  return std::make_unique<DaosLuaManager>(this);
 }
 
 int DaosObject::get_obj_state(const DoutPrefixProvider* dpp,
@@ -1035,9 +1043,9 @@ int DaosObject::omap_set_val_by_key(const DoutPrefixProvider* dpp,
   return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
-MPSerializer* DaosObject::get_serializer(const DoutPrefixProvider* dpp,
-                                         const std::string& lock_name) {
-  return new MPDaosSerializer(dpp, store, this, lock_name);
+std::unique_ptr<MPSerializer> DaosObject::get_serializer(
+    const DoutPrefixProvider* dpp, const std::string& lock_name) {
+  return std::make_unique<MPDaosSerializer>(dpp, store, this, lock_name);
 }
 
 int DaosObject::transition(Bucket* bucket,
@@ -1494,7 +1502,7 @@ DaosAtomicWriter::DaosAtomicWriter(
     std::unique_ptr<rgw::sal::Object> _head_obj, DaosStore* _store,
     const rgw_user& _owner, const rgw_placement_rule* _ptail_placement_rule,
     uint64_t _olh_epoch, const std::string& _unique_tag)
-    : Writer(dpp, y),
+    : StoreWriter(dpp, y),
       store(_store),
       owner(_owner),
       ptail_placement_rule(_ptail_placement_rule),
@@ -2115,6 +2123,11 @@ std::unique_ptr<RGWRole> DaosStore::get_role(
   return std::unique_ptr<RGWRole>(p);
 }
 
+std::unique_ptr<RGWRole> DaosStore::get_role(const RGWRoleInfo& info) {
+  RGWRole* p = nullptr;
+  return std::unique_ptr<RGWRole>(p);
+}
+
 std::unique_ptr<RGWRole> DaosStore::get_role(std::string id) {
   RGWRole* p = nullptr;
   return std::unique_ptr<RGWRole>(p);
@@ -2314,6 +2327,15 @@ int DaosStore::forward_request_to_master(const DoutPrefixProvider* dpp,
   return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
+int DaosStore::forward_iam_request_to_master(const DoutPrefixProvider* dpp,
+                                             const RGWAccessKey& key,
+                                             obj_version* objv,
+                                             bufferlist& in_data,
+                                             RGWXMLDecoder::XMLParser* parser,
+                                             req_info& info, optional_yield y) {
+  return DAOS_NOT_IMPLEMENTED_LOG(dpp);
+}
+
 std::string DaosStore::zone_unique_id(uint64_t unique_num) { return ""; }
 
 std::string DaosStore::zone_unique_trans_id(const uint64_t unique_num) {
@@ -2366,8 +2388,7 @@ int DaosStore::register_to_service_map(const DoutPrefixProvider* dpp,
   return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 
-void DaosStore::get_quota(RGWQuotaInfo& bucket_quota,
-                          RGWQuotaInfo& user_quota) {
+void DaosStore::get_quota(RGWQuota& quota) {
   // XXX: Not handled for the first pass
   return;
 }
@@ -2379,7 +2400,8 @@ void DaosStore::get_ratelimit(RGWRateLimitInfo& bucket_ratelimit,
 }
 
 int DaosStore::set_buckets_enabled(const DoutPrefixProvider* dpp,
-                                   vector<rgw_bucket>& buckets, bool enabled) {
+                                   std::vector<rgw_bucket>& buckets,
+                                   bool enabled) {
   return DAOS_NOT_IMPLEMENTED_LOG(dpp);
 }
 

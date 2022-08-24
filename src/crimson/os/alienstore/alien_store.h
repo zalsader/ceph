@@ -106,7 +106,7 @@ public:
   seastar::future<struct stat> stat(
     CollectionRef,
     const ghobject_t&) final;
-  read_errorator::future<ceph::bufferlist> omap_get_header(
+  get_attr_errorator::future<ceph::bufferlist> omap_get_header(
     CollectionRef,
     const ghobject_t&) final;
   read_errorator::future<std::map<uint64_t, uint64_t>> fiemap(
@@ -137,6 +137,7 @@ private:
   mutable std::unique_ptr<crimson::os::ThreadPool> tp;
   const std::string type;
   const std::string path;
+  const ConfigValues values;
   uint64_t used_bytes = 0;
   std::unique_ptr<ObjectStore> store;
   std::unique_ptr<CephContext> cct;

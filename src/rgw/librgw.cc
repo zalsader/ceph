@@ -25,7 +25,6 @@
 
 #include "include/str_list.h"
 #include "include/stringify.h"
-#include "global/global_init.h"
 #include "global/signal_handler.h"
 #include "common/config.h"
 #include "common/errno.h"
@@ -184,7 +183,7 @@ namespace rgw {
     return ret;
   } /* process_request */
 
-  static inline void abort_req(struct req_state *s, RGWOp *op, int err_no)
+  static inline void abort_req(req_state *s, RGWOp *op, int err_no)
   {
     if (!s)
       return;
@@ -235,8 +234,8 @@ namespace rgw {
     rgw_env.set("HTTP_HOST", "");
 
     /* XXX and -then- bloat up req_state with string copies from it */
-    struct req_state rstate(req->cct, &rgw_env, req->id);
-    struct req_state *s = &rstate;
+    req_state rstate(req->cct, &rgw_env, req->id);
+    req_state *s = &rstate;
 
     // XXX fix this
     s->cio = io;
@@ -372,7 +371,7 @@ namespace rgw {
       return -EINVAL;
     }
 
-    struct req_state* s = req->get_state();
+    req_state* s = req->get_state();
     RGWLibIO& io_ctx = req->get_io();
     RGWEnv& rgw_env = io_ctx.get_env();
 
@@ -502,10 +501,10 @@ namespace rgw {
       { "log_file", "/var/log/radosgw/$cluster-$name.log" }
     };
 
-    cct = global_init(&defaults, args,
-		      CEPH_ENTITY_TYPE_CLIENT,
-		      CODE_ENVIRONMENT_DAEMON,
-		      CINIT_FLAG_UNPRIVILEGED_DAEMON_DEFAULTS);
+    cct = rgw_global_init(&defaults, args,
+			  CEPH_ENTITY_TYPE_CLIENT,
+			  CODE_ENVIRONMENT_DAEMON,
+			  CINIT_FLAG_UNPRIVILEGED_DAEMON_DEFAULTS);
 
     ceph::mutex mutex = ceph::make_mutex("main");
     SafeTimer init_timer(g_ceph_context, mutex);
@@ -538,8 +537,9 @@ namespace rgw {
       g_conf()->rgw_run_sync_thread &&
       g_conf()->rgw_nfs_run_sync_thread;
 
+    StoreManager::Config cfg = StoreManager::get_config(false, g_ceph_context);
     store = StoreManager::get_storage(this, g_ceph_context,
-					 "rados",
+					 cfg,
 					 run_gc,
 					 run_lc,
 					 run_quota,
