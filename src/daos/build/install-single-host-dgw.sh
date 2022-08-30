@@ -79,6 +79,19 @@ function append_ccache_source_date()
     if [[ ! $? == 0 ]]; then
         echo "export SOURCE_DATE_EPOCH=946684800" >> ~/.bashrc
     fi
+    source ~/.bashrc
+    set -e
+}
+
+function use_gcc11()
+{
+    set +e
+    dnf install gcc-toolset-11 -y
+    grep "gcc-toolset-11" ~/.bashrc
+    if [[ ! $? == 0 ]]; then
+        echo "source scl_source enable gcc-toolset-11" >> ~/.bashrc
+    fi
+    source ~/.bashrc
     set -e
 }
 
@@ -261,6 +274,7 @@ free_space_check DAOS_STORAGE 5000000
 sudo dnf install openssl git jq net-tools iproute -y
 sudo dnf update -y
 
+use_gcc11
 install_powertools
 build_daos
 build_ceph
