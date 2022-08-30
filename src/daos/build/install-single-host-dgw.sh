@@ -15,10 +15,11 @@ function usage()
     echo ""
     echo "./install-single-host-dgw.sh"
     echo -e "\t-h --help"
-    echo -e "\t-b --branch=<git-branch-to-use> default=add-daos-rgw-sal"
+    echo -e "\t-db --daos-branch=<git-branch-to-use> default=libds3"
+    echo -e "\t-cb --ceph-branch=<git-branch-to-use> default=add-daos-rgw-sal"
     echo -e "\t-dp --daos-path=<git-clone-path> default=/opt/daos"
     echo -e "\t-cp --ceph-path=<git-clone-path> default=/opt/ceph"
-    echo -e "\t-dr --daos-repo=<git-repo> default=https://github.com/daos-stack"
+    echo -e "\t-dr --daos-repo=<git-repo> default=https://github.com/daos-stack/daos"
     echo -e "\t-cr --ceph-repo=<git-repo> default=https://github.com/zalsader/ceph"
     echo -e "\t-ep --enable-passwordless-sudo=$BOOLEAN_VALUES default=true"
     echo ""
@@ -30,18 +31,19 @@ function ceph_get()
     while (( $# )); do
         local output_file=$(basename -- $1)
         local repo_path=$1
-        wget --output-document=${output_file} $CEPH_REPO/blob/$BRANCH/${repo_path}?raw=true
+        wget --output-document=${output_file} $CEPH_REPO/blob/$CEPH_BRANCH/${repo_path}?raw=true
         CLEANUP_FILES+=( ${output_file} )
         shift
     done
 }
 
-BRANCH='add-daos-rgw-sal'
+CEPH_BRANCH='add-daos-rgw-sal'
+DAOS_BRANCH='libds3'
 CEPH_PATH='/opt/ceph'
 DAOS_PATH='/opt/daos'
 CLEANUP_FILES=()
 CEPH_REPO='https://github.com/zalsader/ceph'
-DAOS_REPO='https://github.com/daos-stack'
+DAOS_REPO='https://github.com/daos-stack/daos'
 REBOOT_REQUIRED=false
 PASSWORDLESS_SUDO=true
 
@@ -54,8 +56,11 @@ while (( $# ))
             usage
             exit 0
             ;;
-        -b | --branch)
-            BRANCH=$VALUE
+        -db | --daos-branch)
+            DAOS_BRANCH=$VALUE
+            ;;
+        -cb | --ceph-branch)
+            CEPH_BRANCH=$VALUE
             ;;
         -dp | --daos-path)
             # eval is to expand ~
@@ -163,6 +168,7 @@ function install_powertools()
 {
     sudo dnf install dnf-plugins-core -y
     sudo dnf config-manager --set-enabled powertools
+    sudo dnf -y module enable javapackages-tools
     sudo dnf install epel-release -y
 }
 
@@ -200,7 +206,7 @@ function build_daos()
 {
     pushd $(dirname -- $DAOS_PATH)
     if [[ ! -e $DAOS_PATH/README.md ]]; then
-        git clone --recurse-submodules $DAOS_REPO/daos.git
+        git clone --recurse-submodules $DAOS_REPO --branch DAOS_BRANCH
     fi
     assign_path DAOS_PATH
     cd $DAOS_PATH
@@ -233,7 +239,7 @@ build_ceph()
 {
     pushd $(dirname -- $CEPH_PATH)
     if [[ ! -e $CEPH_PATH/README.md ]]; then
-        git clone --recurse $CEPH_REPO --branch add-daos-rgw-sal
+        git clone --recurse $CEPH_REPO --branch CEPH_BRANCH
     fi
     assign_path CEPH_PATH
     cd $CEPH_PATH
