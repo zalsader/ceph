@@ -1,9 +1,5 @@
 #!/bin/bash
 
-# fail on errors
-set -e
-set -x
-
 function usage()
 {
     # turn off echo
@@ -248,6 +244,10 @@ while (( $# ))
     shift
 done
 
+# Fail on errors
+set -e
+# Debug
+set -x
 # Main
 ceph_get src/daos/folder_free_space.sh
 source ./folder_free_space.sh
