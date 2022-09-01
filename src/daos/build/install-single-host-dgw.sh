@@ -1,9 +1,5 @@
 #!/bin/bash
 
-# fail on errors
-set -e
-set -x
-
 function usage()
 {
     # turn off echo
@@ -15,10 +11,11 @@ function usage()
     echo ""
     echo "./install-single-host-dgw.sh"
     echo -e "\t-h --help"
-    echo -e "\t-b --branch=<git-branch-to-use> default=add-daos-rgw-sal"
+    echo -e "\t-db --daos-branch=<git-branch-to-use> default=libds3"
+    echo -e "\t-cb --ceph-branch=<git-branch-to-use> default=add-daos-rgw-sal"
     echo -e "\t-dp --daos-path=<git-clone-path> default=/opt/daos"
     echo -e "\t-cp --ceph-path=<git-clone-path> default=/opt/ceph"
-    echo -e "\t-dr --daos-repo=<git-repo> default=https://github.com/daos-stack"
+    echo -e "\t-dr --daos-repo=<git-repo> default=https://github.com/daos-stack/daos"
     echo -e "\t-cr --ceph-repo=<git-repo> default=https://github.com/zalsader/ceph"
     echo -e "\t-ep --enable-passwordless-sudo=$BOOLEAN_VALUES default=true"
     echo ""
@@ -30,64 +27,11 @@ function ceph_get()
     while (( $# )); do
         local output_file=$(basename -- $1)
         local repo_path=$1
-        wget --output-document=${output_file} $CEPH_REPO/blob/$BRANCH/${repo_path}?raw=true
+        wget --output-document=${output_file} $CEPH_REPO/blob/$CEPH_BRANCH/${repo_path}?raw=true
         CLEANUP_FILES+=( ${output_file} )
         shift
     done
 }
-
-BRANCH='add-daos-rgw-sal'
-CEPH_PATH='/opt/ceph'
-DAOS_PATH='/opt/daos'
-CLEANUP_FILES=()
-CEPH_REPO='https://github.com/zalsader/ceph'
-DAOS_REPO='https://github.com/daos-stack'
-REBOOT_REQUIRED=false
-PASSWORDLESS_SUDO=true
-
-while (( $# ))
-    do
-    PARAM=`echo $1 | awk -F= '{print $1}'`
-    VALUE=`echo $1 | awk -F= '{print $2}'`
-    case $PARAM in
-        -h | --help)
-            usage
-            exit 0
-            ;;
-        -b | --branch)
-            BRANCH=$VALUE
-            ;;
-        -dp | --daos-path)
-            # eval is to expand ~
-            eval DAOS_PATH=$VALUE
-            ;;
-        -cp | --ceph-path)
-            # eval is to expand ~
-            eval CEPH_PATH=$VALUE
-            ;;
-        -dr | --daos-repo)
-            DAOS_REPO=$VALUE
-            ;;
-        -cr | --ceph-repo)
-            CEPH_REPO=$VALUE
-            ;;
-        -ep | --enable-passwordless-sudo)
-            # lets hope it actually finds the shell script
-            ceph_get src/daos/set_boolean.sh
-            source ./set_boolean.sh
-            set_boolean PASSWORDLESS_SUDO $VALUE
-            ;;
-        *)
-            echo "Unknown option $1"
-            usage
-            exit 1
-            ;;
-    esac
-    shift
-done
-
-ceph_get src/daos/folder_free_space.sh
-source ./folder_free_space.sh
 
 function free_space_check()
 {
@@ -116,16 +60,6 @@ function set_passwordless_sudo()
     fi
 }
 
-set_passwordless_sudo
-free_space_check DAOS_PATH 10000000
-free_space_check CEPH_PATH 70000000
-DAOS_STORAGE='/tmp'
-free_space_check DAOS_STORAGE 5000000
-
-# install packages & install the latest
-sudo dnf install openssl git jq net-tools iproute -y
-sudo dnf update -y
-
 function assign_path()
 {
     declare -n ASSIGN_PATH=$1
@@ -145,6 +79,19 @@ function append_ccache_source_date()
     if [[ ! $? == 0 ]]; then
         echo "export SOURCE_DATE_EPOCH=946684800" >> ~/.bashrc
     fi
+    source ~/.bashrc
+    set -e
+}
+
+function use_gcc11()
+{
+    set +e
+    dnf install gcc-toolset-11 -y
+    grep "gcc-toolset-11" ~/.bashrc
+    if [[ ! $? == 0 ]]; then
+        echo "source scl_source enable gcc-toolset-11" >> ~/.bashrc
+    fi
+    source ~/.bashrc
     set -e
 }
 
@@ -163,6 +110,7 @@ function install_powertools()
 {
     sudo dnf install dnf-plugins-core -y
     sudo dnf config-manager --set-enabled powertools
+    sudo dnf -y module enable javapackages-tools
     sudo dnf install epel-release -y
 }
 
@@ -200,7 +148,7 @@ function build_daos()
 {
     pushd $(dirname -- $DAOS_PATH)
     if [[ ! -e $DAOS_PATH/README.md ]]; then
-        git clone --recurse-submodules $DAOS_REPO/daos.git
+        git clone --recurse-submodules $DAOS_REPO --branch $DAOS_BRANCH
     fi
     assign_path DAOS_PATH
     cd $DAOS_PATH
@@ -229,11 +177,11 @@ function build_daos()
     setup_hugepages
 }
 
-build_ceph()
+function build_ceph()
 {
     pushd $(dirname -- $CEPH_PATH)
     if [[ ! -e $CEPH_PATH/README.md ]]; then
-        git clone --recurse $CEPH_REPO --branch add-daos-rgw-sal
+        git clone --recurse $CEPH_REPO --branch $CEPH_BRANCH
     fi
     assign_path CEPH_PATH
     cd $CEPH_PATH
@@ -253,6 +201,80 @@ build_ceph()
     popd
 }
 
+# Defaults
+CEPH_BRANCH='add-daos-rgw-sal'
+DAOS_BRANCH='libds3'
+CEPH_PATH='/opt/ceph'
+DAOS_PATH='/opt/daos'
+CLEANUP_FILES=()
+CEPH_REPO='https://github.com/zalsader/ceph'
+DAOS_REPO='https://github.com/daos-stack/daos'
+REBOOT_REQUIRED=false
+PASSWORDLESS_SUDO=true
+
+# Read args
+while (( $# ))
+    do
+    PARAM=`echo $1 | awk -F= '{print $1}'`
+    VALUE=`echo $1 | awk -F= '{print $2}'`
+    case $PARAM in
+        -h | --help)
+            usage
+            exit 0
+            ;;
+        -db | --daos-branch)
+            DAOS_BRANCH=$VALUE
+            ;;
+        -cb | --ceph-branch)
+            CEPH_BRANCH=$VALUE
+            ;;
+        -dp | --daos-path)
+            # eval is to expand ~
+            eval DAOS_PATH=$VALUE
+            ;;
+        -cp | --ceph-path)
+            # eval is to expand ~
+            eval CEPH_PATH=$VALUE
+            ;;
+        -dr | --daos-repo)
+            DAOS_REPO=$VALUE
+            ;;
+        -cr | --ceph-repo)
+            CEPH_REPO=$VALUE
+            ;;
+        -ep | --enable-passwordless-sudo)
+            # lets hope it actually finds the shell script
+            ceph_get src/daos/set_boolean.sh
+            source ./set_boolean.sh
+            set_boolean PASSWORDLESS_SUDO $VALUE
+            ;;
+        *)
+            echo "Unknown option $1"
+            usage
+            exit 1
+            ;;
+    esac
+    shift
+done
+
+# Fail on errors
+set -e
+# Debug
+set -x
+# Main
+ceph_get src/daos/folder_free_space.sh
+source ./folder_free_space.sh
+set_passwordless_sudo
+free_space_check DAOS_PATH 10000000
+free_space_check CEPH_PATH 70000000
+DAOS_STORAGE='/tmp'
+free_space_check DAOS_STORAGE 5000000
+
+# install packages & install the latest
+sudo dnf install openssl git jq net-tools iproute -y
+sudo dnf update -y
+
+use_gcc11
 install_powertools
 build_daos
 build_ceph
