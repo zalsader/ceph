@@ -88,7 +88,7 @@ function append_ccache_source_date()
 function use_gcc11()
 {
     set +e
-    dnf install gcc-toolset-11 -y
+    sudo dnf install gcc-toolset-11 -y
     grep "gcc-toolset-11" ~/.bashrc
     if [[ ! $? == 0 ]]; then
         echo "source scl_source enable gcc-toolset-11" >> ~/.bashrc
@@ -197,21 +197,19 @@ build_ccache()
     sudo chmod -R 777 $CCACHE_PATH
 }
 
-function get_redhat_repo()
+function starlet_workaround()
 {
     # as a workaround for xmlstarlet being removed from the el8 repo, we've stored the Seagate repo
     set +e
     sudo dnf provides xmlstarlet
-    set -e
     local dnf_result=$?
+    set -e
     if [[ ! $dnf_result == 0 ]]; then
-        ceph_get src/daos/docker/ceph/redhat.repo
-        local repo_name="/etc/yum.repos.d/redhat.repo"
-        if [[ -e $repo_name ]]; then
-            # get a temp name so the repo is not overwritten if it exists
-            repo_name=`sudo mktemp /etc/yum.repos.d/redhatXXX.repo`
-        fi
-        sudo cp redhat.repo $repo_name
+        starlet_manually_installed=true
+        sed -i "/xmlstarlet/d" ceph.spec.in
+        sudo pip3 install -U pip
+        sudo pip3 install -U setuptools
+        sudo pip3 install xmlstarlet
     fi
 }
 
@@ -223,8 +221,11 @@ function build_ceph()
     fi
     assign_path CEPH_PATH
     cd $CEPH_PATH
-    get_redhat_repo
+    starlet_workaround
     ./install-deps.sh
+    if [[ $starlet_manually_installed == true ]]; then
+        git restore ceph.spec.in
+    fi
     sudo yum install ccache -y
     search_first_word_and_append_to_ccache "max_size = 25G"
     search_first_word_and_append_to_ccache "sloppiness = time_macros"
@@ -318,6 +319,7 @@ free_space_check DAOS_PATH 10000000
 free_space_check CEPH_PATH 70000000
 DAOS_STORAGE='/tmp'
 free_space_check DAOS_STORAGE 5000000
+starlet_manually_installed=false
 
 # install packages & install the latest
 sudo dnf install openssl git jq net-tools iproute -y
