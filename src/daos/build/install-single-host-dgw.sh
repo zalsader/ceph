@@ -17,6 +17,8 @@ function usage()
     echo -e "\t-cp --ceph-path=<git-clone-path> default=/opt/ceph"
     echo -e "\t-dr --daos-repo=<git-repo> default=https://github.com/daos-stack/daos"
     echo -e "\t-cr --ceph-repo=<git-repo> default=https://github.com/zalsader/ceph"
+    echo -e "\t-cbp --ccache-build-path=<ccache-build-path> default=/opt/ccache-build"
+    echo -e "\t-cc --ccache-path=<ccache-path> default=/opt/ccache"
     echo -e "\t-ep --enable-passwordless-sudo=$BOOLEAN_VALUES default=true"
     echo ""
 }
@@ -79,20 +81,20 @@ function append_ccache_source_date()
     if [[ ! $? == 0 ]]; then
         echo "export SOURCE_DATE_EPOCH=946684800" >> ~/.bashrc
     fi
-    source ~/.bashrc
     set -e
+    export SOURCE_DATE_EPOCH=946684800
 }
 
 function use_gcc11()
 {
     set +e
-    dnf install gcc-toolset-11 -y
+    sudo dnf install gcc-toolset-11 -y
     grep "gcc-toolset-11" ~/.bashrc
     if [[ ! $? == 0 ]]; then
         echo "source scl_source enable gcc-toolset-11" >> ~/.bashrc
     fi
-    source ~/.bashrc
     set -e
+    source scl_source enable gcc-toolset-11
 }
 
 function search_first_word_and_append_to_ccache()
@@ -177,6 +179,40 @@ function build_daos()
     setup_hugepages
 }
 
+build_ccache()
+{
+    sudo mkdir -p $CCACHE_BUILD_PATH
+    sudo chmod 777 $CCACHE_BUILD_PATH
+	pushd $CCACHE_BUILD_PATH
+	wget https://github.com/ccache/ccache/releases/download/v4.6.1/ccache-4.6.1.tar.xz
+	tar -xf ccache-4.6.1.tar.xz
+	cd ccache-4.6.1/
+	mkdir -p build
+	cd build
+	cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_INSTALL_SYSCONFDIR=/etc  -DZSTD_FROM_INTERNET=ON -DHIREDIS_FROM_INTERNET=ON ..
+	make
+	sudo make install
+    popd
+    sudo mkdir -p $CCACHE_PATH
+    sudo chmod -R 777 $CCACHE_PATH
+}
+
+function starlet_workaround()
+{
+    # as a workaround for xmlstarlet being removed from the el8 repo, we've stored the Seagate repo
+    set +e
+    sudo dnf provides xmlstarlet
+    local dnf_result=$?
+    set -e
+    if [[ ! $dnf_result == 0 ]]; then
+        starlet_manually_installed=true
+        sed -i "/xmlstarlet/d" ceph.spec.in
+        sudo pip3 install -U pip
+        sudo pip3 install -U setuptools
+        sudo pip3 install xmlstarlet
+    fi
+}
+
 function build_ceph()
 {
     pushd $(dirname -- $CEPH_PATH)
@@ -185,7 +221,11 @@ function build_ceph()
     fi
     assign_path CEPH_PATH
     cd $CEPH_PATH
+    starlet_workaround
     ./install-deps.sh
+    if [[ $starlet_manually_installed == true ]]; then
+        git restore ceph.spec.in
+    fi
     sudo yum install ccache -y
     search_first_word_and_append_to_ccache "max_size = 25G"
     search_first_word_and_append_to_ccache "sloppiness = time_macros"
@@ -202,6 +242,8 @@ function build_ceph()
 }
 
 # Defaults
+CCACHE_BUILD_PATH='/opt/ccache-build'
+CCACHE_PATH='/opt/ccache'
 CEPH_BRANCH='add-daos-rgw-sal'
 DAOS_BRANCH='libds3'
 CEPH_PATH='/opt/ceph'
@@ -236,6 +278,14 @@ while (( $# ))
             # eval is to expand ~
             eval CEPH_PATH=$VALUE
             ;;
+        -cbp | --ccache-build-path)
+            # eval is to expand ~
+            eval CCACHE_BUILD_PATH=$VALUE
+            ;;
+        -cc | --ccache-path)
+            # eval is to expand ~
+            eval CCACHE_PATH=$VALUE
+            ;;
         -dr | --daos-repo)
             DAOS_REPO=$VALUE
             ;;
@@ -269,6 +319,7 @@ free_space_check DAOS_PATH 10000000
 free_space_check CEPH_PATH 70000000
 DAOS_STORAGE='/tmp'
 free_space_check DAOS_STORAGE 5000000
+starlet_manually_installed=false
 
 # install packages & install the latest
 sudo dnf install openssl git jq net-tools iproute -y
@@ -277,12 +328,14 @@ sudo dnf update -y
 use_gcc11
 install_powertools
 build_daos
+build_ccache
 build_ceph
+
+# cleanup files downloaded during the script (before the reboot)
+rm -f ${CLEANUP_FILES[@]}
+
 if [[ $REBOOT_REQUIRED == true ]]; then
     echo -e "*** WARNING ***"
     read -p "Reboot is required.  Press enter to reboot now or ^C to cancel and reboot later"
     sudo reboot
 fi
-
-# cleanup files downloaded during the script
-rm -f ${CLEANUP_FILES[@]}
