@@ -23,11 +23,10 @@ RUN sudo dnf config-manager --set-enabled powertools
 RUN sudo dnf -y module enable javapackages-tools
 RUN sudo dnf install epel-release -y
 RUN sudo dnf install gcc-toolset-11 -y
+
 # xz is needed to decompress the tar file
 RUN sudo dnf install xz -y
 RUN sudo dnf install wget -y
-RUN bash -c "echo 'source scl_source enable gcc-toolset-11' >> ~/.bashrc"
-RUN bash -c "source scl_source enable gcc-toolset-11"
 RUN sudo mkdir -p /opt/ccache && sudo chmod -R 777 /opt/ccache
 RUN mkdir -p /opt/ccache/build/
 RUN cd /opt/ccache/build && wget https://github.com/ccache/ccache/releases/download/v4.6.1/ccache-4.6.1.tar.xz
@@ -38,7 +37,9 @@ ENV SOURCE_DATE_EPOCH=946684800
 RUN cd /opt && sudo mkdir -p ceph && sudo chmod 777 ceph && git clone --recurse https://github.com/zalsader/ceph --branch add-daos-rgw-sal
 RUN cd /opt/ceph && ./install-deps.sh
 RUN pip3 install cython prettytable
-RUN cd /opt/ceph && cmake3 -GNinja -DPC_DAOS_INCLUDEDIR=${DAOS_PATH}/include -DPC_DAOS_LIBDIR=${DAOS_PATH}/lib64 -DWITH_PYTHON3=3.6 -DWITH_RADOSGW_DAOS=YES -DWITH_CCACHE=ON -DENABLE_GIT_VERSION=OFF -B build && cd build && ninja vstart
+
+# scl_source needs to be executed on the same line as the compile, else it doesn't use gcc-11
+RUN source scl_source enable gcc-toolset-11 && cd /opt/ceph && cmake3 -GNinja -DPC_DAOS_INCLUDEDIR=${DAOS_PATH}/include -DPC_DAOS_LIBDIR=${DAOS_PATH}/lib64 -DWITH_PYTHON3=3.6 -DWITH_RADOSGW_DAOS=YES -DWITH_CCACHE=ON -DENABLE_GIT_VERSION=OFF -B build && cd build && ninja vstart
 RUN cd /opt/ceph/build && sudo MDS=0 RGW=1 ../src/vstart.sh -f -n --without-dashboard
 RUN cd /opt/ceph/build && sudo ../src/stop.sh
 COPY ceph.sed /opt/ceph/build
