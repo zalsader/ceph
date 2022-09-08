@@ -11,6 +11,28 @@ LABEL maintainer="seagate-daos@seagate.com"
 
 # get & build the ceph source
 COPY ccache.conf /etc/ccache.conf
+
+# redhat.repo is only available from within Seagate's network and is needed since xmlstarlet was removed from @system repo
+COPY redhat.repo /etc/yum.repos.d/redhat.repo
+RUN sudo dnf clean all
+RUN sudo dnf makecache
+# redhat.repo end changes
+
+RUN sudo dnf install dnf-plugins-core -y
+RUN sudo dnf config-manager --set-enabled powertools
+RUN sudo dnf -y module enable javapackages-tools
+RUN sudo dnf install epel-release -y
+RUN sudo dnf install gcc-toolset-11 -y
+# xz is needed to decompress the tar file
+RUN sudo dnf install xz -y
+RUN sudo dnf install wget -y
+RUN bash -c "echo "source scl_source enable gcc-toolset-11" >> ~/.bashrc"
+RUN sudo mkdir -p /opt/ccache && sudo chmod -R 777 /opt/ccache
+RUN mkdir -p /opt/ccache/build/
+RUN cd /opt/ccache/build && wget https://github.com/ccache/ccache/releases/download/v4.6.1/ccache-4.6.1.tar.xz
+RUN cd /opt/ccache/build && tar -xf ccache-4.6.1.tar.xz
+RUN mkdir -p /opt/ccache/build/ccache-4.6.1/build
+RUN cd /opt/ccache/build/ccache-4.6.1/build && cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_INSTALL_SYSCONFDIR=/etc  -DZSTD_FROM_INTERNET=ON -DHIREDIS_FROM_INTERNET=ON .. && make && sudo make install
 ENV SOURCE_DATE_EPOCH=946684800
 RUN cd /opt && sudo mkdir -p ceph && sudo chmod 777 ceph && git clone --recurse https://github.com/zalsader/ceph --branch add-daos-rgw-sal
 RUN cd /opt/ceph && ./install-deps.sh

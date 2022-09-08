@@ -199,8 +199,8 @@ check_test_result()
 
 attempt_restart()
 {
-    echo "attempting restart"
     if [[ $summary == false ]]; then
+        echo "attempting restart"
         index=1
         rados_restart=5
         while [ $index -le $rados_restart ]; do
