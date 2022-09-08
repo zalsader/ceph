@@ -42,6 +42,7 @@ function usage()
     echo -e "\t--daos-image-name=<image-name> default=daos-single-host"
     echo -e "\t--s3tests-image-name=<image-name> default=dgw-s3-tests"
     echo -e "\t--ceph-branch=<branch-to-use> default=add-daos-rgw-sal"
+    echo -e "\t--daos-branch=<branch-to-use> default=libds3"
     echo ""
 }
 
@@ -57,6 +58,7 @@ CEPH_IMAGE_NAME='dgw-single-host'
 DAOS_IMAGE_NAME='daos-single-host'
 S3TESTS_IMAGE_NAME='dgw-s3-tests'
 CEPH_BRANCH='add-daos-rgw-sal'
+DAOS_BRANCH='libds3'
 
 while [ "$1" != "" ]; do
     PARAM=`echo $1 | awk -F= '{print $1}'`
@@ -101,6 +103,9 @@ while [ "$1" != "" ]; do
             ;;
         --ceph-branch)
             CEPH_BRANCH=$VALUE
+            ;;
+        --daos-branch)
+            DAOS_BRANCH=$VALUE
             ;;
         *)
             echo "ERROR: unknown parameter \"$PARAM\""
@@ -308,7 +313,7 @@ function build_docker_images()
     DAOS_SINGLE_HOST=$?
     if [[ $DAOS_GIT == $PULL_NEEDED ]] || [[ $DAOS_ROCKY != 0 ]] || [[ $DAOS_SINGLE_HOST != 0 ]]; then
         pushd daos
-        docker build https://github.com/daos-stack/daos.git#master -f utils/docker/Dockerfile.el.8 -t daos-rocky
+        docker build https://github.com/daos-stack/daos.git#$DAOS_BRANCH -f utils/docker/Dockerfile.el.8 -t daos-rocky
         error_handler $? $(basename $0) FUNCNAME LINENO
         docker build . -t "$DAOS_IMAGE_NAME"
         error_handler $? $(basename $0) FUNCNAME LINENO
