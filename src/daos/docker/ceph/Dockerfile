@@ -26,7 +26,8 @@ RUN sudo dnf install gcc-toolset-11 -y
 # xz is needed to decompress the tar file
 RUN sudo dnf install xz -y
 RUN sudo dnf install wget -y
-RUN bash -c "echo "source scl_source enable gcc-toolset-11" >> ~/.bashrc"
+RUN bash -c "echo 'source scl_source enable gcc-toolset-11' >> ~/.bashrc"
+RUN bash -c "source scl_source enable gcc-toolset-11"
 RUN sudo mkdir -p /opt/ccache && sudo chmod -R 777 /opt/ccache
 RUN mkdir -p /opt/ccache/build/
 RUN cd /opt/ccache/build && wget https://github.com/ccache/ccache/releases/download/v4.6.1/ccache-4.6.1.tar.xz
