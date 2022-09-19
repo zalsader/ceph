@@ -21,7 +21,7 @@ from pyfakefs import fake_filesystem_unittest
 
 with mock.patch('builtins.open', create=True):
     from importlib.machinery import SourceFileLoader
-    cd = SourceFileLoader('cephadm', 'cephadm').load_module()
+    cd = SourceFileLoader('cephadm', 'cephadm.py').load_module()
 
 
 def get_ceph_conf(
@@ -1160,6 +1160,7 @@ class TestMonitoring(object):
 
     def test_prometheus_external_url(self):
         ctx = cd.CephadmContext()
+        ctx.config_json = json.dumps({'files': {}, 'retention_time': '15d'})
         daemon_type = 'prometheus'
         daemon_id = 'home'
         fsid = 'aaf5a720-13fe-4a3b-82b9-2d99b7fd9704'

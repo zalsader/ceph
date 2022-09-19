@@ -53,16 +53,6 @@ static const string bucket_full_status_oid_prefix = "bucket.full-sync-status";
 static const string bucket_status_oid_prefix = "bucket.sync-status";
 static const string object_status_oid_prefix = "bucket.sync-status";
 
-// returns a lambda that captures negative error codes into the given int&
-static auto capture_error(int& retcode) {
-  return [&retcode] (uint64_t stack_id, int ret) {
-    if (ret < 0) {
-      retcode = ret;
-    }
-    return ret;
-  };
-}
-
 void rgw_datalog_info::decode_json(JSONObj *obj) {
   JSONDecoder::decode_json("num_objects", num_shards, obj);
 }
@@ -1308,13 +1298,13 @@ class RGWDataSyncSingleEntryCR : public RGWCoroutine {
   int sync_status = 0;
 public:
   RGWDataSyncSingleEntryCR(RGWDataSyncCtx *_sc, rgw::bucket_sync::Handle state,
-                           rgw_data_sync_obligation obligation,
+                           rgw_data_sync_obligation _obligation,
                            RGWDataSyncShardMarkerTrack *_marker_tracker,
                            const rgw_raw_obj& error_repo,
                            boost::intrusive_ptr<const RGWContinuousLeaseCR> lease_cr,
                            const RGWSyncTraceNodeRef& _tn_parent)
     : RGWCoroutine(_sc->cct), sc(_sc), sync_env(_sc->env),
-      state(std::move(state)), obligation(std::move(obligation)),
+      state(std::move(state)), obligation(std::move(_obligation)),
       marker_tracker(_marker_tracker), error_repo(error_repo),
       lease_cr(std::move(lease_cr)) {
     set_description() << "data sync single entry (source_zone=" << sc->source_zone << ") " << obligation;
@@ -1471,16 +1461,20 @@ public:
           yield_spawn_window(rgw::error_repo::write_cr(sync_env->store->svc()->rados, error_repo,
                             rgw::error_repo::encode_key(bs, each->gen),
                             timestamp), cct->_conf->rgw_data_sync_spawn_window,
-                            capture_error(retcode));
-          if (retcode < 0) {
-            return set_cr_error(retcode);
-          }
+                            [&](uint64_t stack_id, int ret) {
+                              if (ret < 0) {
+                                retcode = ret;
+                              }
+                              return 0;
+                            });
         }
       }
-      drain_all_cb(capture_error(retcode));
-      if (retcode < 0) {
-        return set_cr_error(retcode);
-      }
+      drain_all_cb([&](uint64_t stack_id, int ret) {
+                   if (ret < 0) {
+                     tn->log(10, SSTR("writing to error repo returned error: " << ret));
+                   }
+                   return ret;
+                 });
 
       // once everything succeeds, remove the full sync obligation from the error repo
       yield call(rgw::error_repo::remove_cr(sync_env->store->svc()->rados, error_repo,
@@ -1602,11 +1596,21 @@ public:
             first_shard = false;
           } else {
             yield_spawn_window(shard_cr, cct->_conf->rgw_data_sync_spawn_window,
-                               capture_error(retcode));
+                              [&](uint64_t stack_id, int ret) {
+                                if (ret < 0) {
+                                  retcode = ret;
+                                }
+                                return retcode;
+                                });
             }
           }
         }
-        drain_all_cb(capture_error(retcode));
+        drain_all_cb([&](uint64_t stack_id, int ret) {
+                if (ret < 0) {
+                  retcode = ret;
+                }
+                return retcode;
+              });
       }
 
       yield call(marker_tracker->finish(key));
@@ -1685,6 +1689,7 @@ public:
       do {
         if (!lease_cr->is_locked()) {
           drain_all();
+          tn->log(1, "lease is lost, abort");
           return set_cr_error(-ECANCELED);
         }
         omapvals = std::make_shared<RGWRadosGetOmapValsCR::Result>();
@@ -1817,6 +1822,7 @@ public:
       do {
         if (!lease_cr->is_locked()) {
           drain_all();
+          tn->log(1, "lease is lost, abort");
           return set_cr_error(-ECANCELED);
         }
 	{
@@ -4301,6 +4307,7 @@ int RGWBucketFullSyncCR::operate(const DoutPrefixProvider *dpp)
     do {
       if (lease_cr && !lease_cr->is_locked()) {
         drain_all();
+        tn->log(1, "no lease or lease is lost, abort");
         return set_cr_error(-ECANCELED);
       }
       set_status("listing remote bucket");
@@ -4325,6 +4332,7 @@ int RGWBucketFullSyncCR::operate(const DoutPrefixProvider *dpp)
       for (; entries_iter != list_result.entries.end(); ++entries_iter) {
         if (lease_cr && !lease_cr->is_locked()) {
           drain_all();
+          tn->log(1, "no lease or lease is lost, abort");
           return set_cr_error(-ECANCELED);
         }
         tn->log(20, SSTR("[full sync] syncing object: "
@@ -4349,16 +4357,28 @@ int RGWBucketFullSyncCR::operate(const DoutPrefixProvider *dpp)
                       false);
         }
         drain_with_cb(cct->_conf->rgw_bucket_sync_spawn_window,
-                      capture_error(sync_result));
+                      [&](uint64_t stack_id, int ret) {
+                if (ret < 0) {
+                  tn->log(10, "a sync operation returned error");
+                  sync_result = ret;
+                }
+                return 0;
+              });
       }
     } while (list_result.is_truncated && sync_result == 0);
     set_status("done iterating over all objects");
 
     /* wait for all operations to complete */
-    drain_all_cb(capture_error(sync_result));
-
+    drain_all_cb([&](uint64_t stack_id, int ret) {
+      if (ret < 0) {
+        tn->log(10, "a sync operation returned error");
+        sync_result = ret;
+      }
+      return 0;
+    });
     tn->unset_flag(RGW_SNS_FLAG_ACTIVE);
     if (lease_cr && !lease_cr->is_locked()) {
+      tn->log(1, "no lease or lease is lost, abort");
       return set_cr_error(-ECANCELED);
     }
     yield call(marker_tracker.flush());
@@ -4550,7 +4570,7 @@ int RGWBucketShardIncrementalSyncCR::operate(const DoutPrefixProvider *dpp)
     do {
       if (lease_cr && !lease_cr->is_locked()) {
         drain_all();
-        tn->log(0, "ERROR: lease is not taken, abort");
+        tn->log(1, "no lease or lease is lost, abort");
         return set_cr_error(-ECANCELED);
       }
       tn->log(20, SSTR("listing bilog for incremental sync; position=" << sync_info.inc_marker.position));
@@ -4606,6 +4626,7 @@ int RGWBucketShardIncrementalSyncCR::operate(const DoutPrefixProvider *dpp)
       for (; entries_iter != entries_end; ++entries_iter) {
         if (lease_cr && !lease_cr->is_locked()) {
           drain_all();
+          tn->log(1, "no lease or lease is lost, abort");
           return set_cr_error(-ECANCELED);
         }
         entry = &(*entries_iter);
@@ -4730,12 +4751,24 @@ int RGWBucketShardIncrementalSyncCR::operate(const DoutPrefixProvider *dpp)
           }
         // }
         drain_with_cb(cct->_conf->rgw_bucket_sync_spawn_window,
-                      capture_error(sync_status));
+                      [&](uint64_t stack_id, int ret) {
+                if (ret < 0) {
+                  tn->log(10, "a sync operation returned error");
+                  sync_status = ret;
+                }
+                return 0;
+              });
       }
 
     } while (!list_result.empty() && sync_status == 0 && !syncstopped);
 
-    drain_all_cb(capture_error(sync_status));
+    drain_all_cb([&](uint64_t stack_id, int ret) {
+      if (ret < 0) {
+        tn->log(10, "a sync operation returned error");
+        sync_status = ret;
+      }
+      return 0;
+    });
     tn->unset_flag(RGW_SNS_FLAG_ACTIVE);
 
     if (syncstopped) {
@@ -5473,7 +5506,7 @@ int RGWSyncBucketCR::operate(const DoutPrefixProvider *dpp)
             yield spawn(bucket_lease_cr.get(), false);
             while (!bucket_lease_cr->is_locked()) {
               if (bucket_lease_cr->is_done()) {
-                tn->log(5, "ERROR: failed to take bucket lease");
+                tn->log(5, "failed to take lease");
                 set_status("lease lock failed, early abort");
                 drain_all();
                 return set_cr_error(bucket_lease_cr->get_ret_status());
@@ -5530,7 +5563,7 @@ int RGWSyncBucketCR::operate(const DoutPrefixProvider *dpp)
           yield spawn(bucket_lease_cr.get(), false);
           while (!bucket_lease_cr->is_locked()) {
             if (bucket_lease_cr->is_done()) {
-              tn->log(5, "ERROR: failed to take bucket lease");
+              tn->log(5, "failed to take lease");
               set_status("lease lock failed, early abort");
               drain_all();
               return set_cr_error(bucket_lease_cr->get_ret_status());

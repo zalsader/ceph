@@ -196,6 +196,7 @@ class MotrUser : public StoreUser {
     virtual int load_user(const DoutPrefixProvider* dpp, optional_yield y) override;
     virtual int store_user(const DoutPrefixProvider* dpp, optional_yield y, bool exclusive, RGWUserInfo* old_info = nullptr) override;
     virtual int remove_user(const DoutPrefixProvider* dpp, optional_yield y) override;
+    virtual int verify_mfa(const std::string& mfa_str, bool* verified, const DoutPrefixProvider* dpp, optional_yield y) override;
 
     int create_user_info_idx();
 
@@ -402,6 +403,16 @@ public:
     return group.zones.size();
   }
   virtual int get_placement_tier(const rgw_placement_rule& rule, std::unique_ptr<PlacementTier>* tier);
+  virtual int get_zone_by_id(const std::string& id, std::unique_ptr<Zone>* zone) override {
+    return -1;
+  }
+  virtual int get_zone_by_name(const std::string& name, std::unique_ptr<Zone>* zone) override {
+    return -1;
+  }
+  virtual int list_zones(std::list<std::string>& zone_ids) override {
+    zone_ids.clear();
+    return 0;
+  }
   const RGWZoneGroup& get_group() { return group; }
   virtual std::unique_ptr<ZoneGroup> clone() override {
     return std::make_unique<MotrZoneGroup>(store, group);
@@ -416,7 +427,6 @@ class MotrZone : public StoreZone {
     RGWZone *zone_public_config{nullptr}; /* external zone params, e.g., entrypoints, log flags, etc. */
     RGWZoneParams *zone_params{nullptr}; /* internal zone params, e.g., rados pools */
     RGWPeriod *current_period{nullptr};
-    rgw_zone_id cur_zone_id;
 
   public:
     MotrZone(MotrStore* _store) : store(_store), zonegroup(_store) {
@@ -424,7 +434,6 @@ class MotrZone : public StoreZone {
       zone_public_config = new RGWZone();
       zone_params = new RGWZoneParams();
       current_period = new RGWPeriod();
-      cur_zone_id = rgw_zone_id(zone_params->get_id());
 
       // XXX: only default and STANDARD supported for now
       RGWZonePlacementInfo info;
@@ -438,7 +447,6 @@ class MotrZone : public StoreZone {
       zone_public_config = new RGWZone();
       zone_params = new RGWZoneParams();
       current_period = new RGWPeriod();
-      cur_zone_id = rgw_zone_id(zone_params->get_id());
 
       // XXX: only default and STANDARD supported for now
       RGWZonePlacementInfo info;
@@ -453,8 +461,7 @@ class MotrZone : public StoreZone {
       return std::make_unique<MotrZone>(store);
     }
     virtual ZoneGroup& get_zonegroup() override;
-    virtual int get_zonegroup(const std::string& id, std::unique_ptr<ZoneGroup>* zonegroup) override;
-    virtual const rgw_zone_id& get_id() override;
+    virtual const std::string& get_id() override;
     virtual const std::string& get_name() const override;
     virtual bool is_writeable() override;
     virtual bool get_redirect_endpoint(std::string* endpoint) override;
@@ -464,6 +471,7 @@ class MotrZone : public StoreZone {
     virtual const std::string& get_realm_name() { return realm->get_name(); }
     virtual const std::string& get_realm_id() { return realm->get_id(); }
     virtual const std::string_view get_tier_type() { return "rgw"; }
+    virtual RGWBucketSyncPolicyHandlerRef get_sync_policy_handler() { return nullptr; }
     friend class MotrStore;
 };
 
@@ -631,14 +639,6 @@ class MotrObject : public StoreObject {
         uint64_t olh_epoch,
         const DoutPrefixProvider* dpp,
         optional_yield y) override;
-    virtual int transition_to_cloud(Bucket* bucket,
-			   rgw::sal::PlacementTier* tier,
-			   rgw_bucket_dir_entry& o,
-			   std::set<std::string>& cloud_targets,
-			   CephContext* cct,
-			   bool update_object,
-			   const DoutPrefixProvider* dpp,
-			   optional_yield y) override;
     virtual bool placement_rules_match(rgw_placement_rule& r1, rgw_placement_rule& r2) override;
     virtual int dump_obj_layout(const DoutPrefixProvider *dpp, optional_yield y, Formatter* f) override;
 
@@ -936,6 +936,8 @@ class MotrStore : public StoreStore {
     virtual Zone* get_zone() { return &zone; }
     virtual std::string zone_unique_id(uint64_t unique_num) override;
     virtual std::string zone_unique_trans_id(const uint64_t unique_num) override;
+    virtual int get_zonegroup(const std::string& id, std::unique_ptr<ZoneGroup>* zonegroup) override;
+    virtual int list_all_zones(const DoutPrefixProvider* dpp, std::list<std::string>& zone_ids) override;
     virtual int cluster_stat(RGWClusterStat& stats) override;
     virtual std::unique_ptr<Lifecycle> get_lifecycle(void) override;
     virtual std::unique_ptr<Completions> get_completions(void) override;
@@ -1027,6 +1029,7 @@ class MotrStore : public StoreStore {
     virtual void set_luarocks_path(const std::string& path) override {
       luarocks_path = path;
     }
+    virtual void register_admin_apis(RGWRESTMgr* mgr) override { };
 
     int open_idx(struct m0_uint128 *id, bool create, struct m0_idx *out);
     void close_idx(struct m0_idx *idx) { m0_idx_fini(idx); }

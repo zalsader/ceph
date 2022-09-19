@@ -67,7 +67,7 @@ namespace {
   std::pair<key_view_t, void*> build_key_view(const ghobject_t& hobj) {
     key_hobj_t key_hobj(hobj);
     size_t key_size = sizeof(shard_pool_crush_t) + sizeof(snap_gen_t) +
-                      ns_oid_view_t::estimate_size<KeyT::HOBJ>(key_hobj);
+                      ns_oid_view_t::estimate_size(key_hobj);
     void* p_mem = std::malloc(key_size);
 
     key_view_t key_view;
@@ -79,7 +79,7 @@ namespace {
     key_view.set(*reinterpret_cast<const shard_pool_crush_t*>(p_fill));
 
     auto p_ns_oid = p_fill;
-    ns_oid_view_t::test_append<KeyT::HOBJ>(key_hobj, p_fill);
+    ns_oid_view_t::test_append(key_hobj, p_fill);
     ns_oid_view_t ns_oid_view(p_ns_oid);
     key_view.set(ns_oid_view);
 
@@ -139,24 +139,24 @@ TEST_F(a_basic_test_t, 1_basic_sizes)
     "  LeafNode1: {} {} {}\n"
     "  LeafNode2: {} {}\n"
     "  LeafNode3: {}",
-    _STAGE_T(InternalNode0)::template insert_size<KeyT::VIEW>(key_view, i_value),
-    NXT_T(_STAGE_T(InternalNode0))::template insert_size<KeyT::VIEW>(key_view, i_value),
-    NXT_T(NXT_T(_STAGE_T(InternalNode0)))::template insert_size<KeyT::VIEW>(key_view, i_value),
-    _STAGE_T(InternalNode1)::template insert_size<KeyT::VIEW>(key_view, i_value),
-    NXT_T(_STAGE_T(InternalNode1))::template insert_size<KeyT::VIEW>(key_view, i_value),
-    NXT_T(NXT_T(_STAGE_T(InternalNode1)))::template insert_size<KeyT::VIEW>(key_view, i_value),
-    _STAGE_T(InternalNode2)::template insert_size<KeyT::VIEW>(key_view, i_value),
-    NXT_T(_STAGE_T(InternalNode2))::template insert_size<KeyT::VIEW>(key_view, i_value),
-    _STAGE_T(InternalNode3)::template insert_size<KeyT::VIEW>(key_view, i_value),
-    _STAGE_T(LeafNode0)::template insert_size<KeyT::HOBJ>(key, value),
-    NXT_T(_STAGE_T(LeafNode0))::template insert_size<KeyT::HOBJ>(key, value),
-    NXT_T(NXT_T(_STAGE_T(LeafNode0)))::template insert_size<KeyT::HOBJ>(key, value),
-    _STAGE_T(LeafNode1)::template insert_size<KeyT::HOBJ>(key, value),
-    NXT_T(_STAGE_T(LeafNode1))::template insert_size<KeyT::HOBJ>(key, value),
-    NXT_T(NXT_T(_STAGE_T(LeafNode1)))::template insert_size<KeyT::HOBJ>(key, value),
-    _STAGE_T(LeafNode2)::template insert_size<KeyT::HOBJ>(key, value),
-    NXT_T(_STAGE_T(LeafNode2))::template insert_size<KeyT::HOBJ>(key, value),
-    _STAGE_T(LeafNode3)::template insert_size<KeyT::HOBJ>(key, value)
+    _STAGE_T(InternalNode0)::insert_size(key_view, i_value),
+    NXT_T(_STAGE_T(InternalNode0))::insert_size(key_view, i_value),
+    NXT_T(NXT_T(_STAGE_T(InternalNode0)))::insert_size(key_view, i_value),
+    _STAGE_T(InternalNode1)::insert_size(key_view, i_value),
+    NXT_T(_STAGE_T(InternalNode1))::insert_size(key_view, i_value),
+    NXT_T(NXT_T(_STAGE_T(InternalNode1)))::insert_size(key_view, i_value),
+    _STAGE_T(InternalNode2)::insert_size(key_view, i_value),
+    NXT_T(_STAGE_T(InternalNode2))::insert_size(key_view, i_value),
+    _STAGE_T(InternalNode3)::insert_size(key_view, i_value),
+    _STAGE_T(LeafNode0)::insert_size(key, value),
+    NXT_T(_STAGE_T(LeafNode0))::insert_size(key, value),
+    NXT_T(NXT_T(_STAGE_T(LeafNode0)))::insert_size(key, value),
+    _STAGE_T(LeafNode1)::insert_size(key, value),
+    NXT_T(_STAGE_T(LeafNode1))::insert_size(key, value),
+    NXT_T(NXT_T(_STAGE_T(LeafNode1)))::insert_size(key, value),
+    _STAGE_T(LeafNode2)::insert_size(key, value),
+    NXT_T(_STAGE_T(LeafNode2))::insert_size(key, value),
+    _STAGE_T(LeafNode3)::insert_size(key, value)
   );
   std::free(p_mem);
 }
@@ -1591,7 +1591,6 @@ TEST_F(d_seastore_tm_test_t, 6_random_tree_insert_erase)
       auto t = create_mutate_transaction();
       INTR(tree->bootstrap, *t).unsafe_get();
       submit_transaction(std::move(t));
-      async_cleaner->run_until_halt().get0();
     }
 
     // test insert
@@ -1599,7 +1598,6 @@ TEST_F(d_seastore_tm_test_t, 6_random_tree_insert_erase)
       auto t = create_mutate_transaction();
       INTR(tree->insert, *t).unsafe_get();
       submit_transaction(std::move(t));
-      async_cleaner->run_until_halt().get0();
     }
     {
       auto t = create_read_transaction();
@@ -1621,7 +1619,6 @@ TEST_F(d_seastore_tm_test_t, 6_random_tree_insert_erase)
       auto size = kvs.size() / 4 * 3;
       INTR_R(tree->erase, *t, size).unsafe_get();
       submit_transaction(std::move(t));
-      async_cleaner->run_until_halt().get0();
     }
     {
       auto t = create_read_transaction();
@@ -1642,7 +1639,6 @@ TEST_F(d_seastore_tm_test_t, 6_random_tree_insert_erase)
       auto size = kvs.size();
       INTR_R(tree->erase, *t, size).unsafe_get();
       submit_transaction(std::move(t));
-      async_cleaner->run_until_halt().get0();
     }
     {
       auto t = create_read_transaction();
@@ -1697,7 +1693,7 @@ TEST_F(d_seastore_tm_test_t, 7_tree_insert_erase_eagain)
 	  });
 	});
     }).unsafe_get0();
-    async_cleaner->run_until_halt().get0();
+    epm->run_background_work_until_halt().get0();
 
     // insert
     logger().warn("start inserting {} kvs ...", kvs.size());
@@ -1717,7 +1713,7 @@ TEST_F(d_seastore_tm_test_t, 7_tree_insert_erase_eagain)
 	      });
 	    });
         }).unsafe_get0();
-        async_cleaner->run_until_halt().get0();
+        epm->run_background_work_until_halt().get0();
         ++iter;
       }
     }
@@ -1763,7 +1759,7 @@ TEST_F(d_seastore_tm_test_t, 7_tree_insert_erase_eagain)
 	      });
 	    });
         }).unsafe_get0();
-        async_cleaner->run_until_halt().get0();
+        epm->run_background_work_until_halt().get0();
         ++iter;
       }
       kvs.erase_from_random(kvs.random_begin(), kvs.random_end());

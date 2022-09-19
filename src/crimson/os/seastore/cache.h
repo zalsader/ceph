@@ -26,7 +26,6 @@ class BtreeBackrefManager;
 namespace crimson::os::seastore {
 
 class BackrefManager;
-class AsyncCleaner;
 class SegmentProvider;
 
 struct backref_entry_t {
@@ -712,8 +711,7 @@ public:
   void complete_commit(
     Transaction &t,            ///< [in, out] current transaction
     paddr_t final_block_start, ///< [in] offset of initial block
-    journal_seq_t seq,         ///< [in] journal commit seq
-    AsyncCleaner *cleaner=nullptr ///< [out] optional segment stat listener
+    journal_seq_t seq          ///< [in] journal commit seq
   );
 
   /**
@@ -1225,12 +1223,12 @@ private:
     // should be consistent with trans_srcs_invalidated in register_metrics()
     assert(!(src1 == Transaction::src_t::READ &&
              src2 == Transaction::src_t::READ));
-    assert(!(src1 == Transaction::src_t::CLEANER_TRIM_DIRTY &&
-             src2 == Transaction::src_t::CLEANER_TRIM_DIRTY));
-    assert(!(src1 == Transaction::src_t::CLEANER_RECLAIM &&
-             src2 == Transaction::src_t::CLEANER_RECLAIM));
-    assert(!(src1 == Transaction::src_t::CLEANER_TRIM_ALLOC &&
-             src2 == Transaction::src_t::CLEANER_TRIM_ALLOC));
+    assert(!(src1 == Transaction::src_t::TRIM_DIRTY &&
+             src2 == Transaction::src_t::TRIM_DIRTY));
+    assert(!(src1 == Transaction::src_t::CLEANER &&
+             src2 == Transaction::src_t::CLEANER));
+    assert(!(src1 == Transaction::src_t::TRIM_ALLOC &&
+             src2 == Transaction::src_t::TRIM_ALLOC));
 
     auto src1_value = static_cast<std::size_t>(src1);
     auto src2_value = static_cast<std::size_t>(src2);
@@ -1258,7 +1256,7 @@ private:
       CachedExtent &ext,
       const Transaction::src_t* p_src=nullptr)
   {
-    if (p_src && is_cleaner_transaction(*p_src))
+    if (p_src && is_background_transaction(*p_src))
       return;
     if (ext.is_clean() && !ext.is_placeholder()) {
       lru.move_to_top(ext);

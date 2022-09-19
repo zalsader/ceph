@@ -269,6 +269,7 @@ public:
   public:
     explicit CommandHook(Client *client);
     int call(std::string_view command, const cmdmap_t& cmdmap,
+	     const bufferlist&,
 	     Formatter *f,
 	     std::ostream& errss,
 	     bufferlist& out) override;
@@ -934,8 +935,9 @@ protected:
   void dump_mds_sessions(Formatter *f, bool cap_dump=false);
 
   int make_request(MetaRequest *req, const UserPerm& perms,
-		   InodeRef *ptarget = 0, bool *pcreated = 0,
-		   mds_rank_t use_mds=-1, bufferlist *pdirbl=0);
+                   InodeRef *ptarget = 0, bool *pcreated = 0,
+                   mds_rank_t use_mds=-1, bufferlist *pdirbl=0,
+                   size_t feature_needed=ULONG_MAX);
   void put_request(MetaRequest *request);
   void unregister_request(MetaRequest *request);
 
@@ -1072,7 +1074,7 @@ protected:
 
   int authenticate();
 
-  Inode* get_quota_root(Inode *in, const UserPerm& perms);
+  Inode* get_quota_root(Inode *in, const UserPerm& perms, quota_max_t type=QUOTA_ANY);
   bool check_quota_condition(Inode *in, const UserPerm& perms,
 			     std::function<bool (const Inode &)> test);
   bool is_quota_files_exceeded(Inode *in, const UserPerm& perms);

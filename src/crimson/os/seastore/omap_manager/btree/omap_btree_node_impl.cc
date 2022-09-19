@@ -248,7 +248,11 @@ OMapInnerNode::list(
 		assert(child_result.begin()->first > result.rbegin()->first);
 	      }
 	      if (child_result.size() && start && first_entry) {
-		assert(child_result.begin()->first > *start);
+		if (config.inclusive) {
+		  assert(child_result.begin()->first >= *start);
+		} else {
+		  assert(child_result.begin()->first > *start);
+		}
 	      }
 	      result.merge(std::move(child_result));
 	      ++biter;
@@ -552,12 +556,12 @@ OMapLeafNode::rm_key(omap_context_t oc, const std::string &key)
 {
   LOG_PREFIX(OMapLeafNode::rm_key);
   DEBUGT("{}, this: {}", oc.t, key, *this);
-  if(!is_pending()) {
+  auto rm_pt = find_string_key(key);
+  if (!is_pending() && rm_pt != iter_end()) {
     auto mut =  oc.tm.get_mutable_extent(oc.t, this)->cast<OMapLeafNode>();
     return mut->rm_key(oc, key);
   }
 
-  auto rm_pt = find_string_key(key);
   if (rm_pt != iter_end()) {
     ++(oc.t.get_omap_tree_stats().num_erases);
     journal_leaf_remove(rm_pt, maybe_get_delta_buffer());

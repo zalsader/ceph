@@ -1,6 +1,6 @@
 # DAOS
 
-Standalone Rados Gateway (RGW) on [DAOS](http://daos.io/) (Experimental)
+Standalone RADOS Gateway (RGW) on [DAOS](http://daos.io/) (Experimental)
 
 ## CMake Option
 
@@ -32,11 +32,11 @@ Restart vstart cluster or just RGW server
     [..] RGW=1 ../src/vstart.sh -d
 ```
 
-The above configuration brings up RGW server on DAOS.
+The above configuration brings up an RGW server on DAOS.
 
 ## Creating a test user
 
- To create testid user to be used for s3 operations, use the following command:
+ To create a `testid` user to be used for s3 operations, use the following command:
 
  ```bash
 local akey='0555b35654ad1656d804'
